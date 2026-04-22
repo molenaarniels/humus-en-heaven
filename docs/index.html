@@ -990,6 +990,7 @@ async function saveIrrigation() {
   try {
     await saveGistIrrigations(irrigations);
     status.innerHTML = "✓ Opgeslagen! Het dagelijkse check-script rekent het mee bij de volgende run.";
+    setTimeout(() => closeWaterModal(), 1500);
     status.style.color = "var(--moss)";
     state.irrigations = irrigations;
     updateWaterLog();

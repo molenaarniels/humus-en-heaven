@@ -139,7 +139,7 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
         actual_ET = ETc * Ks
         rain = d.get("precip") or 0
-        irrig = irrigations.get(d["date"], 0)
+        irrig = irrigations.get(f"{d['date']}_{zone_key}", irrigations.get(d["date"], 0))
         water += rain + irrig - actual_ET
         drainage = 0
         if water > AWC_max:

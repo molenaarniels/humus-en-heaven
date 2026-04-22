@@ -197,6 +197,7 @@ def main():
 
     print(f"→ Irrigaties laden uit Gist...")
     irrigations = load_irrigations_from_gist()
+    irrigations = {k: v for k, v in irrigations.items() if not k.startswith("_")}
 
     print(f"→ Data bouwen (WU={bool(station)}, Open-Meteo forecast)...")
     data = build_full_dataset(station, key, irrigations=irrigations)

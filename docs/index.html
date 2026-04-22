@@ -541,7 +541,7 @@ function buildMonthlyBalance(days) {
   const today = new Date().toISOString().slice(0, 10);
   const map = {};
   for (const d of days) {
-    if (d.date >= today) continue; // alleen historisch, niet vandaag/voorspelling
+    if (d.forecast) continue; // alleen historisch en vandaag, geen voorspelling
     const ym = d.date.slice(0, 7); // "YYYY-MM"
     if (!map[ym]) map[ym] = { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
     map[ym].rain += d.precip || 0;

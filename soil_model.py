@@ -13,8 +13,8 @@ UTRECHT_LAT = 52.0907
 UTRECHT_LON = 5.1214
 UTRECHT_ELEV = 5.0
 
-SOIL_FC = 0.17  # zandgrond Utrecht Oost
-SOIL_WP = 0.07
+SOIL_FC = 0.20  # ophoogzand met kleicomponent
+SOIL_WP = 0.09
 
 ZONES = {
     "lawn":   {"name": "Lawn",   "Zr": 0.15},

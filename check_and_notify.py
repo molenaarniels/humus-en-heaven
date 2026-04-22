@@ -100,18 +100,50 @@ def send_email(subject: str, body_html: str) -> bool:
 def format_telegram(status_lawn: dict, status_shrubs: dict,
                     generated_at: str) -> str:
     icons = {"high": "🚨", "medium": "💧", "low": "⏳", "none": "✓"}
+
+    def zone_line(label: str, status: dict) -> list[str]:
+        icon = icons[status["priority"]]
+        lines = [
+            f"{icon} <b>{label}</b>: {status['recommendation']}",
+            f"   Depletion: <code>{status['depletion_pct']:.0f}%</code>",
+        ]
+        if status["proposal_min"] > 0:
+            lines.append(
+                f"   💧 Advies: <b>{status['proposal_min']} min</b>"
+                f" (= {status['proposal_mm']:.1f} mm)"
+            )
+        return lines
+
+    lawn_lines = zone_line("Gras (sproeier)", status_lawn)
+    shrub_lines = zone_line("Struiken (druppelslang)", status_shrubs)
+
+    # Samengevat irrigatie-advies als beide water nodig hebben
+    both_need = status_lawn["proposal_min"] > 0 and status_shrubs["proposal_min"] > 0
+    one_needs = status_lawn["proposal_min"] > 0 or status_shrubs["proposal_min"] > 0
+
     lines = [
         "<b>Humus &amp; Heaven · dagcheck</b>",
         f"<i>{datetime.now().strftime('%A %d %B %Y')}</i>",
         "",
-        f"{icons[status_lawn['priority']]} <b>Gras</b>: {status_lawn['recommendation']}",
-        f"   Depletion: <code>{status_lawn['depletion_pct']:.0f}%</code>",
+        *lawn_lines,
         "",
-        f"{icons[status_shrubs['priority']]} <b>Struiken</b>: {status_shrubs['recommendation']}",
-        f"   Depletion: <code>{status_shrubs['depletion_pct']:.0f}%</code>",
+        *shrub_lines,
         "",
         f"🌧️ Regen komende 7d: <b>{status_lawn['rain7_mm']:.1f} mm</b>",
     ]
+
+    if one_needs:
+        lines += [""]
+        if both_need:
+            lines.append(
+                f"⏱ Gras: <b>{status_lawn['proposal_min']} min</b> · "
+                f"Struiken: <b>{status_shrubs['proposal_min']} min</b>"
+            )
+        elif status_lawn["proposal_min"] > 0:
+            lines.append(f"⏱ Gras: <b>{status_lawn['proposal_min']} min</b>")
+        else:
+            lines.append(f"⏱ Struiken: <b>{status_shrubs['proposal_min']} min</b>")
+
     dash = os.getenv("DASHBOARD_URL")
     if dash:
         lines += ["", f'<a href="{dash}">→ Open dashboard</a>']
@@ -190,8 +222,8 @@ def main():
         print("→ Notificatie nodig, versturen...")
         tg_text = format_telegram(status_lawn, status_shrubs, data["generated_at"])
         send_telegram(tg_text)
-        # subject, body = format_email(status_lawn, status_shrubs)
-        # send_email(subject, body)
+        subject, body = format_email(status_lawn, status_shrubs)
+        send_email(subject, body)
     else:
         print("→ Geen notificatie nodig (alles rustig)")
 

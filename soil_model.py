@@ -328,9 +328,39 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
     }
 
 
+# Irrigatiesnelheden per zone (mm per minuut).
+# Druppelslang struiken: 2 mm/uur = 0.0333 mm/min
+# Sproeier gras:        20 mm/uur = 0.3333 mm/min
+IRRIGATION_RATES = {
+    "lawn":   20 / 60,   # mm per minuut
+    "shrubs":  2 / 60,   # mm per minuut
+}
+
+
+def irrigation_proposal_mm(zone: str, depletion_pct: float,
+                            soil: Dict, zone_info: Dict) -> float:
+    """Berekent hoeveel mm water nodig is om terug op 90% veldcapaciteit te komen.
+    90% ipv 100% om ruimte te laten voor regen zonder oppervlakkige afvoer."""
+    AWC_max = (soil["FC"] - soil["WP"]) * zone_info["Zr"] * 1000  # mm
+    current_water = AWC_max * (1 - depletion_pct / 100)
+    target_water = AWC_max * 0.90
+    needed = max(0, target_water - current_water)
+    return round(needed, 1)
+
+
+def mm_to_minutes(zone: str, mm: float) -> int:
+    """Rekent mm om naar minuten op basis van irrigatiesnelheid."""
+    rate = IRRIGATION_RATES.get(zone, 0.333)
+    if rate <= 0:
+        return 0
+    return math.ceil(mm / rate)
+
+
 def assess_status(data: Dict, zone: str = "lawn") -> Dict:
-    """Bepaalt of water geven nodig is."""
+    """Bepaalt of water geven nodig is, inclusief irrigatievoorstel in mm en minuten."""
     days = data["days"]
+    soil = data["soil"]
+    zone_info = data["zones"][zone]
     today_idx = next((i for i, d in enumerate(days) if d["forecast"]), len(days))
     current_idx = max(0, today_idx - 1)
     current = days[current_idx]
@@ -353,6 +383,10 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
             break
     rain7 = sum((d.get("precip") or 0) for d in future)
 
+    # Irrigatievoorstel
+    proposal_mm = irrigation_proposal_mm(zone, dep, soil, zone_info)
+    proposal_min = mm_to_minutes(zone, proposal_mm)
+
     if state == "dry":
         recommendation = "URGENT: water vandaag — bodem in stress."
         priority = "high"
@@ -360,6 +394,8 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         if rain7 >= 8:
             recommendation = f"Nog niet water geven — {rain7:.1f} mm regen verwacht (7d)."
             priority = "low"
+            proposal_mm = 0
+            proposal_min = 0
         else:
             recommendation = "Water geven binnen 1–2 dagen."
             priority = "medium"
@@ -370,9 +406,13 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         else:
             recommendation = "Geen actie nodig."
             priority = "none"
+        proposal_mm = 0
+        proposal_min = 0
     else:
         recommendation = "Bodem goed verzadigd."
         priority = "none"
+        proposal_mm = 0
+        proposal_min = 0
 
     return {
         "state": state,
@@ -381,6 +421,9 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         "days_to_stress": days_to_stress,
         "rain7_mm": round(rain7, 1),
         "recommendation": recommendation,
+        "proposal_mm": proposal_mm,
+        "proposal_min": proposal_min,
+        "irrigation_rate_mm_per_min": IRRIGATION_RATES.get(zone, 0),
         "current": current,
         "zone": zone,
     }

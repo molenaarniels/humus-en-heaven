@@ -1,0 +1,103 @@
+name: Zandbak Notificaties
+
+# Twee cron-jobs:
+#   05:00 UTC = 07:00 Amsterdam (zomer, CEST = UTC+2)
+#   18:00 UTC = 20:00 Amsterdam (zomer, CEST = UTC+2)
+# Let op: in de winter (CET = UTC+1) is dit 06:00 en 19:00 lokaal.
+# Pas de cron aan in oktober/maart als je exacte lokale tijden wilt.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"    # ochtend: ~07:00 Amsterdam (zomer)
+    - cron: "0 18 * * *"   # avond:   ~20:00 Amsterdam (zomer)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "morning of evening"
+        required: true
+        default: "morning"
+        type: choice
+        options:
+          - morning
+          - evening
+      override_status:
+        description: "Overschrijf zandbak-status (optioneel)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - open
+          - dicht
+          - afgedekt
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # nodig voor commit sandbox_state.json
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installeer dependencies
+        run: pip install requests
+
+      # Bepaal mode op basis van welke cron werd getriggerd
+      # Bij workflow_dispatch gebruiken we de input
+      - name: Bepaal mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            # Haal huidige UTC uur op
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" -lt 12 ]; then
+              echo "mode=morning" >> $GITHUB_OUTPUT
+            else
+              echo "mode=evening" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # Optioneel: overschrijf status via workflow_dispatch input
+      - name: Overschrijf status (optioneel)
+        if: >
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.override_status != ''
+        run: |
+          STATUS="${{ github.event.inputs.override_status }}"
+          echo "Status overschreven naar: $STATUS"
+          python3 -c "
+          import json, datetime, os
+          f = 'sandbox_state.json'
+          state = json.load(open(f)) if os.path.exists(f) else {}
+          state['status'] = '$STATUS'
+          state['last_updated'] = datetime.datetime.utcnow().isoformat()
+          json.dump(state, open(f, 'w'), indent=2)
+          print('Nieuwe state:', state)
+          "
+
+      - name: Voer zandbak check uit
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          SANDBOX_STATE_FILE: sandbox_state.json
+        run: python3 sandbox_notify.py ${{ steps.mode.outputs.mode }}
+
+      # Commit de bijgewerkte state terug naar de repo
+      - name: Commit zandbak state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sandbox_state.json
+          # Alleen committen als er iets veranderd is
+          git diff --cached --quiet || git commit -m "chore: update sandbox_state.json [skip ci]"
+          git push

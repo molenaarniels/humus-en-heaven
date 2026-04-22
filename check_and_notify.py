@@ -190,8 +190,8 @@ def main():
         print("→ Notificatie nodig, versturen...")
         tg_text = format_telegram(status_lawn, status_shrubs, data["generated_at"])
         send_telegram(tg_text)
-        subject, body = format_email(status_lawn, status_shrubs)
-        send_email(subject, body)
+        # subject, body = format_email(status_lawn, status_shrubs)
+        # send_email(subject, body)
     else:
         print("→ Geen notificatie nodig (alles rustig)")
 

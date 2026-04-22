@@ -1,0 +1,63 @@
+name: Daily Soil Check
+
+on:
+  schedule:
+    # Elke ochtend 06:00 UTC = 07:00 NL wintertijd / 08:00 zomertijd
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_notify:
+        description: 'Force notification even if not needed'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write  # om data.json naar docs/ te committen
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run daily check
+        env:
+          # Wunderground
+          WU_STATION_ID: ${{ secrets.WU_STATION_ID }}
+          WU_API_KEY: ${{ secrets.WU_API_KEY }}
+          # Telegram (optioneel)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # E-mail (optioneel)
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          # Gist voor irrigaties
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          # Dashboard URL (voor links in notificaties)
+          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+          # Handmatige trigger met forceren
+          FORCE_NOTIFY: ${{ github.event.inputs.force_notify }}
+        run: python check_and_notify.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "data: daily refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi

@@ -17,9 +17,58 @@ SOIL_FC = 0.17  # zandgrond Utrecht Oost
 SOIL_WP = 0.07
 
 ZONES = {
-    "lawn":   {"name": "Lawn",   "Zr": 0.15, "Kc": 0.85},
-    "shrubs": {"name": "Shrubs", "Zr": 0.40, "Kc": 0.75},
+    "lawn":   {"name": "Lawn",   "Zr": 0.15},
+    "shrubs": {"name": "Shrubs", "Zr": 0.40},
 }
+
+# Seizoensgebonden Kc per zone (FAO-56, gecalibreerd voor Nederland).
+# Format: lijst van (dag_van_jaar, Kc) ankerpunten.
+# Tussenliggende waarden worden lineair geïnterpoleerd.
+# Gebaseerd op FAO-56 Tabel 12 + KNMI klimaatdata voor Utrecht.
+KC_SEASONAL = {
+    "lawn": [
+        (  1, 0.40),  # jan: winterrust, nauwelijks groei
+        ( 60, 0.40),  # begin mrt: nog rustig
+        ( 90, 0.65),  # eind mrt: herstelgroei na winter
+        (120, 0.85),  # eind apr: actieve groei
+        (152, 1.00),  # begin jun: vol seizoen, max verdamping
+        (213, 1.00),  # begin aug: vol seizoen
+        (244, 0.90),  # begin sep: lichte afname
+        (274, 0.75),  # begin okt: groei neemt af
+        (305, 0.50),  # begin nov: bijna winterrust
+        (335, 0.40),  # begin dec: winterrust
+        (365, 0.40),  # eind dec
+    ],
+    "shrubs": [
+        (  1, 0.30),  # jan: kale takken, minimale verdamping
+        ( 60, 0.30),  # begin mrt: knoppen zwellen
+        ( 90, 0.50),  # eind mrt: uitlopen
+        (110, 0.65),  # mid apr: blad in ontwikkeling
+        (135, 0.75),  # mid mei: vol blad
+        (182, 0.80),  # begin jul: max seizoen
+        (244, 0.80),  # begin sep: vol blad nog
+        (274, 0.65),  # begin okt: blad verkleurt
+        (305, 0.45),  # begin nov: blad valt
+        (335, 0.30),  # begin dec: winterrust
+        (365, 0.30),  # eind dec
+    ],
+}
+
+
+def seasonal_kc(zone_key: str, doy: int) -> float:
+    """Geeft de Kc-waarde voor een zone op dag `doy` via lineaire interpolatie."""
+    anchors = KC_SEASONAL[zone_key]
+    if doy <= anchors[0][0]:
+        return anchors[0][1]
+    if doy >= anchors[-1][0]:
+        return anchors[-1][1]
+    for i in range(len(anchors) - 1):
+        d0, k0 = anchors[i]
+        d1, k1 = anchors[i + 1]
+        if d0 <= doy <= d1:
+            t = (doy - d0) / (d1 - d0)
+            return round(k0 + t * (k1 - k0), 3)
+    return 0.75  # fallback
 
 
 # =============================================================================
@@ -57,16 +106,34 @@ def penman_monteith_et0(Tmax, Tmin, RHmean, u2, Rs, elev, lat_rad, doy):
     return max(num / den, 0)
 
 
-def run_water_balance(series: List[Dict], zone: Dict,
+def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
                       irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
-    """Single-bucket balance. irrigations = {"YYYY-MM-DD": mm_gegeven}."""
+    """Single-bucket balance. irrigations = {"YYYY-MM-DD": mm_gegeven}.
+    Gebruikt seizoensgebonden Kc per dag via seasonal_kc()."""
     irrigations = irrigations or {}
     AWC_max = (SOIL_FC - SOIL_WP) * zone["Zr"] * 1000
     start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
     water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
     out = []
     for d in series:
-        ETc = d["ET0"] * zone["Kc"]
+        doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
+        kc = seasonal_kc(zone_key, doy)
+
+        # Bodemtemperatuur drempel (FAO-56 §3.3):
+        # Onder 5°C stopt plantengroei nagenoeg volledig — geen verdamping.
+        # Tussen 5°C en 8°C lineaire overgang (voorkomt harde knip in de grafiek).
+        # Tmean als proxy voor bodemtemperatuur — vertraagd maar voldoende
+        # nauwkeurig voor dagelijkse beslissingen.
+        tmean = d.get("Tmean") or ((d.get("Tmax", 10) + d.get("Tmin", 0)) / 2)
+        if tmean <= 5.0:
+            temp_factor = 0.0
+        elif tmean <= 8.0:
+            temp_factor = (tmean - 5.0) / 3.0  # 0→1 tussen 5 en 8°C
+        else:
+            temp_factor = 1.0
+        kc = round(kc * temp_factor, 3)
+
+        ETc = d["ET0"] * kc
         depletion = max(0, AWC_max - water)
         RAW = AWC_max * 0.5
         Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
@@ -86,6 +153,7 @@ def run_water_balance(series: List[Dict], zone: Dict,
             "theta": round(theta, 4),
             "depletion_pct": round(depletion_pct, 1),
             "ETc": round(actual_ET, 2),
+            "Kc": kc,
             "drainage": round(drainage, 2),
             "irrigation": irrig,
         })
@@ -238,13 +306,15 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
             vals = [x["ET0"] for x in om if x["ET0"] is not None]
             d["ET0"] = sum(vals) / len(vals) if vals else 2.0
 
-    balances = {k: run_water_balance(om, z, irrigations) for k, z in ZONES.items()}
+    balances = {k: run_water_balance(om, z, k, irrigations) for k, z in ZONES.items()}
     for i, d in enumerate(om):
+        doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
         for k, series in balances.items():
             s = series[i]
             d[f"{k}_theta"] = s["theta"]
             d[f"{k}_depletion"] = s["depletion_pct"]
             d[f"{k}_ETc"] = s["ETc"]
+            d[f"{k}_Kc"] = s["Kc"]
             d[f"{k}_irrigation"] = s["irrigation"]
 
     return {

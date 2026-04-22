@@ -49,40 +49,28 @@
     text-transform: uppercase; transform: rotate(-1.5deg);
   }
   header { padding: 32px 40px 16px; }
-  .title-row {
-    display: flex; justify-content: space-between;
-    align-items: flex-start; flex-wrap: wrap; gap: 20px;
-  }
-  h1 {
-    font-size: clamp(44px, 6vw, 84px);
-    line-height: 0.95; margin: 8px 0 4px;
-    font-weight: 500; letter-spacing: -0.02em;
-    font-style: italic;
-  }
-  .subtitle {
-    font-size: 13px; font-style: italic;
-    color: var(--ink-soft); max-width: 520px; margin-top: 4px;
-  }
-  .date-block .date-big {
-    font-size: 20px; font-weight: 600; margin-top: 4px;
-  }
+  .title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px; }
+  h1 { font-size: clamp(44px, 6vw, 84px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+  .subtitle { font-size: 13px; font-style: italic; color: var(--ink-soft); max-width: 520px; margin-top: 4px; }
+  .date-big { font-size: 20px; font-weight: 600; margin-top: 4px; }
   .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
   .hairline { border-top: 1px solid #2a241b33; }
   .dash { border-top: 1px dashed #2a241b66; }
-
   .pulse { animation: pulse 1.5s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 0.4 } 50% { opacity: 1 } }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
 
-  .grid { display: grid; gap: 24px; padding: 0 40px; }
-  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .pad { padding: 0 40px; }
+  .grid { display: grid; gap: 24px; }
   .grid-2 { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  /* Tegel 1+2: altijd 2 kolommen naast elkaar */
+  .grid-status { grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 680px) { .grid-status { grid-template-columns: 1fr; } }
 
   .specimen-card {
     background: var(--parchment);
     border: 1px solid #2a241b22;
     box-shadow: 2px 4px 0 #2a241b11, inset 0 0 40px #e8dec380;
-    position: relative;
-    padding: 28px 24px;
+    position: relative; padding: 24px;
     background-image:
       radial-gradient(#2a241b08 1px, transparent 1px),
       radial-gradient(#2a241b05 1px, transparent 1px);
@@ -93,169 +81,85 @@
     content: ""; position: absolute; inset: 6px;
     border: 1px solid #2a241b1a; pointer-events: none;
   }
-  .card-title {
-    font-size: 22px; font-style: italic;
-    margin: 4px 0 14px; font-weight: 500;
-  }
+  .card-title { font-size: 22px; font-style: italic; margin: 4px 0 14px; font-weight: 500; }
   .card-title-big { font-size: 32px; }
 
-  .zone-chips { display: flex; gap: 8px; margin: 14px 0 18px; }
+  .zone-chips { display: flex; gap: 8px; margin: 10px 0 14px; }
   .zone-chip {
-    padding: 10px 22px;
+    padding: 8px 18px;
     font-family: "JetBrains Mono", monospace;
-    font-size: 10px; letter-spacing: 0.25em;
-    text-transform: uppercase;
-    background: transparent;
-    border: 1px solid #2a241b44;
-    cursor: pointer; transition: all 0.2s;
-    color: var(--ink);
+    font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+    background: transparent; border: 1px solid #2a241b44;
+    cursor: pointer; transition: all 0.2s; color: var(--ink);
   }
-  .zone-chip.active {
-    background: var(--ink); color: var(--parchment);
-    border-color: var(--ink);
-  }
+  .zone-chip.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
 
-  .stat-row {
-    display: flex; justify-content: space-between;
-    align-items: baseline; padding: 8px 0;
-    border-bottom: 1px dashed #2a241b22;
-  }
-  .stat-val { font-size: 15px; font-weight: 600; }
+  .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed #2a241b22; }
+  .stat-val { font-size: 14px; font-weight: 600; }
   .stat-sub { font-size: 11px; color: var(--ink-soft); margin-left: 6px; }
 
-  .gauge-row { display: flex; gap: 16px; align-items: center; }
-  .gauge-big {
-    font-family: "JetBrains Mono", monospace;
-    font-size: 48px; font-weight: 600; line-height: 1;
-  }
-  .gauge-big span { font-size: 20px; color: var(--ink-soft); margin-left: 4px; }
-  .gauge-sub { font-size: 11px; font-style: italic; color: var(--ink-soft); margin-top: 4px; }
+  /* Dual zone status tiles */
+  .zone-col { display: flex; flex-direction: column; gap: 0; }
+  .zone-header { font-size: 11px; font-family: "JetBrains Mono", monospace; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #2a241b22; }
+  .gauge-row { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; }
+  .gauge-big { font-family: "JetBrains Mono", monospace; font-size: 40px; font-weight: 600; line-height: 1; }
+  .gauge-big span { font-size: 18px; color: var(--ink-soft); margin-left: 3px; }
+  .gauge-sub { font-size: 11px; font-style: italic; color: var(--ink-soft); margin-top: 3px; }
 
-  .rec-text {
-    font-size: 22px; font-style: italic;
-    line-height: 1.3; margin-top: 20px; flex: 1;
+  /* Proposal box */
+  .proposal-box {
+    margin-top: 12px; padding: 10px 12px;
+    border: 1px solid currentColor;
+    display: flex; flex-direction: column; gap: 3px;
   }
+  .proposal-min { font-family: "JetBrains Mono", monospace; font-size: 28px; font-weight: 600; line-height: 1; }
+  .proposal-mm { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-soft); }
 
-  .chart-header {
-    display: flex; justify-content: space-between;
-    align-items: baseline; flex-wrap: wrap; gap: 12px;
-    margin-bottom: 12px;
-  }
-  .chart-wrap { height: 360px; margin-top: 24px; position: relative; }
-  .chart-wrap-small { height: 220px; position: relative; }
-
-  .legend-row {
-    display: flex; gap: 24px; margin-top: 16px;
-    font-size: 11px; flex-wrap: wrap;
-    font-family: "JetBrains Mono", monospace;
-    color: var(--ink-soft);
-  }
+  .chart-wrap { height: 340px; margin-top: 20px; position: relative; }
+  .chart-wrap-small { height: 200px; position: relative; }
+  .chart-wrap-month { height: 260px; position: relative; }
+  .chart-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+  .legend-row { display: flex; gap: 20px; margin-top: 14px; font-size: 11px; flex-wrap: wrap; font-family: "JetBrains Mono", monospace; color: var(--ink-soft); }
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
   .legend-line { display: inline-block; width: 18px; height: 2px; }
 
-  .btn {
-    background: var(--ink); color: var(--parchment);
-    padding: 8px 18px;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 11px; letter-spacing: 0.2em;
-    text-transform: uppercase;
-    border: none; cursor: pointer; transition: all 0.2s;
-  }
+  .btn { background: var(--ink); color: var(--parchment); padding: 8px 18px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
   .btn:hover { background: var(--moss); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-secondary {
-    background: transparent; color: var(--ink);
-    border: 1px solid var(--ink);
-  }
+  .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
   .btn-secondary:hover { background: var(--ink); color: var(--parchment); }
 
-  .banner {
-    padding: 12px 16px; margin: 8px 40px;
-    font-style: italic; font-size: 13px;
-    border-left: 3px solid;
-  }
+  .banner { padding: 12px 16px; margin: 8px 40px; font-style: italic; font-size: 13px; border-left: 3px solid; }
   .banner-ok { color: var(--moss); background: #3d5a3a11; border-left-color: var(--moss); }
   .banner-warn { color: var(--clay); background: #b8532a11; border-left-color: var(--clay); }
   .banner-error { color: var(--dry); background: #a0421a11; border-left-color: var(--dry); }
 
-  /* Water-gegeven modal */
-  .modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(42, 36, 27, 0.55);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 100; opacity: 0; pointer-events: none;
-    transition: opacity 0.2s;
-  }
+  /* Modal */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(42,36,27,.55); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
   .modal-backdrop.open { opacity: 1; pointer-events: auto; }
-  .modal {
-    background: var(--parchment); padding: 36px;
-    max-width: 480px; width: 92%;
-    border: 1px solid var(--ink);
-    box-shadow: 6px 8px 0 #2a241b33;
-    transform: translateY(20px); transition: transform 0.2s;
-    background-image:
-      radial-gradient(#2a241b08 1px, transparent 1px),
-      radial-gradient(#2a241b05 1px, transparent 1px);
-    background-size: 3px 3px, 7px 7px;
-  }
+  .modal { background: var(--parchment); padding: 32px; max-width: 520px; width: 94%; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; transform: translateY(20px); transition: transform 0.2s; background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px); background-size: 3px 3px, 7px 7px; }
   .modal-backdrop.open .modal { transform: translateY(0); }
-  .modal h2 {
-    font-size: 28px; font-style: italic; font-weight: 500;
-    margin-bottom: 4px;
-  }
-  .modal .input-field {
-    background: transparent; border: none;
-    border-bottom: 1px solid #2a241b66;
-    padding: 8px 2px; margin-top: 6px;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 16px; color: var(--ink);
-    outline: none; width: 100%;
-  }
-  .modal .input-field:focus { border-bottom-color: var(--clay); }
-  .zone-select {
-    display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;
-  }
-  .zone-select .zone-chip { flex: 1; }
-  .preset-chips {
-    display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;
-  }
-  .preset-chip {
-    padding: 6px 14px;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 10px; letter-spacing: 0.15em;
-    background: transparent;
-    border: 1px solid #2a241b44;
-    cursor: pointer; color: var(--ink-soft);
-  }
+  .modal h2 { font-size: 26px; font-style: italic; font-weight: 500; margin-bottom: 4px; }
+  .input-field { background: transparent; border: none; border-bottom: 1px solid #2a241b66; padding: 7px 2px; margin-top: 4px; font-family: "JetBrains Mono", monospace; font-size: 15px; color: var(--ink); outline: none; width: 100%; }
+  .input-field:focus { border-bottom-color: var(--clay); }
+  .preset-chips { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .preset-chip { padding: 5px 12px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; background: transparent; border: 1px solid #2a241b44; cursor: pointer; color: var(--ink-soft); }
   .preset-chip:hover { background: var(--ink); color: var(--parchment); }
 
-  .water-log {
-    max-height: 140px; overflow-y: auto;
-    margin-top: 8px;
-    font-family: "JetBrains Mono", monospace;
-    font-size: 11px;
-  }
-  .log-entry {
-    display: flex; justify-content: space-between;
-    padding: 4px 0; border-bottom: 1px dashed #2a241b22;
-    color: var(--ink-soft);
-  }
-  .log-entry .rm {
-    cursor: pointer; color: var(--clay);
-    opacity: 0.5; padding: 0 4px;
-  }
+  /* Modal zone grid */
+  .modal-zones { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .modal-zone-box { padding: 14px; border: 1px solid #2a241b22; background: var(--parchment-deep); }
+  .modal-zone-box h4 { font-size: 13px; font-family: "JetBrains Mono", monospace; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px; }
+  .modal-zone-result { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--moss); margin-top: 6px; min-height: 16px; }
+
+  .water-log { max-height: 120px; overflow-y: auto; margin-top: 8px; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+  .log-entry { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #2a241b22; color: var(--ink-soft); }
+  .log-entry .rm { cursor: pointer; color: var(--clay); opacity: 0.5; padding: 0 4px; }
   .log-entry .rm:hover { opacity: 1; }
 
-  footer {
-    padding: 16px 40px 0;
-    display: grid; gap: 24px;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    font-size: 12px; font-style: italic; color: var(--ink-soft);
-    margin-top: 32px;
-  }
+  footer { padding: 16px 40px 0; display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); font-size: 12px; font-style: italic; color: var(--ink-soft); margin-top: 32px; }
   footer .hairline { margin-bottom: 18px; grid-column: 1/-1; }
-
-  section { padding: 32px 0 16px; }
+  section { padding: 28px 0 0; }
 </style>
 </head>
 <body>
@@ -265,12 +169,9 @@
     <div>
       <div class="corner-mark" id="folio-mark"></div>
       <h1>Humus &amp; Heaven</h1>
-      <div class="subtitle">
-        Een dagelijkse afweging van bodem, zon en regen — voor de tuin op 52.09°N, 5.12°E,
-        geworteld in het zand van Utrecht Oost.
-      </div>
+      <div class="subtitle">Een dagelijkse afweging van bodem, zon en regen — voor de tuin op 52.09°N, 5.12°E, geworteld in het zand van Utrecht Oost.</div>
     </div>
-    <div class="date-block" style="text-align:right;">
+    <div style="text-align:right;">
       <div class="corner-mark">Vandaag</div>
       <div class="num date-big" id="today-date"></div>
       <div class="corner-mark" style="margin-top:6px;">Bodem: zand · FC 0.17 · WP 0.07</div>
@@ -279,98 +180,84 @@
   <div class="hairline-bold"></div>
 </header>
 
-<section style="padding:16px 40px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+<section style="padding:14px 40px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
   <button class="btn" id="water-btn">💧 Ik heb water gegeven</button>
   <button class="btn btn-secondary" id="refresh-btn">↻ Refresh</button>
   <span id="source-label" style="font-size:11px;color:var(--ink-soft);font-style:italic;"></span>
 </section>
 
 <div id="banner-slot"></div>
-
 <div id="content" style="padding:80px 40px;text-align:center;">
-  <div class="pulse" style="font-size:22px;font-style:italic;color:var(--ink-soft);">
-    Het grootboek van lucht en aarde samenstellen…
-  </div>
+  <div class="pulse" style="font-size:22px;font-style:italic;color:var(--ink-soft);">Het grootboek van lucht en aarde samenstellen…</div>
 </div>
 
-<!-- "Ik heb water gegeven" modal -->
+<!-- Modal -->
 <div class="modal-backdrop" id="water-modal">
   <div class="modal">
     <div class="corner-mark">💧 Registreer irrigatie</div>
     <h2>Hoeveel water heb je gegeven?</h2>
-    <p style="font-style:italic;color:var(--ink-soft);margin-top:6px;font-size:13px;">
-      In mm (vuistregel: 10 L op 1 m² = 10 mm). De waarde wordt meegerekend in
-      het bodemwater-model en opgeslagen in je GitHub Gist.
-    </p>
+    <p style="font-style:italic;color:var(--ink-soft);margin-top:6px;font-size:13px;">Voer in minuten in. Het dashboard rekent automatisch naar mm op basis van jouw irrigatiesnelheden.</p>
 
-    <div style="margin-top:20px;">
+    <div style="margin-top:18px;">
       <div class="rule-label">Datum</div>
       <input type="date" class="input-field" id="water-date" />
     </div>
 
-    <div style="margin-top:16px;">
-      <div class="rule-label">Zone</div>
-      <div class="zone-select" id="water-zone-select">
-        <button class="zone-chip active" data-zone="lawn">Gras</button>
-        <button class="zone-chip" data-zone="shrubs">Struiken</button>
-        <button class="zone-chip" data-zone="both">Beide</button>
+    <div class="modal-zones">
+      <div class="modal-zone-box">
+        <h4>🌿 Gras (sproeier)</h4>
+        <div class="rule-label">Minuten</div>
+        <input type="number" step="1" min="0" class="input-field" id="water-min-lawn" placeholder="0" oninput="updateMmPreview()" />
+        <div class="preset-chips">
+          <button class="preset-chip" onclick="setMin('lawn',5)">5 min</button>
+          <button class="preset-chip" onclick="setMin('lawn',10)">10 min</button>
+          <button class="preset-chip" onclick="setMin('lawn',15)">15 min</button>
+          <button class="preset-chip" onclick="setMin('lawn',20)">20 min</button>
+        </div>
+        <div class="modal-zone-result" id="preview-lawn">—</div>
+      </div>
+      <div class="modal-zone-box">
+        <h4>🌳 Struiken (druppelslang)</h4>
+        <div class="rule-label">Minuten</div>
+        <input type="number" step="1" min="0" class="input-field" id="water-min-shrubs" placeholder="0" oninput="updateMmPreview()" />
+        <div class="preset-chips">
+          <button class="preset-chip" onclick="setMin('shrubs',30)">30 min</button>
+          <button class="preset-chip" onclick="setMin('shrubs',60)">60 min</button>
+          <button class="preset-chip" onclick="setMin('shrubs',90)">90 min</button>
+          <button class="preset-chip" onclick="setMin('shrubs',120)">120 min</button>
+        </div>
+        <div class="modal-zone-result" id="preview-shrubs">—</div>
       </div>
     </div>
 
-    <div style="margin-top:16px;">
-      <div class="rule-label">Hoeveelheid (mm)</div>
-      <input type="number" step="0.5" min="0" class="input-field" id="water-amount" placeholder="bijv. 10" />
-      <div class="preset-chips">
-        <button class="preset-chip" data-amt="5">Licht · 5 mm</button>
-        <button class="preset-chip" data-amt="10">Normaal · 10 mm</button>
-        <button class="preset-chip" data-amt="15">Flink · 15 mm</button>
-        <button class="preset-chip" data-amt="25">Doorweken · 25 mm</button>
-      </div>
-    </div>
-
-    <div style="margin-top:24px;">
+    <div style="margin-top:18px;">
       <div class="rule-label">Recente irrigaties</div>
-      <div class="water-log" id="water-log">
-        <div style="color:var(--ink-soft);font-style:italic;padding:8px 0;">Geen ingevoerd.</div>
-      </div>
+      <div class="water-log" id="water-log"><div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Geen ingevoerd.</div></div>
     </div>
 
-    <div style="margin-top:28px;display:flex;gap:12px;justify-content:flex-end;">
+    <div style="margin-top:24px;display:flex;gap:12px;justify-content:flex-end;">
       <button class="btn btn-secondary" id="water-cancel">Annuleer</button>
       <button class="btn" id="water-save">Opslaan</button>
     </div>
-
-    <div id="water-status" style="margin-top:12px;font-size:12px;font-style:italic;color:var(--ink-soft);"></div>
+    <div id="water-status" style="margin-top:10px;font-size:12px;font-style:italic;color:var(--ink-soft);"></div>
   </div>
 </div>
 
 <footer>
   <div class="hairline"></div>
-  <div>
-    <div class="rule-label" style="margin-bottom:6px;">Methode</div>
-    FAO-56 Penman-Monteith voor referentie-ET₀. Single-bucket bodemwaterbalans per zone
-    (P − ETc ± drainage) met Ks-stress-factor wanneer depletion boven 50% komt.
-  </div>
-  <div>
-    <div class="rule-label" style="margin-bottom:6px;">Bodem</div>
-    Zandgrond Utrecht Oost: veldcapaciteit ≈ 0,17 v/v, verwelkingspunt ≈ 0,07 v/v.
-    Snel drainerend, weinig opslag — vaak en licht water geven.
-  </div>
-  <div>
-    <div class="rule-label" style="margin-bottom:6px;">Bronnen</div>
-    Jouw Wunderground station voor regen en temperatuur. Open-Meteo voor zonnestraling
-    en de 7-daagse voorspelling. Irrigaties uit GitHub Gist.
-  </div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Methode</div>FAO-56 Penman-Monteith voor referentie-ET₀. Single-bucket bodemwaterbalans per zone met seizoensgebonden Kc en bodemtemperatuur drempel (≤5°C = geen verdamping).</div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Bodem</div>Zandgrond Utrecht Oost: veldcapaciteit ≈ 0,17 v/v, verwelkingspunt ≈ 0,07 v/v. Snel drainerend, weinig opslag.</div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Bronnen</div>Wunderground PWS voor regen en temperatuur. Open-Meteo voor zonnestraling en 7-daagse voorspelling. Irrigaties uit GitHub Gist.</div>
 </footer>
 
 <script>
 // =======================================================================
-// CONFIG — ingevuld door setup
+// CONFIG
 // =======================================================================
-const CONFIG = {
-  gistId: "__GIST_ID__",    // vervang met je Gist ID (of laat default en configureer localStorage)
-  githubToken: null,          // wordt uit localStorage gehaald
-};
+const CONFIG = { gistId: "__GIST_ID__", githubToken: null };
+
+// Irrigatiesnelheden — synchroon met soil_model.py
+const RATES = { lawn: 20 / 60, shrubs: 2 / 60 }; // mm per minuut
 
 const COLORS = {
   parchment: "#f3ecd9", parchmentDeep: "#e8dec3",
@@ -381,26 +268,17 @@ const COLORS = {
   dry: "#a0421a", wet: "#2d4a5c",
 };
 const ZONE_COLORS = { lawn: COLORS.mossLight, shrubs: COLORS.moss };
+const ZONE_LABELS = { lawn: "Gras", shrubs: "Struiken" };
 
-const state = {
-  data: null,
-  selectedZone: "lawn",
-  charts: {},
-  irrigations: {},
-};
+const state = { data: null, selectedZone: "lawn", charts: {}, irrigations: {} };
 
 // =======================================================================
 // INIT
 // =======================================================================
-document.getElementById("folio-mark").textContent =
-  `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Fol. I`;
-document.getElementById("today-date").textContent =
-  new Date().toLocaleDateString("nl-NL", {
-    weekday: "long", day: "numeric", month: "long", year: "numeric",
-  });
+document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Fol. I`;
+document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 document.getElementById("water-date").value = new Date().toISOString().slice(0,10);
 
-// Gist config uit localStorage
 const lsGist = localStorage.getItem("gist_id");
 const lsToken = localStorage.getItem("gh_token");
 if (lsGist) CONFIG.gistId = lsGist;
@@ -411,27 +289,13 @@ document.getElementById("water-btn").addEventListener("click", openWaterModal);
 document.getElementById("water-cancel").addEventListener("click", closeWaterModal);
 document.getElementById("water-save").addEventListener("click", saveIrrigation);
 
-document.querySelectorAll("#water-zone-select .zone-chip").forEach(b => {
-  b.addEventListener("click", () => {
-    document.querySelectorAll("#water-zone-select .zone-chip").forEach(x => x.classList.remove("active"));
-    b.classList.add("active");
-  });
-});
-document.querySelectorAll(".preset-chip").forEach(b => {
-  b.addEventListener("click", () => {
-    document.getElementById("water-amount").value = b.dataset.amt;
-  });
-});
-
 // =======================================================================
-// DATA LOADING
+// DATA
 // =======================================================================
 async function loadData() {
   document.getElementById("banner-slot").innerHTML = "";
-  document.getElementById("source-label").innerHTML =
-    '<span class="pulse">⋯ data laden…</span>';
+  document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
   try {
-    // Cache-bust to ensure we always get the latest generated data.json
     const res = await fetch(`data.json?t=${Date.now()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
@@ -439,8 +303,7 @@ async function loadData() {
     render();
   } catch (e) {
     document.getElementById("banner-slot").innerHTML =
-      `<div class="banner banner-error"><strong>Kan data niet laden:</strong> ${e.message}. ` +
-      `Heeft de GitHub Action al gedraaid? Check de Actions-tab op je repo.</div>`;
+      `<div class="banner banner-error"><strong>Kan data niet laden:</strong> ${e.message}. Heeft de GitHub Action al gedraaid?</div>`;
     document.getElementById("source-label").textContent = "";
   }
 }
@@ -449,30 +312,20 @@ function render() {
   const d = state.data;
   const generated = new Date(d.generated_at);
   const ageHours = (Date.now() - generated.getTime()) / 3600000;
-
-  let banner = "";
-  if (d.wu_days > 0) {
-    banner = `<div class="banner banner-ok">✓ <strong>${d.wu_days} dagen</strong> van jouw Wunderground station, ` +
-             `verrijkt met Open-Meteo zonnestraling. Data van ${generated.toLocaleString("nl-NL")} ` +
-             `(${ageHours < 1 ? "net bijgewerkt" : ageHours.toFixed(0) + " uur geleden"}).</div>`;
-  } else {
-    banner = `<div class="banner banner-warn">Open-Meteo only (geen WU data gevonden). Data van ` +
-             `${generated.toLocaleString("nl-NL")}.</div>`;
-  }
+  const banner = d.wu_days > 0
+    ? `<div class="banner banner-ok">✓ <strong>${d.wu_days} dagen</strong> van jouw Wunderground station + Open-Meteo solar. Data van ${generated.toLocaleString("nl-NL")} (${ageHours < 1 ? "net bijgewerkt" : Math.round(ageHours) + " uur geleden"}).</div>`
+    : `<div class="banner banner-warn">Open-Meteo only. Data van ${generated.toLocaleString("nl-NL")}.</div>`;
   document.getElementById("banner-slot").innerHTML = banner;
   document.getElementById("source-label").textContent = "✓ " + d.source;
-
   renderContent();
   updateWaterLog();
 }
 
 // =======================================================================
-// RENDER DASHBOARD
+// RENDER
 // =======================================================================
 function renderContent() {
   const d = state.data;
-  const zone = state.selectedZone;
-  const zoneInfo = d.zones[zone];
   const days = d.days;
   const FC = d.soil.FC, WP = d.soil.WP;
 
@@ -480,136 +333,93 @@ function renderContent() {
   const currentIdx = todayIdx === -1 ? days.length - 1 : todayIdx - 1;
   const current = days[currentIdx];
   const future = days.slice(currentIdx + 1);
-  const dep = current[`${zone}_depletion`];
 
-  let statusState = "moist";
-  if (dep > 70) statusState = "dry";
-  else if (dep > 50) statusState = "threshold";
-  else if (dep < 20) statusState = "wet";
+  // Compute status for both zones
+  const zones = ["lawn", "shrubs"];
+  const statuses = {};
+  for (const zone of zones) {
+    const dep = current[`${zone}_depletion`];
+    let state = dep > 70 ? "dry" : dep > 50 ? "threshold" : dep < 20 ? "wet" : "moist";
+    const rain7 = future.reduce((s, x) => s + (x.precip || 0), 0);
+    let daysToStress = null;
+    for (let i = 0; i < future.length; i++) {
+      if (future[i][`${zone}_depletion`] > 50) { daysToStress = i + 1; break; }
+    }
+    // Proposal in mm → min
+    const AWC_max = (FC - WP) * d.zones[zone].Zr * 1000;
+    const currentWater = AWC_max * (1 - dep / 100);
+    const targetWater = AWC_max * 0.90;
+    const proposal_mm = Math.max(0, Math.round((targetWater - currentWater) * 10) / 10);
+    const proposal_min = proposal_mm > 0 ? Math.ceil(proposal_mm / RATES[zone]) : 0;
 
-  let daysToStress = null;
-  for (let i = 0; i < future.length; i++) {
-    if (future[i][`${zone}_depletion`] > 50) { daysToStress = i + 1; break; }
+    let rec, priority;
+    if (state === "dry") { rec = "URGENT: water vandaag."; priority = "high"; }
+    else if (state === "threshold") {
+      if (rain7 >= 8) { rec = `Regen verwacht (${rain7.toFixed(1)} mm).`; priority = "low"; }
+      else { rec = "Water binnen 1–2 dagen."; priority = "medium"; }
+    } else if (state === "moist") {
+      if (daysToStress && daysToStress <= 3 && rain7 < 5) { rec = `Stress over ~${daysToStress}d.`; priority = "low"; }
+      else { rec = "Geen actie nodig."; priority = "none"; }
+    } else { rec = "Bodem verzadigd."; priority = "none"; }
+
+    const needsWater = priority === "high" || priority === "medium";
+    statuses[zone] = {
+      dep, state, rec, priority, rain7, daysToStress,
+      proposal_mm: needsWater ? proposal_mm : 0,
+      proposal_min: needsWater ? proposal_min : 0,
+    };
   }
-  const rain7 = future.reduce((s, x) => s + (x.precip || 0), 0);
 
-  let rec;
-  if (statusState === "dry") rec = "Water geven vandaag — bodem in stress.";
-  else if (statusState === "threshold")
-    rec = rain7 >= 8 ? `Nog niet — ${rain7.toFixed(1)} mm regen verwacht.` : "Water binnen 1–2 dagen.";
-  else if (statusState === "moist")
-    rec = daysToStress && daysToStress <= 3 && rain7 < 5
-      ? `Let op — stress over ~${daysToStress} dagen.`
-      : "Geen actie nodig.";
-  else rec = "Bodem goed verzadigd.";
-
-  const stampColor = {
-    dry: COLORS.dry, threshold: COLORS.clay,
-    wet: COLORS.wet, moist: COLORS.moss,
-  }[statusState];
-  const stampText = {
-    dry: "Water nu", threshold: "Grens · let op",
-    wet: "Verzadigd", moist: "Vochtig · rust",
-  }[statusState];
-
-  const filledPct = Math.max(0, Math.min(100, 100 - dep));
+  // Monthly balance data
+  const monthly = buildMonthlyBalance(days);
 
   const html = `
-    <div class="grid grid-3">
-      <!-- I. Gauge -->
+    <!-- TEGELS 1+2: Bodemwater + Aanbeveling — 2 kolommen -->
+    <section style="padding:28px 40px 0;">
+      <div class="grid grid-status">
+        ${zones.map(zone => zoneStatusTile(zone, statuses[zone], d.zones[zone])).join('')}
+      </div>
+    </section>
+
+    <!-- TEGEL 3: Weerlog -->
+    <section style="padding:20px 40px 0;">
       <div class="specimen-card">
-        <div class="corner-mark">I. Bodemwater</div>
-        <div class="zone-chips">
-          ${Object.entries(d.zones).map(([k, z]) => `
-            <button class="zone-chip ${state.selectedZone === k ? 'active' : ''}"
-                    onclick="switchZone('${k}')">${k === 'lawn' ? 'Gras' : 'Struiken'}</button>
-          `).join('')}
-        </div>
-        <div class="gauge-row">
-          ${soilGaugeSVG(filledPct, statusState)}
+        <div class="corner-mark">III. Atmosferisch log · vandaag</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0 32px;margin-top:12px;">
           <div>
-            <div class="gauge-big" style="color:${stampColor};">${filledPct.toFixed(0)}<span>%</span></div>
-            <div class="gauge-sub">beschikbaar water</div>
+            <div class="stat-row"><span class="rule-label">Temperatuur</span><span><span class="num stat-val">${current.Tmean?.toFixed(1)}°C</span><span class="num stat-sub">${current.Tmin?.toFixed(0)}° / ${current.Tmax?.toFixed(0)}°</span></span></div>
+            <div class="stat-row"><span class="rule-label">Neerslag</span><span class="num stat-val" style="color:${COLORS.rain};">${(current.precip ?? 0).toFixed(1)} mm</span></div>
           </div>
-        </div>
-        <div class="dash" style="margin:14px 0;"></div>
-        <div class="stat-row"><span class="rule-label">Depletion</span><span class="num stat-val">${dep.toFixed(1)}%</span></div>
-        <div class="stat-row"><span class="rule-label">Wortelzone</span><span class="num stat-val">${(zoneInfo.Zr * 100).toFixed(0)} cm</span></div>
-        <div class="stat-row"><span class="rule-label">Kc factor</span><span class="num stat-val">${zoneInfo.Kc}</span></div>
-      </div>
-
-      <!-- II. Aanbeveling -->
-      <div class="specimen-card" style="display:flex;flex-direction:column;">
-        <div class="corner-mark">II. Aanbeveling</div>
-        <div style="margin-top:12px;">
-          <span class="stamp" style="color:${stampColor};">${stampText}</span>
-        </div>
-        <div class="rec-text">${rec}</div>
-        <div class="dash" style="margin:14px 0;"></div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);">
-          <span>Regen komende 7 dagen</span>
-          <span class="num" style="color:${COLORS.rain};font-weight:600;">${rain7.toFixed(1)} mm</span>
-        </div>
-        ${daysToStress ? `
-        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);">
-          <span>Stress over</span>
-          <span class="num" style="color:${COLORS.clay};font-weight:600;">${daysToStress} d</span>
-        </div>` : ''}
-      </div>
-
-      <!-- III. Weerlog -->
-      <div class="specimen-card">
-        <div class="corner-mark">III. Weerlog</div>
-        <div style="margin-top:16px;">
-          <div class="stat-row">
-            <span class="rule-label">Luchttemperatuur</span>
-            <span><span class="num stat-val">${current.Tmean?.toFixed(1)}°C</span>
-            <span class="num stat-sub">${current.Tmin?.toFixed(0)}° / ${current.Tmax?.toFixed(0)}°</span></span>
+          <div>
+            <div class="stat-row"><span class="rule-label">Referentie ET₀</span><span class="num stat-val" style="color:${COLORS.clay};">${current.ET0?.toFixed(2)} mm</span></div>
+            <div class="stat-row"><span class="rule-label">Zonnestraling</span><span class="num stat-val" style="color:${COLORS.sun};">${current.Rs?.toFixed(1)} MJ/m²</span></div>
           </div>
-          <div class="stat-row">
-            <span class="rule-label">Neerslag</span>
-            <span class="num stat-val" style="color:${COLORS.rain};">${(current.precip ?? 0).toFixed(1)} mm</span>
-          </div>
-          <div class="stat-row">
-            <span class="rule-label">Referentie ET₀</span>
-            <span class="num stat-val" style="color:${COLORS.clay};">${current.ET0?.toFixed(2)} mm</span>
-          </div>
-          <div class="stat-row">
-            <span class="rule-label">Zonnestraling</span>
-            <span class="num stat-val" style="color:${COLORS.sun};">${current.Rs?.toFixed(1)} MJ/m²</span>
-          </div>
-          <div class="stat-row">
-            <span class="rule-label">${zoneInfo.name} ETc</span>
-            <span class="num stat-val">${current[`${zone}_ETc`]?.toFixed(2)} mm</span>
+          <div>
+            <div class="stat-row"><span class="rule-label">Gras Kc / ETc</span><span class="num stat-val">${current.lawn_Kc?.toFixed(2)} / ${current.lawn_ETc?.toFixed(2)} mm</span></div>
+            <div class="stat-row"><span class="rule-label">Struiken Kc / ETc</span><span class="num stat-val">${current.shrubs_Kc?.toFixed(2)} / ${current.shrubs_ETc?.toFixed(2)} mm</span></div>
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- MAIN CHART -->
-    <section style="padding:32px 40px;">
+    <!-- MAIN MOISTURE CHART -->
+    <section style="padding:20px 40px 0;">
       <div class="specimen-card">
         <div class="chart-header">
           <div>
-            <div class="corner-mark">Plaat IV · Figuur 1</div>
+            <div class="corner-mark">Plaat IV · Bodemvochtverloop</div>
             <h2 class="card-title card-title-big">Het bodemvocht-seizoen</h2>
-            <div style="font-size:13px;font-style:italic;color:var(--ink-soft);">
-              Volumetrisch watergehalte (θ) over 30 dagen geschiedenis en 7 dagen voorspelling.
-              Gestippelde lijnen markeren de stress-grens en het verwelkingspunt.
-            </div>
+            <div style="font-size:13px;font-style:italic;color:var(--ink-soft);">Volumetrisch watergehalte (θ) — 30 dagen historisch + 7 dagen voorspelling.</div>
           </div>
           <div class="zone-chips" style="margin:0;">
-            ${Object.entries(d.zones).map(([k, z]) => `
-              <button class="zone-chip ${state.selectedZone === k ? 'active' : ''}"
-                      onclick="switchZone('${k}')">${k === 'lawn' ? 'Gras' : 'Struiken'}</button>
-            `).join('')}
+            ${zones.map(z => `<button class="zone-chip ${state.selectedZone === z ? 'active' : ''}" onclick="switchZone('${z}')">${ZONE_LABELS[z]}</button>`).join('')}
           </div>
         </div>
         <div class="chart-wrap"><canvas id="main-chart"></canvas></div>
         <div class="legend-row">
-          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${ZONE_COLORS[zone]};"></span>Bodem θ · ${zoneInfo.name}</span>
-          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.rain};"></span>Regen (mm)</span>
-          <span class="legend-item"><span class="legend-line" style="border-top:2px solid #3d5a3a;"></span>💧 Irrigatie</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${ZONE_COLORS[state.selectedZone]};"></span>Bodem θ · ${ZONE_LABELS[state.selectedZone]}</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.rain};"></span>Regen</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.moss};"></span>💧 Irrigatie</span>
           <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.moss};"></span>Veldcapaciteit</span>
           <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.clay};"></span>Stress-grens</span>
         </div>
@@ -617,7 +427,7 @@ function renderContent() {
     </section>
 
     <!-- BUDGET + DEPLETION -->
-    <section style="padding:0 40px 32px;">
+    <section style="padding:20px 40px 0;">
       <div class="grid grid-2" style="padding:0;">
         <div class="specimen-card">
           <div class="corner-mark">Plaat V · Waterbalans</div>
@@ -625,7 +435,7 @@ function renderContent() {
           <div class="chart-wrap-small"><canvas id="budget-chart"></canvas></div>
           <div class="legend-row">
             <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.rain};"></span>Regen</span>
-            <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.clay};"></span>ETc · ${zoneInfo.name}</span>
+            <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.clay};"></span>ETc · ${ZONE_LABELS[state.selectedZone]}</span>
             <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.sun};"></span>ET₀</span>
           </div>
         </div>
@@ -633,18 +443,64 @@ function renderContent() {
           <div class="corner-mark">Plaat VI · Depletion</div>
           <h3 class="card-title">Hoe droog is het echt?</h3>
           <div class="chart-wrap-small"><canvas id="depletion-chart"></canvas></div>
-          <div style="font-size:11px;color:var(--ink-soft);font-style:italic;margin-top:10px;">
-            Uitputting van het beschikbare water. Boven 50% = planten komen onder stress.
-          </div>
+          <div style="font-size:11px;color:var(--ink-soft);font-style:italic;margin-top:10px;">Depletion van beschikbaar water. Boven 50% = stress.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MAANDELIJKSE WATERBALANS -->
+    <section style="padding:20px 40px 28px;">
+      <div class="specimen-card">
+        <div class="corner-mark">Plaat VII · Cumulatieve maandbalans</div>
+        <h2 class="card-title card-title-big">Water per maand</h2>
+        <div style="font-size:13px;font-style:italic;color:var(--ink-soft);margin-bottom:4px;">Historische balans: hoeveel is er gevallen (regen + irrigatie) versus hoeveel heeft de plant verdampt. Huidige maand tot en met gisteren.</div>
+        <div class="chart-wrap-month"><canvas id="monthly-chart"></canvas></div>
+        <div class="legend-row">
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.rain};background:${COLORS.rain};height:10px;width:14px;"></span>Regen (mm)</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.moss};background:${COLORS.moss};height:10px;width:14px;"></span>Irrigatie (mm)</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.clay};background:${COLORS.clay}44;height:10px;width:14px;"></span>ETc totaal</span>
         </div>
       </div>
     </section>
   `;
   document.getElementById("content").outerHTML = `<div id="content">${html}</div>`;
 
-  drawMainChart(days, zone, FC, WP);
-  drawBudgetChart(days, zone);
-  drawDepletionChart(days, zone);
+  drawMainChart(days, state.selectedZone, FC, WP);
+  drawBudgetChart(days, state.selectedZone);
+  drawDepletionChart(days, state.selectedZone);
+  drawMonthlyChart(monthly);
+}
+
+function zoneStatusTile(zone, s, zoneInfo) {
+  const stampColor = { dry: COLORS.dry, threshold: COLORS.clay, wet: COLORS.wet, moist: COLORS.moss }[s.state];
+  const stampText = { dry: "Water nu", threshold: "Grens · let op", wet: "Verzadigd", moist: "Vochtig · rust" }[s.state];
+  const filledPct = Math.max(0, Math.min(100, 100 - s.dep));
+  const label = zone === "lawn" ? "🌿 Gras · sproeier 20mm/uur" : "🌳 Struiken · druppelslang 2mm/uur";
+
+  return `
+    <div class="specimen-card zone-col">
+      <div class="zone-header">${label}</div>
+      <div class="gauge-row">
+        ${soilGaugeSVG(filledPct, s.state, 130)}
+        <div>
+          <div class="gauge-big" style="color:${stampColor};">${filledPct.toFixed(0)}<span>%</span></div>
+          <div class="gauge-sub">beschikbaar water</div>
+          <div style="margin-top:8px;"><span class="stamp" style="color:${stampColor};">${stampText}</span></div>
+        </div>
+      </div>
+      <div style="font-size:18px;font-style:italic;line-height:1.3;margin:10px 0 8px;color:${stampColor};">${s.rec}</div>
+      <div class="dash" style="margin:8px 0;"></div>
+      <div class="stat-row"><span class="rule-label">Depletion</span><span class="num stat-val">${s.dep.toFixed(1)}%</span></div>
+      <div class="stat-row"><span class="rule-label">Regen 7d</span><span class="num stat-val" style="color:${COLORS.rain};">${s.rain7.toFixed(1)} mm</span></div>
+      <div class="stat-row"><span class="rule-label">Wortelzone</span><span class="num stat-val">${(zoneInfo.Zr * 100).toFixed(0)} cm</span></div>
+      ${s.proposal_min > 0 ? `
+        <div class="proposal-box" style="color:${stampColor};margin-top:10px;">
+          <div class="rule-label" style="color:${stampColor};">💧 Advies</div>
+          <div class="proposal-min">${s.proposal_min} <span style="font-size:14px;font-weight:400;">min</span></div>
+          <div class="proposal-mm">= ${s.proposal_mm} mm</div>
+        </div>
+      ` : ''}
+    </div>`;
 }
 
 function switchZone(z) {
@@ -653,37 +509,60 @@ function switchZone(z) {
   renderContent();
 }
 
-function soilGaugeSVG(filledPct, statusState) {
+function soilGaugeSVG(filledPct, statusState, height = 160) {
   const band = { dry: COLORS.dry, threshold: COLORS.clay, moist: COLORS.moss, wet: COLORS.wet }[statusState];
+  const h = 172;
   let ticks = '';
-  for (const p of [0, 25, 50, 75, 100]) {
-    const y = 4 + (172 * p) / 100;
+  for (const p of [0, 50, 100]) {
+    const y = 4 + (h * p) / 100;
     ticks += `<line x1="6" y1="${y}" x2="12" y2="${y}" stroke="${COLORS.ink}" stroke-width="1"/>
-              <text x="2" y="${y + 3}" font-size="7" font-family="JetBrains Mono" text-anchor="end" fill="${COLORS.inkSoft}">${100 - p}</text>`;
+              <text x="2" y="${y+3}" font-size="7" font-family="JetBrains Mono" text-anchor="end" fill="${COLORS.inkSoft}">${100-p}</text>`;
   }
-  const fillY = 4 + (172 * (100 - filledPct)) / 100;
-  const fillH = (172 * filledPct) / 100;
-  return `
-    <svg viewBox="0 0 80 180" width="70" height="160">
-      <defs>
-        <pattern id="sandpat" patternUnits="userSpaceOnUse" width="6" height="6">
-          <circle cx="1" cy="1" r="0.5" fill="${COLORS.sand}"/>
-          <circle cx="4" cy="3" r="0.4" fill="${COLORS.sand}"/>
-          <circle cx="2" cy="5" r="0.3" fill="${COLORS.sand}"/>
-        </pattern>
-      </defs>
-      <rect x="12" y="4" width="56" height="172" fill="${COLORS.parchmentDeep}" stroke="${COLORS.ink}" stroke-width="1"/>
-      <rect x="12" y="4" width="56" height="172" fill="url(#sandpat)" opacity="0.5"/>
-      <rect x="12" y="${fillY}" width="56" height="${fillH}" fill="${band}" opacity="0.55"/>
-      ${ticks}
-      <ellipse cx="40" cy="4" rx="28" ry="3" fill="${COLORS.ink}" opacity="0.2"/>
-    </svg>`;
+  const fillY = 4 + (h * (100 - filledPct)) / 100;
+  const fillH = (h * filledPct) / 100;
+  const scale = height / 180;
+  return `<svg viewBox="0 0 80 180" width="${70 * scale}" height="${height}">
+    <defs><pattern id="sp${statusState}" patternUnits="userSpaceOnUse" width="6" height="6">
+      <circle cx="1" cy="1" r="0.5" fill="${COLORS.sand}"/>
+      <circle cx="4" cy="3" r="0.4" fill="${COLORS.sand}"/>
+    </pattern></defs>
+    <rect x="12" y="4" width="56" height="${h}" fill="${COLORS.parchmentDeep}" stroke="${COLORS.ink}" stroke-width="1"/>
+    <rect x="12" y="4" width="56" height="${h}" fill="url(#sp${statusState})" opacity="0.5"/>
+    <rect x="12" y="${fillY}" width="56" height="${fillH}" fill="${band}" opacity="0.55"/>
+    ${ticks}
+    <ellipse cx="40" cy="4" rx="28" ry="3" fill="${COLORS.ink}" opacity="0.2"/>
+  </svg>`;
+}
+
+// =======================================================================
+// MONTHLY BALANCE
+// =======================================================================
+function buildMonthlyBalance(days) {
+  const today = new Date().toISOString().slice(0, 10);
+  const map = {};
+  for (const d of days) {
+    if (d.date >= today) continue; // alleen historisch, niet vandaag/voorspelling
+    const ym = d.date.slice(0, 7); // "YYYY-MM"
+    if (!map[ym]) map[ym] = { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
+    map[ym].rain += d.precip || 0;
+    map[ym].irrigation += (d.lawn_irrigation || 0 + d.shrubs_irrigation || 0) / 2; // avg of both
+    map[ym].ETc_lawn += d.lawn_ETc || 0;
+    map[ym].ETc_shrubs += d.shrubs_ETc || 0;
+  }
+  // Sort chronologically
+  const sorted = Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]));
+  return sorted.map(([ym, v]) => ({
+    label: new Date(ym + "-15").toLocaleDateString("nl-NL", { month: "short", year: "2-digit" }),
+    rain: Math.round(v.rain * 10) / 10,
+    irrigation: Math.round(v.irrigation * 10) / 10,
+    ETc: Math.round(((v.ETc_lawn + v.ETc_shrubs) / 2) * 10) / 10,
+  }));
 }
 
 // =======================================================================
 // CHARTS
 // =======================================================================
-function baseAxisStyle() {
+function baseAxis() {
   return {
     ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } },
     grid: { color: "#2a241b18", drawBorder: false },
@@ -694,166 +573,111 @@ const dateLabel = d => d.date.slice(5);
 
 function drawMainChart(days, zone, FC, WP) {
   const labels = days.map(dateLabel);
-  const thetaData = days.map(d => d[`${zone}_theta`]);
-  const precipData = days.map(d => d.precip);
-  const irrigData = days.map(d => d[`${zone}_irrigation`] || 0);
-  const forecastStart = days.findIndex(d => d.forecast);
-  const histTheta = thetaData.map((v, i) => i < forecastStart ? v : null);
-  const foreTheta = thetaData.map((v, i) => i >= forecastStart - 1 ? v : null);
+  const theta = days.map(d => d[`${zone}_theta`]);
+  const precip = days.map(d => d.precip);
+  const irrig = days.map(d => d[`${zone}_irrigation`] || 0);
+  const fi = days.findIndex(d => d.forecast);
+  const histTheta = theta.map((v, i) => i < fi ? v : null);
+  const foreTheta = theta.map((v, i) => i >= fi - 1 ? v : null);
 
   state.charts.main?.destroy();
   const ctx = document.getElementById("main-chart").getContext("2d");
   state.charts.main = new Chart(ctx, {
     type: "bar",
-    data: {
-      labels,
-      datasets: [
-        {
-          type: "bar", label: "Regen (mm)",
-          data: precipData, yAxisID: "y1",
-          backgroundColor: COLORS.rain + "e0",
-          borderWidth: 0, barThickness: 10, order: 3, stack: "water",
-        },
-        {
-          type: "bar", label: "Irrigatie (mm)",
-          data: irrigData, yAxisID: "y1",
-          backgroundColor: COLORS.moss,
-          borderWidth: 0, barThickness: 10, order: 3, stack: "water",
-        },
-        {
-          type: "line", label: "Bodem θ · historie",
-          data: histTheta, yAxisID: "y",
-          borderColor: ZONE_COLORS[zone], borderWidth: 2.5,
-          backgroundColor: ZONE_COLORS[zone] + "40",
-          fill: { target: { value: WP } }, tension: 0.35,
-          pointRadius: 0, order: 1,
-        },
-        {
-          type: "line", label: "Bodem θ · voorspelling",
-          data: foreTheta, yAxisID: "y",
-          borderColor: ZONE_COLORS[zone], borderWidth: 2,
-          borderDash: [4, 4],
-          backgroundColor: ZONE_COLORS[zone] + "22",
-          fill: { target: { value: WP } }, tension: 0.35,
-          pointRadius: 0, order: 2,
-        },
-      ],
-    },
+    data: { labels, datasets: [
+      { type: "bar", label: "Regen (mm)", data: precip, yAxisID: "y1", backgroundColor: COLORS.rain + "e0", borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
+      { type: "bar", label: "Irrigatie (mm)", data: irrig, yAxisID: "y1", backgroundColor: COLORS.moss, borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
+      { type: "line", label: "θ · historisch", data: histTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2.5, backgroundColor: ZONE_COLORS[zone] + "40", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 1 },
+      { type: "line", label: "θ · voorspelling", data: foreTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2, borderDash: [4, 4], backgroundColor: ZONE_COLORS[zone] + "22", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 2 },
+    ]},
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: COLORS.parchment,
-          titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
           borderColor: COLORS.ink, borderWidth: 1,
           titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
-          bodyFont: { family: "JetBrains Mono", size: 11 },
-          padding: 10,
+          bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
           callbacks: {
-            title: (items) => {
-              const row = days[items[0].dataIndex];
-              return `${row.date}${row.forecast ? ' (voorspelling)' : ''}${row.hasWU ? ' · jouw station' : ''}`;
-            },
-            label: (ctx) => {
-              const row = days[ctx.dataIndex];
-              if (ctx.dataset.label.includes("Regen"))
-                return `Regen: ${row.precip.toFixed(1)} mm`;
-              if (ctx.dataset.label.includes("Irrigatie"))
-                return row[`${zone}_irrigation`] ? `💧 Irrigatie: ${row[`${zone}_irrigation`].toFixed(1)} mm` : null;
-              if (ctx.dataset.label.includes("Bodem"))
-                return `θ: ${row[`${zone}_theta`].toFixed(3)} · Dep: ${row[`${zone}_depletion`].toFixed(1)}% · ETc: ${row[`${zone}_ETc`].toFixed(2)} mm`;
+            title: items => { const r = days[items[0].dataIndex]; return `${r.date}${r.forecast ? ' (voorspelling)' : ''}${r.hasWU ? ' · jouw station' : ''}`; },
+            label: ctx => {
+              const r = days[ctx.dataIndex];
+              if (ctx.dataset.label.includes("Regen")) return `Regen: ${r.precip.toFixed(1)} mm`;
+              if (ctx.dataset.label.includes("Irrigatie")) return r[`${zone}_irrigation`] ? `💧 ${r[`${zone}_irrigation`].toFixed(1)} mm` : null;
+              if (ctx.dataset.label.includes("θ")) return `θ: ${r[`${zone}_theta`].toFixed(3)} · Dep: ${r[`${zone}_depletion`].toFixed(1)}% · ETc: ${r[`${zone}_ETc`].toFixed(2)} mm · Kc: ${r[`${zone}_Kc`]?.toFixed(2)}`;
               return null;
             },
           },
         },
-        annotation: {
-          annotations: {
-            fc: {
-              type: "line", yMin: FC, yMax: FC, yScaleID: "y",
-              borderColor: COLORS.moss, borderWidth: 1, borderDash: [3, 3],
-              label: { content: "Veldcapaciteit", display: true, position: "end",
-                font: { family: "JetBrains Mono", size: 9 },
-                color: COLORS.moss, backgroundColor: "transparent" },
-            },
-            mad: {
-              type: "line",
-              yMin: WP + (FC - WP) * 0.5, yMax: WP + (FC - WP) * 0.5, yScaleID: "y",
-              borderColor: COLORS.clay, borderWidth: 1, borderDash: [4, 4],
-              label: { content: "Stress (MAD 50%)", display: true, position: "end",
-                font: { family: "JetBrains Mono", size: 9 },
-                color: COLORS.clay, backgroundColor: "transparent" },
-            },
-            wp: {
-              type: "line", yMin: WP, yMax: WP, yScaleID: "y",
-              borderColor: COLORS.dry, borderWidth: 1, borderDash: [2, 6],
-              label: { content: "Verwelkingspunt", display: true, position: "end",
-                font: { family: "JetBrains Mono", size: 9 },
-                color: COLORS.dry, backgroundColor: "transparent" },
-            },
-            ...(forecastStart >= 0 ? {
-              fc_divider: {
-                type: "line",
-                xMin: forecastStart - 0.5, xMax: forecastStart - 0.5,
-                borderColor: COLORS.ink, borderWidth: 1, borderDash: [2, 4],
-                label: { content: "↓ voorspelling", display: true, position: "start",
-                  font: { family: "JetBrains Mono", size: 9 },
-                  color: COLORS.ink, backgroundColor: "transparent" },
-              }
-            } : {}),
-          },
-        },
+        annotation: { annotations: {
+          fc: { type: "line", yMin: FC, yMax: FC, yScaleID: "y", borderColor: COLORS.moss, borderWidth: 1, borderDash: [3,3], label: { content: "Veldcapaciteit", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.moss, backgroundColor: "transparent" } },
+          mad: { type: "line", yMin: WP + (FC-WP)*0.5, yMax: WP + (FC-WP)*0.5, yScaleID: "y", borderColor: COLORS.clay, borderWidth: 1, borderDash: [4,4], label: { content: "Stress (MAD 50%)", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay, backgroundColor: "transparent" } },
+          wp: { type: "line", yMin: WP, yMax: WP, yScaleID: "y", borderColor: COLORS.dry, borderWidth: 1, borderDash: [2,6], label: { content: "Verwelkingspunt", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } },
+          ...(fi >= 0 ? { fcdiv: { type: "line", xMin: fi - 0.5, xMax: fi - 0.5, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4], label: { content: "↓ voorspelling", display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink, backgroundColor: "transparent" } } } : {}),
+        }},
       },
       scales: {
-        x: { ...baseAxisStyle(), stacked: true },
-        y: {
-          ...baseAxisStyle(),
-          position: "left",
-          min: WP - 0.01, max: FC + 0.02,
-          title: { display: true, text: "θ (v/v)",
-            font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft },
-          ticks: { ...baseAxisStyle().ticks, callback: v => v.toFixed(2) },
-        },
-        y1: {
-          ...baseAxisStyle(),
-          position: "right",
-          beginAtZero: true, stacked: true,
-          grid: { display: false },
-          title: { display: true, text: "mm",
-            font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft },
-        },
+        x: { ...baseAxis(), stacked: true },
+        y: { ...baseAxis(), position: "left", min: WP - 0.01, max: FC + 0.02, title: { display: true, text: "θ (v/v)", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft }, ticks: { ...baseAxis().ticks, callback: v => v.toFixed(2) } },
+        y1: { ...baseAxis(), position: "right", beginAtZero: true, stacked: true, grid: { display: false }, title: { display: true, text: "mm", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
       },
     },
   });
 }
 
 function drawBudgetChart(days, zone) {
-  const labels = days.map(dateLabel);
   state.charts.budget?.destroy();
   const ctx = document.getElementById("budget-chart").getContext("2d");
   state.charts.budget = new Chart(ctx, {
     type: "bar",
+    data: { labels: days.map(dateLabel), datasets: [
+      { type: "bar", label: "Regen (mm)", data: days.map(d => d.precip), backgroundColor: COLORS.rain, barThickness: 7, order: 3 },
+      { type: "line", label: `ETc · ${ZONE_LABELS[zone]}`, data: days.map(d => d[`${zone}_ETc`]), borderColor: COLORS.clay, borderWidth: 2, pointRadius: 0, tension: 0.3, order: 1 },
+      { type: "line", label: "ET₀", data: days.map(d => d.ET0), borderColor: COLORS.sun, borderWidth: 1.5, borderDash: [3,3], pointRadius: 0, tension: 0.3, order: 2 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink, borderColor: COLORS.ink, borderWidth: 1, titleFont: { family: "JetBrains Mono", weight: 600 }, bodyFont: { family: "JetBrains Mono" } } },
+      scales: { x: baseAxis(), y: { ...baseAxis(), beginAtZero: true } },
+    },
+  });
+}
+
+function drawDepletionChart(days, zone) {
+  state.charts.depletion?.destroy();
+  const ctx = document.getElementById("depletion-chart").getContext("2d");
+  state.charts.depletion = new Chart(ctx, {
+    type: "line",
+    data: { labels: days.map(dateLabel), datasets: [{ label: "Depletion (%)", data: days.map(d => d[`${zone}_depletion`]), borderColor: COLORS.clay, borderWidth: 2, backgroundColor: COLORS.clay + "33", fill: true, tension: 0.35, pointRadius: 0 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink, borderColor: COLORS.ink, borderWidth: 1, titleFont: { family: "JetBrains Mono", weight: 600 }, bodyFont: { family: "JetBrains Mono" }, callbacks: { label: ctx => `Depletion: ${ctx.parsed.y.toFixed(1)}%` } },
+        annotation: { annotations: {
+          mad: { type: "line", yMin: 50, yMax: 50, borderColor: COLORS.clay, borderWidth: 1, borderDash: [4,4], label: { content: "MAD 50%", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay, backgroundColor: "transparent" } },
+          wp: { type: "line", yMin: 100, yMax: 100, borderColor: COLORS.dry, borderWidth: 1, borderDash: [2,6], label: { content: "Verwelkingspunt", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } },
+        }},
+      },
+      scales: { x: baseAxis(), y: { ...baseAxis(), min: 0, max: 100, ticks: { ...baseAxis().ticks, callback: v => v + "%" } } },
+    },
+  });
+}
+
+function drawMonthlyChart(monthly) {
+  state.charts.monthly?.destroy();
+  const ctx = document.getElementById("monthly-chart").getContext("2d");
+  state.charts.monthly = new Chart(ctx, {
+    type: "bar",
     data: {
-      labels,
+      labels: monthly.map(m => m.label),
       datasets: [
-        {
-          type: "bar", label: "Regen (mm)",
-          data: days.map(d => d.precip),
-          backgroundColor: COLORS.rain, barThickness: 8, order: 3,
-        },
-        {
-          type: "line", label: `ETc · ${zone}`,
-          data: days.map(d => d[`${zone}_ETc`]),
-          borderColor: COLORS.clay, borderWidth: 2,
-          pointRadius: 0, tension: 0.3, order: 1,
-        },
-        {
-          type: "line", label: "ET₀",
-          data: days.map(d => d.ET0),
-          borderColor: COLORS.sun, borderWidth: 1.5,
-          borderDash: [3, 3], pointRadius: 0, tension: 0.3, order: 2,
-        },
+        { label: "Regen (mm)", data: monthly.map(m => m.rain), backgroundColor: COLORS.rain, stack: "input", order: 1 },
+        { label: "Irrigatie (mm)", data: monthly.map(m => m.irrigation), backgroundColor: COLORS.moss, stack: "input", order: 1 },
+        { label: "ETc gemiddeld (mm)", data: monthly.map(m => m.ETc), backgroundColor: COLORS.clay + "66", borderColor: COLORS.clay, borderWidth: 1.5, stack: "output", order: 2 },
       ],
     },
     options: {
@@ -862,92 +686,50 @@ function drawBudgetChart(days, zone) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: COLORS.parchment,
-          titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
           borderColor: COLORS.ink, borderWidth: 1,
           titleFont: { family: "JetBrains Mono", weight: 600 },
           bodyFont: { family: "JetBrains Mono" },
-        },
-      },
-      scales: { x: baseAxisStyle(), y: { ...baseAxisStyle(), beginAtZero: true } },
-    },
-  });
-}
-
-function drawDepletionChart(days, zone) {
-  const labels = days.map(dateLabel);
-  state.charts.depletion?.destroy();
-  const ctx = document.getElementById("depletion-chart").getContext("2d");
-  state.charts.depletion = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [{
-        label: "Depletion (%)",
-        data: days.map(d => d[`${zone}_depletion`]),
-        borderColor: COLORS.clay, borderWidth: 2,
-        backgroundColor: COLORS.clay + "33",
-        fill: true, tension: 0.35, pointRadius: 0,
-      }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: COLORS.parchment,
-          titleColor: COLORS.ink, bodyColor: COLORS.ink,
-          borderColor: COLORS.ink, borderWidth: 1,
-          titleFont: { family: "JetBrains Mono", weight: 600 },
-          bodyFont: { family: "JetBrains Mono" },
-          callbacks: { label: (ctx) => `Depletion: ${ctx.parsed.y.toFixed(1)}%` },
-        },
-        annotation: {
-          annotations: {
-            mad: {
-              type: "line", yMin: 50, yMax: 50,
-              borderColor: COLORS.clay, borderWidth: 1, borderDash: [4, 4],
-              label: { content: "MAD 50%", display: true, position: "end",
-                font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay,
-                backgroundColor: "transparent" },
-            },
-            wp: {
-              type: "line", yMin: 100, yMax: 100,
-              borderColor: COLORS.dry, borderWidth: 1, borderDash: [2, 6],
-              label: { content: "Verwelkingspunt", display: true, position: "end",
-                font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry,
-                backgroundColor: "transparent" },
+          callbacks: {
+            afterBody: items => {
+              const m = monthly[items[0].dataIndex];
+              const input = m.rain + m.irrigation;
+              const diff = input - m.ETc;
+              return [`─────────────────`, `Balans: ${diff >= 0 ? '+' : ''}${diff.toFixed(1)} mm ${diff >= 0 ? '(overschot)' : '(tekort)'}`];
             },
           },
         },
       },
       scales: {
-        x: baseAxisStyle(),
-        y: {
-          ...baseAxisStyle(), min: 0, max: 100,
-          ticks: { ...baseAxisStyle().ticks, callback: v => v + "%" },
-        },
+        x: baseAxis(),
+        y: { ...baseAxis(), beginAtZero: true, title: { display: true, text: "mm", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
       },
     },
   });
 }
 
 // =======================================================================
-// WATER MODAL
+// MODAL
 // =======================================================================
+function setMin(zone, val) {
+  document.getElementById(`water-min-${zone}`).value = val;
+  updateMmPreview();
+}
+
+function updateMmPreview() {
+  for (const zone of ["lawn", "shrubs"]) {
+    const min = parseFloat(document.getElementById(`water-min-${zone}`).value) || 0;
+    const mm = Math.round(min * RATES[zone] * 10) / 10;
+    const el = document.getElementById(`preview-${zone}`);
+    el.textContent = min > 0 ? `= ${mm} mm` : "—";
+  }
+}
+
 function openWaterModal() {
-  // Check of creds bekend zijn
   if (!CONFIG.gistId || CONFIG.gistId === "__GIST_ID__" || !CONFIG.githubToken) {
-    const gid = prompt(
-      "Eerste keer opzetten. Plak je Gist ID (staat in de URL van je gist):\n\n" +
-      "Voorbeeld: gist.github.com/username/a1b2c3d4 → plak 'a1b2c3d4'"
-    );
+    const gid = prompt("Eerste keer: plak je Gist ID (uit de URL van je gist):");
     if (!gid) return;
-    const token = prompt(
-      "Plak nu je GitHub Personal Access Token (met 'gist' scope).\n\n" +
-      "Maak er een op: github.com/settings/tokens?type=beta\n\n" +
-      "Wordt alleen in jouw browser bewaard."
-    );
+    const token = prompt("Plak je GitHub Personal Access Token (met 'gist' scope):");
     if (!token) return;
     localStorage.setItem("gist_id", gid);
     localStorage.setItem("gh_token", token);
@@ -957,6 +739,7 @@ function openWaterModal() {
   document.getElementById("water-modal").classList.add("open");
   updateWaterLog();
 }
+
 function closeWaterModal() {
   document.getElementById("water-modal").classList.remove("open");
   document.getElementById("water-status").textContent = "";
@@ -964,39 +747,43 @@ function closeWaterModal() {
 
 async function saveIrrigation() {
   const date = document.getElementById("water-date").value;
-  const amt = parseFloat(document.getElementById("water-amount").value);
-  const zone = document.querySelector("#water-zone-select .zone-chip.active").dataset.zone;
+  const minLawn = parseFloat(document.getElementById("water-min-lawn").value) || 0;
+  const minShrubs = parseFloat(document.getElementById("water-min-shrubs").value) || 0;
   const status = document.getElementById("water-status");
 
-  if (!date || !amt || amt <= 0) {
-    status.textContent = "⚠ Vul datum en geldige hoeveelheid in.";
-    status.style.color = "var(--dry)";
-    return;
+  if (!date || (minLawn === 0 && minShrubs === 0)) {
+    status.textContent = "⚠ Vul datum en minimaal één hoeveelheid in.";
+    status.style.color = "var(--dry)"; return;
   }
 
-  // Voor "both" reken de helft per zone; anders heel bedrag
-  // (Let op: het huidige model gebruikt één irrigations dict voor beide zones
-  //  dus we registreren gewoon de totale mm; zone is info voor jezelf)
-  const irrigations = await fetchGistIrrigations();
-  irrigations[date] = (irrigations[date] || 0) + amt;
+  const mmLawn = Math.round(minLawn * RATES.lawn * 10) / 10;
+  const mmShrubs = Math.round(minShrubs * RATES.shrubs * 10) / 10;
 
-  // Save zone info in separate "_meta" key
+  const irrigations = await fetchGistIrrigations();
+  // Sla per zone op — model gebruikt het gemiddelde als totaal
+  if (mmLawn > 0) irrigations[`${date}_lawn`] = (irrigations[`${date}_lawn`] || 0) + mmLawn;
+  if (mmShrubs > 0) irrigations[`${date}_shrubs`] = (irrigations[`${date}_shrubs`] || 0) + mmShrubs;
+  // Ook gecombineerde datum key voor het model (gemiddelde voor de water balance)
+  const combined = (mmLawn + mmShrubs) / (mmLawn > 0 && mmShrubs > 0 ? 2 : 1);
+  irrigations[date] = (irrigations[date] || 0) + combined;
+
+  // Sla metadata op
   const meta = irrigations._meta || {};
-  meta[date] = { zone, amt };
+  meta[date] = { minLawn, mmLawn, minShrubs, mmShrubs };
   irrigations._meta = meta;
 
   status.innerHTML = '<span class="pulse">⋯ opslaan…</span>';
   status.style.color = "var(--ink-soft)";
   try {
     await saveGistIrrigations(irrigations);
-    status.innerHTML = "✓ Opgeslagen! Het dagelijkse check-script rekent het mee bij de volgende run.";
-    setTimeout(() => closeWaterModal(), 1500);
+    status.innerHTML = `✓ Opgeslagen! Gras: ${minLawn}min (${mmLawn}mm) · Struiken: ${minShrubs}min (${mmShrubs}mm)`;
     status.style.color = "var(--moss)";
     state.irrigations = irrigations;
     updateWaterLog();
-    document.getElementById("water-amount").value = "";
-
-    // Trigger GitHub Action zodat dashboard meteen bijgewerkt wordt
+    document.getElementById("water-min-lawn").value = "";
+    document.getElementById("water-min-shrubs").value = "";
+    updateMmPreview();
+    setTimeout(() => closeWaterModal(), 2000);
     await triggerWorkflow();
   } catch (e) {
     status.textContent = "✗ Fout: " + e.message;
@@ -1005,69 +792,54 @@ async function saveIrrigation() {
 }
 
 async function fetchGistIrrigations() {
-  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, {
-    headers: { Authorization: `token ${CONFIG.githubToken}` },
-  });
+  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, { headers: { Authorization: `token ${CONFIG.githubToken}` } });
   if (!r.ok) throw new Error(`Gist fetch: HTTP ${r.status}`);
   const j = await r.json();
-  const content = j.files?.["irrigations.json"]?.content || "{}";
-  return JSON.parse(content);
+  return JSON.parse(j.files?.["irrigations.json"]?.content || "{}");
 }
 
 async function saveGistIrrigations(data) {
   const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, {
     method: "PATCH",
-    headers: {
-      Authorization: `token ${CONFIG.githubToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      files: { "irrigations.json": { content: JSON.stringify(data, null, 2) } },
-    }),
+    headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ files: { "irrigations.json": { content: JSON.stringify(data, null, 2) } } }),
   });
   if (!r.ok) throw new Error(`Gist save: HTTP ${r.status}`);
 }
 
 async function triggerWorkflow() {
-  // Haal repo uit de huidige URL (github.io pages)
-  const host = location.host;  // bijv. "username.github.io"
-  const path = location.pathname.split('/').filter(Boolean);  // ["repo"]
+  const host = location.host;
+  const path = location.pathname.split('/').filter(Boolean);
   if (!host.endsWith('.github.io') || path.length === 0) return;
   const user = host.split('.')[0];
   const repo = path[0];
   try {
     await fetch(`https://api.github.com/repos/${user}/${repo}/actions/workflows/daily-check.yml/dispatches`, {
       method: "POST",
-      headers: {
-        Authorization: `token ${CONFIG.githubToken}`,
-        "Content-Type": "application/json",
-        Accept: "application/vnd.github+json",
-      },
+      headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json", Accept: "application/vnd.github+json" },
       body: JSON.stringify({ ref: "main" }),
     });
-  } catch (e) {
-    console.warn("Couldn't trigger workflow:", e);
-  }
+  } catch (e) { console.warn("Workflow trigger failed:", e); }
 }
 
 function updateWaterLog() {
   const log = document.getElementById("water-log");
   if (!log) return;
   const irr = state.irrigations || {};
-  const entries = Object.entries(irr)
-    .filter(([k]) => k !== "_meta")
-    .sort((a, b) => b[0].localeCompare(a[0]))
-    .slice(0, 10);
+  const meta = irr._meta || {};
+  const entries = Object.keys(meta).sort((a, b) => b.localeCompare(a)).slice(0, 8);
   if (entries.length === 0) {
-    log.innerHTML = '<div style="color:var(--ink-soft);font-style:italic;padding:8px 0;">Geen ingevoerd.</div>';
+    log.innerHTML = '<div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Geen ingevoerd.</div>';
     return;
   }
-  log.innerHTML = entries.map(([date, mm]) => {
-    const meta = (irr._meta || {})[date] || {};
-    const zone = meta.zone === "lawn" ? "Gras" : meta.zone === "shrubs" ? "Struiken" : meta.zone === "both" ? "Beide" : "";
+  log.innerHTML = entries.map(date => {
+    const m = meta[date];
+    const parts = [];
+    if (m.minLawn > 0) parts.push(`Gras ${m.minLawn}min (${m.mmLawn}mm)`);
+    if (m.minShrubs > 0) parts.push(`Struiken ${m.minShrubs}min (${m.mmShrubs}mm)`);
     return `<div class="log-entry">
-      <span>${date} ${zone ? `· ${zone}` : ''}</span>
-      <span><b>${mm.toFixed(1)} mm</b> <span class="rm" onclick="removeIrrigation('${date}')">×</span></span>
+      <span>${date} · ${parts.join(' · ')}</span>
+      <span class="rm" onclick="removeIrrigation('${date}')">×</span>
     </div>`;
   }).join('');
 }
@@ -1076,6 +848,8 @@ async function removeIrrigation(date) {
   if (!confirm(`Irrigatie van ${date} verwijderen?`)) return;
   const irr = await fetchGistIrrigations();
   delete irr[date];
+  delete irr[`${date}_lawn`];
+  delete irr[`${date}_shrubs`];
   if (irr._meta) delete irr._meta[date];
   await saveGistIrrigations(irr);
   state.irrigations = irr;
@@ -1083,7 +857,6 @@ async function removeIrrigation(date) {
   triggerWorkflow();
 }
 
-// Kick off
 loadData();
 </script>
 </body>

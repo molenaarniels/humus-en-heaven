@@ -3,61 +3,46 @@
 sandbox_notify.py — Zandbak notificaties via Telegram
 Losse module naast het bestaande Humus & Heaven systeem.
 
-Logica:
-- Ochtend (07:00): stuur bericht als luchten de moeite waard is
-- Avond (20:00): stuur bericht op basis van huidige status + neerslagverwachting
-
 Status-waarden:
   "open"      — zandbak is gelucht/open
-  "dicht"     — zandbak is dicht (tegen katten), maar niet afgedekt
-  "afgedekt"  — zandbak is afgedekt met dekzeil (tegen regen)
+  "dicht"     — zandbak is dicht (tegen katten), droog verwacht, morgen weer open
+  "afgedekt"  — zandbak is afgedekt met dekzeil (regen verwacht)
 
-Beslislogica ochtend:
-  - Geen bericht als status == "afgedekt" EN regen verwacht
-  - Bericht "luchten!" als regen_kans < drempel (bijv. < 30%) EN min_temp > 5
-  - Geen bericht als slecht weer verwacht (te veel regen kans)
+Avondlogica:
+  - Regen verwacht (morgen of later) → altijd AFDEKKEN
+  - Alleen droog verwacht → SLUITEN (dicht), morgen ochtend bericht om te luchten
+  - Afgedekt + regen → geen bericht
 
-Beslislogica avond:
-  - Status "open": bericht als regen verwacht → "afdekken" of "sluiten"
-  - Status "dicht": bericht als regen verwacht → "afdekken"
-  - Status "afgedekt" EN regen verwacht: geen bericht
-  - Status "afgedekt" EN geen regen (komende dagen): bericht "kan morgen gelucht"
+Ochtendlogica:
+  - Droog + warm → bericht om te luchten (zowel vanuit "dicht" als "afgedekt")
+  - Al open + droog → geen bericht
+  - Open + regen vandaag → waarschuw
 
-Regen-drempel: precipitatie_kans >= RAIN_PROB_THRESHOLD (%) of totaal >= RAIN_MM_THRESHOLD
-
-Afdek-advies avond: afdekken als regen verwacht komende nacht/ochtend
-                    sluiten (dicht) als alleen kattenbescherming nodig
+State wordt automatisch bijgewerkt na elk advies.
 """
 
 import json
 import os
 import sys
 import requests
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, timezone
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
 
-# Utrecht locatie
 LATITUDE  = 52.0907
 LONGITUDE = 5.1214
 
-# Drempels
-RAIN_PROB_THRESHOLD = 30   # % kans op neerslag → beschouwen als "regen verwacht"
-RAIN_MM_THRESHOLD   = 1.0  # mm totaal neerslag die dag → ook telt als "regen"
-MIN_TEMP_LUCHTEN    = 7    # °C minimumtemperatuur om luchten zinvol te achten
+RAIN_PROB_THRESHOLD = 30   # % kans → "regen verwacht"
+RAIN_MM_THRESHOLD   = 1.0  # mm → ook "regen verwacht"
+MIN_TEMP_LUCHTEN    = 7    # °C tmax minimaal nodig om luchten zinvol te achten
 
 # ── State I/O ────────────────────────────────────────────────────────────────
 
 def load_state() -> dict:
-    """Laad zandbak-status uit JSON bestand."""
-    defaults = {
-        "status": "dicht",          # open | dicht | afgedekt
-        "last_updated": None,
-        "last_notification": None,
-    }
+    defaults = {"status": "dicht", "last_updated": None, "last_notification": None}
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             data = json.load(f)
@@ -66,32 +51,27 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Sla zandbak-status op naar JSON bestand."""
     state["last_updated"] = datetime.now(timezone.utc).isoformat()
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
-    print(f"[state] Opgeslagen: {state}")
+    print(f"[state] Opgeslagen: status={state['status']}")
 
 
 # ── Weersdata (Open-Meteo) ────────────────────────────────────────────────────
 
 def fetch_forecast() -> list[dict]:
-    """
-    Haal 3-daagse forecast op via Open-Meteo (geen API key nodig).
-    Geeft lijst van dicts met: date, precip_mm, precip_prob_max, tmin, tmax
-    """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
-        "latitude":           LATITUDE,
-        "longitude":          LONGITUDE,
-        "daily":              [
+        "latitude":      LATITUDE,
+        "longitude":     LONGITUDE,
+        "daily": [
             "precipitation_sum",
             "precipitation_probability_max",
             "temperature_2m_min",
             "temperature_2m_max",
         ],
-        "forecast_days":      4,
-        "timezone":           "Europe/Amsterdam",
+        "forecast_days": 4,
+        "timezone":      "Europe/Amsterdam",
     }
     resp = requests.get(url, params=params, timeout=10)
     resp.raise_for_status()
@@ -110,7 +90,6 @@ def fetch_forecast() -> list[dict]:
 
 
 def is_rain_expected(day: dict) -> bool:
-    """Geeft True als er significante regen verwacht wordt op die dag."""
     return (
         day["precip_prob_max"] >= RAIN_PROB_THRESHOLD
         or day["precip_mm"] >= RAIN_MM_THRESHOLD
@@ -118,10 +97,6 @@ def is_rain_expected(day: dict) -> bool:
 
 
 def first_dry_day(forecast: list[dict], from_index: int = 1) -> str | None:
-    """
-    Zoek eerste droge dag na vandaag.
-    Geeft de datum terug als string, of None als geen droge dag in forecast.
-    """
     for day in forecast[from_index:]:
         if not is_rain_expected(day):
             return day["date"]
@@ -131,13 +106,8 @@ def first_dry_day(forecast: list[dict], from_index: int = 1) -> str | None:
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
 def send_telegram(message: str) -> bool:
-    """Verstuur bericht via Telegram Bot API."""
     url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       message,
-        "parse_mode": "HTML",
-    }
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     resp = requests.post(url, data=data, timeout=10)
     if resp.ok:
         print(f"[telegram] Verzonden: {message[:80]}...")
@@ -150,11 +120,8 @@ def send_telegram(message: str) -> bool:
 # ── Ochtendlogica (07:00) ─────────────────────────────────────────────────────
 
 def morning_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
-    """
-    Bepaal ochtendmelding. Geeft (bericht | None, nieuwe_state).
-    """
-    today   = forecast[0]
-    status  = state["status"]
+    today  = forecast[0]
+    status = state["status"]
     regen_vandaag = is_rain_expected(today)
     warm_genoeg   = today["tmax"] >= MIN_TEMP_LUCHTEN
 
@@ -162,41 +129,47 @@ def morning_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
           f"precip_kans={today['precip_prob_max']}% precip_mm={today['precip_mm']:.1f} "
           f"tmax={today['tmax']}°C")
 
-    # Afgedekt + regen → niks doen, alles klopt
+    # Al open + droog → niks te doen
+    if status == "open" and not regen_vandaag:
+        print("[ochtend] Al open en droog → geen bericht")
+        return None, state
+
+    # Afgedekt + regen vandaag → alles klopt, geen actie
     if status == "afgedekt" and regen_vandaag:
         print("[ochtend] Afgedekt + regen → geen bericht")
         return None, state
 
-    # Luchten is de moeite waard
+    # Droog + warm genoeg → luchten (vanuit dicht of afgedekt)
     if not regen_vandaag and warm_genoeg:
         if status == "afgedekt":
             msg = (
                 "🏖️ <b>Zandbak kan vandaag gelucht worden!</b>\n"
                 f"Droog ({today['precip_prob_max']}% kans, {today['precip_mm']:.0f}mm) "
                 f"en {today['tmax']:.0f}°C. Dekzeil eraf!\n"
-                "→ Vergeet niet vanavond te checken of hij dicht moet."
+                "→ Vergeet vanavond niet te checken of hij dicht moet."
             )
-        elif status == "dicht":
+        else:  # dicht
             msg = (
                 "☀️ <b>Zandbak kan gelucht worden vandaag!</b>\n"
                 f"Geen regen verwacht ({today['precip_prob_max']}% kans) "
                 f"en {today['tmax']:.0f}°C.\n"
                 "→ Deksel eraf, laat hem lekker luchten."
             )
-        else:
-            # Al open → geen bericht nodig
-            print("[ochtend] Al open, geen bericht")
-            return None, state
-        return msg, state
+        return msg, {**state, "status": "open"}
 
-    # Regen verwacht maar zandbak staat open → attentie
-    if regen_vandaag and status == "open":
+    # Open + regen vandaag → waarschuw
+    if status == "open" and regen_vandaag:
         msg = (
             "🌧️ <b>Regen verwacht vandaag — zandbak staat open!</b>\n"
             f"{today['precip_prob_max']}% kans, {today['precip_mm']:.0f}mm verwacht.\n"
-            "→ Afdekken of sluiten?"
+            "→ Afdekken!"
         )
         return msg, state
+
+    # Afgedekt + droog maar te koud → geen bericht
+    if status == "afgedekt" and not regen_vandaag and not warm_genoeg:
+        print(f"[ochtend] Afgedekt + droog maar te koud ({today['tmax']}°C) → geen bericht")
+        return None, state
 
     print("[ochtend] Geen actie nodig")
     return None, state
@@ -205,95 +178,79 @@ def morning_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 # ── Avondlogica (20:00) ───────────────────────────────────────────────────────
 
 def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
-    """
-    Bepaal avondmelding. Geeft (bericht | None, nieuwe_state).
-    Kijkt naar morgen + overmorgen voor neerslag.
-    """
-    morgen       = forecast[1] if len(forecast) > 1 else None
-    overmorgen   = forecast[2] if len(forecast) > 2 else None
-    status       = state["status"]
+    morgen     = forecast[1] if len(forecast) > 1 else None
+    overmorgen = forecast[2] if len(forecast) > 2 else None
+    status     = state["status"]
 
-    regen_morgen      = is_rain_expected(morgen) if morgen else False
-    regen_overmorgen  = is_rain_expected(overmorgen) if overmorgen else False
-    regen_nabij       = regen_morgen  # primaire trigger is morgen
+    regen_morgen     = is_rain_expected(morgen) if morgen else False
+    regen_overmorgen = is_rain_expected(overmorgen) if overmorgen else False
+    regen_nabij      = regen_morgen or regen_overmorgen  # enige regen → afdekken
 
     print(f"[avond] status={status} regen_morgen={regen_morgen} "
           f"({morgen['precip_prob_max'] if morgen else '-'}%) "
-          f"regen_overmorgen={regen_overmorgen}")
+          f"regen_overmorgen={regen_overmorgen} regen_nabij={regen_nabij}")
 
-    # ── Zandbak staat open ──
+    # ── Open ──
     if status == "open":
         if regen_nabij:
-            # Langere regenperiode? Dan afdekken. Anders sluiten (makkelijker morgen open)
-            if regen_overmorgen:
-                droge_dag = first_dry_day(forecast, from_index=1)
-                droge_str = (
-                    f"Eerste droge dag: {_format_date(droge_dag)}"
-                    if droge_dag else "Geen droge dag in zicht"
-                )
-                msg = (
-                    "🌧️ <b>Zandbak afdekken vanavond!</b>\n"
-                    f"Morgen {morgen['precip_prob_max']}% regen "
-                    f"({morgen['precip_mm']:.0f}mm), en ook overmorgen neerslag.\n"
-                    f"{droge_str}.\n"
-                    "→ Dekzeil erop."
-                )
-            else:
-                msg = (
-                    "🌦️ <b>Zandbak sluiten vanavond</b>\n"
-                    f"Morgen {morgen['precip_prob_max']}% kans op regen, "
-                    f"maar overmorgen is het droog.\n"
-                    "→ Deksel erop (makkelijk morgenochtend weer open)."
-                )
+            droge_dag = first_dry_day(forecast, from_index=1)
+            droge_str = f"Eerste droge dag: {_format_date(droge_dag)}" if droge_dag else "Geen droge dag in zicht"
+            regen_desc = (
+                f"Morgen {morgen['precip_prob_max']}% regen ({morgen['precip_mm']:.0f}mm)"
+                + (", en ook overmorgen." if regen_overmorgen else ".")
+            )
+            msg = (
+                f"🌧️ <b>Zandbak afdekken vanavond!</b>\n"
+                f"{regen_desc}\n"
+                f"{droge_str}.\n"
+                "→ Dekzeil erop."
+            )
+            return msg, {**state, "status": "afgedekt"}
         else:
-            # Droog → herinner om te sluiten tegen katten
+            # Droog → sluiten tegen katten; morgenochtend krijg je bericht om te openen
             msg = (
                 "🐱 <b>Zandbak sluiten tegen de katten</b>\n"
-                "Morgen droog, dus morgen gewoon weer openzetten.\n"
+                "Morgen droog, je krijgt morgenochtend een berichtje om hem te openen.\n"
                 "→ Deksel erop voor de nacht."
             )
-        return msg, state
+            return msg, {**state, "status": "dicht"}
 
-    # ── Zandbak staat dicht (niet afgedekt) ──
+    # ── Dicht ──
     if status == "dicht":
         if regen_nabij:
-            if regen_overmorgen:
-                droge_dag = first_dry_day(forecast, from_index=1)
-                droge_str = (
-                    f"Eerste droge dag: {_format_date(droge_dag)}"
-                    if droge_dag else "Geen droge dag in zicht"
-                )
-                msg = (
-                    "⚠️ <b>Zandbak afdekken!</b>\n"
-                    f"Morgen {morgen['precip_prob_max']}% regen ({morgen['precip_mm']:.0f}mm) "
-                    f"én overmorgen. Deksel alleen is niet genoeg.\n"
-                    f"{droge_str}.\n"
-                    "→ Dekzeil erop."
-                )
-            else:
-                # Één regendag, daarna droog → deksel is voldoende als hij al dicht is
-                print("[avond] Dicht + alleen morgen regen → deksel voldoende, geen bericht")
-                return None, state
+            droge_dag = first_dry_day(forecast, from_index=1)
+            droge_str = f"Eerste droge dag: {_format_date(droge_dag)}" if droge_dag else "Geen droge dag in zicht"
+            regen_desc = (
+                f"Morgen {morgen['precip_prob_max']}% regen ({morgen['precip_mm']:.0f}mm)"
+                + (", en ook overmorgen." if regen_overmorgen else ".")
+            )
+            msg = (
+                f"⚠️ <b>Zandbak afdekken!</b>\n"
+                f"{regen_desc} Deksel alleen is niet genoeg.\n"
+                f"{droge_str}.\n"
+                "→ Dekzeil erop."
+            )
+            return msg, {**state, "status": "afgedekt"}
         else:
-            # Droog → geen bericht nodig
-            print("[avond] Dicht + droog → geen bericht")
+            # Droog, al dicht → geen actie (morgen ochtend triggert luchten)
+            print("[avond] Dicht + droog → geen bericht, ochtend triggert luchten")
             return None, state
-        return msg, state
 
-    # ── Zandbak is afgedekt ──
+    # ── Afgedekt ──
     if status == "afgedekt":
         if regen_nabij:
-            # Alles is goed, geen actie
+            # Alles klopt
             print("[avond] Afgedekt + regen → geen bericht")
             return None, state
         else:
-            # Droog morgen → meld dat het morgen gelucht kan worden
+            # Droog morgen → aankondiging, ochtendrun stuurt het echte bericht
             msg = (
-                "🌤️ <b>Zandbak kan morgen gelucht worden!</b>\n"
+                "🌤️ <b>Morgen kan de zandbak gelucht worden!</b>\n"
                 f"Morgen droog ({morgen['precip_prob_max'] if morgen else '?'}% kans) "
                 f"en {morgen['tmax'] if morgen else '?'}°C.\n"
-                "→ Dekzeil eraf morgenochtend."
+                "→ Je krijgt morgenochtend een berichtje."
             )
+            # State blijft "afgedekt" — ochtendrun zet hem op open na het bericht
             return msg, state
 
     print(f"[avond] Onbekende status '{status}', geen actie")
@@ -303,7 +260,6 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 # ── Hulpfuncties ──────────────────────────────────────────────────────────────
 
 def _format_date(d: str | None) -> str:
-    """Formateer YYYY-MM-DD naar bijv. 'vrijdag 25 apr'."""
     if not d:
         return "onbekend"
     dt = datetime.strptime(d, "%Y-%m-%d")

@@ -196,12 +196,14 @@ def main():
     force = os.getenv("FORCE_NOTIFY", "").lower() in ("1", "true", "yes")
 
     print(f"→ Irrigaties laden uit Gist...")
-    irrigations = load_irrigations_from_gist()
-    irrigations = {k: v for k, v in irrigations.items() if not k.startswith("_")}
+    irrigations_raw = load_irrigations_from_gist()
+    # _meta en zone-specifieke keys (_lawn/_shrubs) eruit filteren voor het model
+    irrigations = {k: v for k, v in irrigations_raw.items()
+                   if not k.startswith("_") and not k.endswith("_lawn") and not k.endswith("_shrubs")}
 
     print(f"→ Data bouwen (WU={bool(station)}, Open-Meteo forecast)...")
-    data = build_full_dataset(station, key, irrigations=irrigations)
-    data["irrigations"] = irrigations
+    data = build_full_dataset(station, key, irrigations=irrigations_raw)
+    data["irrigations"] = irrigations_raw
 
     status_lawn = assess_status(data, "lawn")
     status_shrubs = assess_status(data, "shrubs")

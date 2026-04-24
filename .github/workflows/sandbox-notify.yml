@@ -1,15 +1,18 @@
 name: Zandbak Notificaties
 
-# Twee cron-jobs:
-#   05:00 UTC = 07:00 Amsterdam (zomer, CEST = UTC+2)
-#   18:00 UTC = 20:00 Amsterdam (zomer, CEST = UTC+2)
-# Let op: in de winter (CET = UTC+1) is dit 06:00 en 19:00 lokaal.
-# Pas de cron aan in oktober/maart als je exacte lokale tijden wilt.
+# Vier crons: twee voor zomer (CEST = UTC+2), twee voor winter (CET = UTC+1)
+# Skip-logica in de job filtert op het juiste lokale uur zodat altijd
+# precies één run per tijdslot daadwerkelijk iets doet.
+#
+#   07:00 Amsterdam = 05:00 UTC (zomer) / 06:00 UTC (winter)
+#   20:00 Amsterdam = 18:00 UTC (zomer) / 19:00 UTC (winter)
 
 on:
   schedule:
-    - cron: "0 5 * * *"    # ochtend: ~07:00 Amsterdam (zomer)
-    - cron: "0 18 * * *"   # avond:   ~20:00 Amsterdam (zomer)
+    - cron: "0 5 * * *"    # 07:00 CEST (zomer)
+    - cron: "0 6 * * *"    # 07:00 CET  (winter)
+    - cron: "0 18 * * *"   # 20:00 CEST (zomer)
+    - cron: "0 19 * * *"   # 20:00 CET  (winter)
   workflow_dispatch:
     inputs:
       mode:
@@ -30,45 +33,67 @@ on:
           - dicht
           - afgedekt
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # nodig voor commit sandbox_state.json
+      contents: write
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python setup
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.12"
 
       - name: Installeer dependencies
-        run: pip install requests
+        run: pip install requests pytz
 
-      # Bepaal mode op basis van welke cron werd getriggerd
-      # Bij workflow_dispatch gebruiken we de input
-      - name: Bepaal mode
+      # Bepaal lokaal uur in Amsterdam en besluit of deze run actief is.
+      # Bij workflow_dispatch altijd doorgaan.
+      - name: Bepaal mode en skip-check
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-          else
-            # Haal huidige UTC uur op
-            HOUR=$(date -u +%H)
-            if [ "$HOUR" -lt 12 ]; then
-              echo "mode=morning" >> $GITHUB_OUTPUT
-            else
-              echo "mode=evening" >> $GITHUB_OUTPUT
-            fi
-          fi
+          python3 - << 'EOF'
+          import subprocess, sys
+          from datetime import datetime
+          import pytz
 
-      # Optioneel: overschrijf status via workflow_dispatch input
-      - name: Overschrijf status (optioneel)
+          amsterdam = pytz.timezone("Europe/Amsterdam")
+          now_local = datetime.now(amsterdam)
+          hour = now_local.hour
+          is_dispatch = "${{ github.event_name }}" == "workflow_dispatch"
+
+          print(f"Lokale tijd Amsterdam: {now_local.strftime('%H:%M')} (uur={hour})")
+
+          if is_dispatch:
+              mode = "${{ github.event.inputs.mode }}"
+              skip = "false"
+          elif 6 <= hour <= 7:
+              mode = "morning"
+              skip = "false"
+          elif 19 <= hour <= 20:
+              mode = "evening"
+              skip = "false"
+          else:
+              # Verkeerde cron-trigger voor huidige tijdzone, skip
+              mode = "skip"
+              skip = "true"
+              print(f"Uur {hour} valt buiten actieve vensters → skip")
+
+          with open("$GITHUB_OUTPUT", "a") as f:
+              f.write(f"mode={mode}\n")
+              f.write(f"skip={skip}\n")
+          EOF
+
+      - name: Overschrijf status (optioneel, alleen bij workflow_dispatch)
         if: >
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.override_status != ''
@@ -86,18 +111,18 @@ jobs:
           "
 
       - name: Voer zandbak check uit
+        if: steps.mode.outputs.skip == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SANDBOX_STATE_FILE: sandbox_state.json
         run: python3 sandbox_notify.py ${{ steps.mode.outputs.mode }}
 
-      # Commit de bijgewerkte state terug naar de repo
       - name: Commit zandbak state
+        if: steps.mode.outputs.skip == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sandbox_state.json
-          # Alleen committen als er iets veranderd is
           git diff --cached --quiet || git commit -m "chore: update sandbox_state.json [skip ci]"
           git push

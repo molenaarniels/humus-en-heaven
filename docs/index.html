@@ -538,14 +538,13 @@ function soilGaugeSVG(filledPct, statusState, height = 160) {
 // MONTHLY BALANCE
 // =======================================================================
 function buildMonthlyBalance(days) {
-  const today = new Date().toISOString().slice(0, 10);
   const map = {};
   for (const d of days) {
-    if (d.forecast) continue; // alleen historisch en vandaag, geen voorspelling
+    if (d.forecast) continue; // alleen historisch, geen voorspelling
     const ym = d.date.slice(0, 7); // "YYYY-MM"
     if (!map[ym]) map[ym] = { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
     map[ym].rain += d.precip || 0;
-    map[ym].irrigation += ((d.lawn_irrigation || 0) + (d.shrubs_irrigation || 0));
+    map[ym].irrigation += (d.lawn_irrigation || 0) + (d.shrubs_irrigation || 0);
     map[ym].ETc_lawn += d.lawn_ETc || 0;
     map[ym].ETc_shrubs += d.shrubs_ETc || 0;
   }

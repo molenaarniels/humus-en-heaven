@@ -56,26 +56,29 @@ jobs:
       - name: Installeer dependencies
         run: pip install requests pytz
 
-      # Bepaal lokaal uur in Amsterdam en besluit of deze run actief is.
-      # Bij workflow_dispatch altijd doorgaan.
+      # Bij workflow_dispatch: gebruik de gekozen mode, altijd doorgaan.
+      # Bij schedule: bepaal mode op basis van lokaal uur Amsterdam,
+      # skip als het uur buiten het actieve venster valt (dubbele cron-trigger).
       - name: Bepaal mode en skip-check
         id: mode
         run: |
-          python3 - << 'EOF'
-          import subprocess, sys
+          python3 << 'EOF'
+          import os
           from datetime import datetime
           import pytz
 
           amsterdam = pytz.timezone("Europe/Amsterdam")
           now_local = datetime.now(amsterdam)
           hour = now_local.hour
-          is_dispatch = "${{ github.event_name }}" == "workflow_dispatch"
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
 
           print(f"Lokale tijd Amsterdam: {now_local.strftime('%H:%M')} (uur={hour})")
+          print(f"Event: {event}")
 
-          if is_dispatch:
-              mode = "${{ github.event.inputs.mode }}"
+          if event == "workflow_dispatch":
+              mode = os.environ.get("INPUT_MODE", "morning")
               skip = "false"
+              print(f"Handmatige trigger → mode={mode}, altijd doorgaan")
           elif 6 <= hour <= 7:
               mode = "morning"
               skip = "false"
@@ -83,15 +86,16 @@ jobs:
               mode = "evening"
               skip = "false"
           else:
-              # Verkeerde cron-trigger voor huidige tijdzone, skip
               mode = "skip"
               skip = "true"
-              print(f"Uur {hour} valt buiten actieve vensters → skip")
+              print(f"Uur {hour} valt buiten actieve vensters (6-7 of 19-20) → skip")
 
-          with open("$GITHUB_OUTPUT", "a") as f:
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"mode={mode}\n")
               f.write(f"skip={skip}\n")
           EOF
+        env:
+          INPUT_MODE: ${{ github.event.inputs.mode }}
 
       - name: Overschrijf status (optioneel, alleen bij workflow_dispatch)
         if: >

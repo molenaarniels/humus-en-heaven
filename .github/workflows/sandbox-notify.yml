@@ -79,16 +79,16 @@ jobs:
               mode = os.environ.get("INPUT_MODE", "morning")
               skip = "false"
               print(f"Handmatige trigger → mode={mode}, altijd doorgaan")
-          elif 6 <= hour <= 7:
+          elif 5 <= hour <= 9:
               mode = "morning"
               skip = "false"
-          elif 19 <= hour <= 20:
+          elif 18 <= hour <= 21:
               mode = "evening"
               skip = "false"
           else:
               mode = "skip"
               skip = "true"
-              print(f"Uur {hour} valt buiten actieve vensters (6-7 of 19-20) → skip")
+              print(f"Uur {hour} valt buiten actieve vensters (5-9 of 18-21) → skip")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"mode={mode}\n")

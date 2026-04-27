@@ -182,6 +182,22 @@ def uv_windows(rows, target_date, threshold):
     raw = [(s, e) for s, e in raw if e - s >= 15]
     return [(fmt(s), fmt(e)) for s, e in raw]
 
+def format_uv_section(rows, target_date):
+    mod_windows  = uv_windows(rows, target_date, UV_MODERATE)
+    high_windows = uv_windows(rows, target_date, UV_HIGH)
+
+    if not mod_windows:
+        return "UV: geen risico vandaag (overal <3)"
+
+    def fmt(ws):
+        return ", ".join(a + "-" + b for a, b in ws)
+
+    lines = ["UV >=3: " + fmt(mod_windows)]
+    if high_windows:
+        lines.append("UV >=5: " + fmt(high_windows))
+    else:
+        lines.append("UV >=5: niet vandaag")
+    return "\n".join(lines)
 
 
 

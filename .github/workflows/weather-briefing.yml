@@ -1,0 +1,28 @@
+name: Daily Weather Briefing
+
+on:
+  schedule:
+    # 01:00 UTC = 02:00 NL wintertijd / 03:00 NL zomertijd
+    # Ruime marge tot het 06:00 lokale fietsblok.
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send weather briefing
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python weather_briefing.py

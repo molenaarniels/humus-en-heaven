@@ -129,47 +129,60 @@ def summarize_block(label, hours):
         "  Regen " + str(round(pop)) + "% / " + ("%.1f" % precip) + " mm"
     )
 
-
 def uv_windows(rows, target_date, threshold):
-    day_rows = [r for r in rows if r["dt"].date() == target_date]
+    """
+    Find ranges where UV >= threshold on target_date, with sub-hour
+    precision via linear interpolation between hourly values.
+
+    Open-Meteo's uv_index is the instantaneous value AT the hour stamp,
+    so we interpolate between consecutive hours to find the exact
+    threshold crossing time. Returns list of (start_str, end_str) tuples
+    rounded to nearest 30 minutes.
+    """
+    day_rows = [r for r in rows if r["dt"].date() == target_date and r["uv"] is not None]
     day_rows.sort(key=lambda r: r["dt"])
+    if not day_rows:
+        return []
 
-    windows = []
-    cur_start = None
-    cur_last  = None
+    def crossing_minute(t1, v1, t2, v2, thr):
+        if v2 == v1:
+            return t1 * 60
+        frac = (thr - v1) / (v2 - v1)
+        frac = max(0.0, min(1.0, frac))
+        return round((t1 + frac * (t2 - t1)) * 60)
 
-    for r in day_rows:
-        if r["uv"] is not None and r["uv"] >= threshold:
-            if cur_start is None:
-                cur_start = r["dt"].hour
-            cur_last = r["dt"].hour
-        else:
-            if cur_start is not None:
-                windows.append((cur_start, cur_last + 1))
-                cur_start = None
-                cur_last  = None
-    if cur_start is not None:
-        windows.append((cur_start, cur_last + 1))
+    def fmt(minute_of_day):
+        h, m = divmod(minute_of_day, 60)
+        m_rounded = 30 * round(m / 30)
+        if m_rounded == 60:
+            h += 1
+            m_rounded = 0
+        return f"{h:02d}:{m_rounded:02d}"
 
-    return [("%02d:00" % s, "%02d:00" % e) for s, e in windows]
+    raw = []  # collect raw start/end minutes first
+    cur_start_min = None
+    for i in range(len(day_rows)):
+        r = day_rows[i]
+        v = r["uv"]
+        h = r["dt"].hour
+        prev = day_rows[i-1] if i > 0 else None
+        if v >= threshold and cur_start_min is None:
+            if prev is not None and prev["uv"] < threshold:
+                cur_start_min = crossing_minute(prev["dt"].hour, prev["uv"], h, v, threshold)
+            else:
+                cur_start_min = h * 60
+        elif v < threshold and cur_start_min is not None:
+            end_min = crossing_minute(prev["dt"].hour, prev["uv"], h, v, threshold)
+            raw.append((cur_start_min, end_min))
+            cur_start_min = None
+    if cur_start_min is not None:
+        raw.append((cur_start_min, day_rows[-1]["dt"].hour * 60))
+
+    # Drop windows shorter than 15 min (barely touches threshold)
+    raw = [(s, e) for s, e in raw if e - s >= 15]
+    return [(fmt(s), fmt(e)) for s, e in raw]
 
 
-def format_uv_section(rows, target_date):
-    mod_windows  = uv_windows(rows, target_date, UV_MODERATE)
-    high_windows = uv_windows(rows, target_date, UV_HIGH)
-
-    if not mod_windows:
-        return "UV: geen risico vandaag (overal <3)"
-
-    def fmt(ws):
-        return ", ".join(a + "-" + b for a, b in ws)
-
-    lines = ["UV >=3: " + fmt(mod_windows)]
-    if high_windows:
-        lines.append("UV >=5: " + fmt(high_windows))
-    else:
-        lines.append("UV >=5: niet vandaag")
-    return "\n".join(lines)
 
 
 def build_message(location, forecast, today):

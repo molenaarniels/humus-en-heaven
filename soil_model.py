@@ -1,3 +1,4 @@
+# hello world
 """
 Soil moisture model — FAO-56 Penman-Monteith + water balance.
 Shared between the GitHub Action and the data-builder for the static site.

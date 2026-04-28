@@ -1,18 +1,11 @@
 name: Zandbak Notificaties
 
-# Vier crons: twee voor zomer (CEST = UTC+2), twee voor winter (CET = UTC+1)
-# Skip-logica in de job filtert op het juiste lokale uur zodat altijd
-# precies één run per tijdslot daadwerkelijk iets doet.
-#
-#   07:00 Amsterdam = 05:00 UTC (zomer) / 06:00 UTC (winter)
-#   20:00 Amsterdam = 18:00 UTC (zomer) / 19:00 UTC (winter)
-
 on:
   schedule:
-    - cron: "0 5 * * *"    # 07:00 CEST (zomer)
-    - cron: "0 6 * * *"    # 07:00 CET  (winter)
-    - cron: "0 18 * * *"   # 20:00 CEST (zomer)
-    - cron: "0 19 * * *"   # 20:00 CET  (winter)
+    - cron: "0 8 * * *"
+      timezone: "Europe/Amsterdam"
+    - cron: "0 19 * * *"
+      timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
       mode:
@@ -56,10 +49,7 @@ jobs:
       - name: Installeer dependencies
         run: pip install requests pytz
 
-      # Bij workflow_dispatch: gebruik de gekozen mode, altijd doorgaan.
-      # Bij schedule: bepaal mode op basis van lokaal uur Amsterdam,
-      # skip als het uur buiten het actieve venster valt (dubbele cron-trigger).
-      - name: Bepaal mode en skip-check
+      - name: Bepaal mode
         id: mode
         run: |
           python3 << 'EOF'
@@ -68,31 +58,18 @@ jobs:
           import pytz
 
           amsterdam = pytz.timezone("Europe/Amsterdam")
-          now_local = datetime.now(amsterdam)
-          hour = now_local.hour
+          hour = datetime.now(amsterdam).hour
           event = os.environ.get("GITHUB_EVENT_NAME", "")
-
-          print(f"Lokale tijd Amsterdam: {now_local.strftime('%H:%M')} (uur={hour})")
-          print(f"Event: {event}")
 
           if event == "workflow_dispatch":
               mode = os.environ.get("INPUT_MODE", "morning")
-              skip = "false"
-              print(f"Handmatige trigger → mode={mode}, altijd doorgaan")
-          elif 5 <= hour <= 9:
-              mode = "morning"
-              skip = "false"
-          elif 18 <= hour <= 21:
-              mode = "evening"
-              skip = "false"
           else:
-              mode = "skip"
-              skip = "true"
-              print(f"Uur {hour} valt buiten actieve vensters (5-9 of 18-21) → skip")
+              mode = "morning" if hour < 12 else "evening"
+
+          print(f"Lokaal uur Amsterdam: {hour}, event: {event} -> mode={mode}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"mode={mode}\n")
-              f.write(f"skip={skip}\n")
           EOF
         env:
           INPUT_MODE: ${{ github.event.inputs.mode }}
@@ -115,7 +92,6 @@ jobs:
           "
 
       - name: Voer zandbak check uit
-        if: steps.mode.outputs.skip == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -123,7 +99,6 @@ jobs:
         run: python3 sandbox_notify.py ${{ steps.mode.outputs.mode }}
 
       - name: Commit zandbak state
-        if: steps.mode.outputs.skip == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

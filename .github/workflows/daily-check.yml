@@ -2,12 +2,8 @@ name: Daily Soil Check
 
 on:
   schedule:
-    # Twee triggers zodat het altijd om 07:00 Nederlandse tijd draait,
-    # ongeacht zomer- of wintertijd:
-    #   05:00 UTC = 07:00 CEST (zomertijd, mrt-okt)
-    #   06:00 UTC = 07:00 CET  (wintertijd, okt-mrt)
-    - cron: '0 5 * * *'
     - cron: '0 6 * * *'
+      timezone: 'Europe/Amsterdam'
   workflow_dispatch:
     inputs:
       force_notify:
@@ -22,43 +18,6 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: DST check — bepaal of dit de juiste trigger is
-        id: tz_check
-        run: |
-          python3 - <<'EOF'
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-          import os
-
-          tz = ZoneInfo('Europe/Amsterdam')
-          now = datetime.now(tz)
-          offset = int(now.utcoffset().total_seconds() // 3600)
-          is_dst = offset == 2
-          trigger_hour_utc = 5 if is_dst else 6
-
-          # Schrijf output voor volgende stap
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"trigger_hour={trigger_hour_utc}\n")
-              f.write(f"is_dst={str(is_dst).lower()}\n")
-
-          print(f"Nederlandse tijd: {now.strftime('%H:%M')} (UTC+{offset})")
-          print(f"Verwachte trigger: {trigger_hour_utc}:00 UTC")
-          print(f"Huidige UTC uur: {datetime.utcnow().hour}")
-          EOF
-
-      - name: Skip als dit de verkeerde cron is (met ruime window voor GitHub vertraging)
-        run: |
-          TRIGGER=${{ steps.tz_check.outputs.trigger_hour }}
-          CURRENT=$(date -u +%H | sed 's/^0//')  # strip leading zero
-          TRIGGER_NUM=$(echo $TRIGGER | sed 's/^0//')
-          # Accepteer de juiste trigger uur + tot 3 uur vertraging
-          # Sla de andere trigger (het verkeerde uur) over
-          if [ "$CURRENT" -lt "$TRIGGER_NUM" ] || [ "$CURRENT" -ge "$((TRIGGER_NUM + 4))" ]; then
-            echo "⏭ Skip: huidig UTC uur ($CURRENT) valt buiten window voor trigger $TRIGGER (window: ${TRIGGER}-$((TRIGGER_NUM+3)))."
-            exit 0
-          fi
-          echo "✓ Binnen window, doorgaan."
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5

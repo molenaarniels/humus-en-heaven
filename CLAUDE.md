@@ -115,7 +115,7 @@ Three states in `sandbox_state.json`:
 State updates automatically after each notification. Manual override via `workflow_dispatch` with `override_status` dropdown.
 
 ### Timing
-Four crons (05, 06, 18, 19 UTC) cover both summer and winter time. Skip logic in Python filters on local hour (window 5–9 / 18–21) so exactly one run is active.
+Two crons in `Europe/Amsterdam` time: `08:00` (morning) and `19:00` (evening). GitHub Actions' native `timezone:` field handles DST automatically, so no UTC drift. The workflow itself decides `morning` vs `evening` based on the local hour (`< 12` → morning) — `sandbox_notify.py` does not contain its own skip-window logic.
 
 ### Rain threshold
 ≥30% probability OR ≥1mm expected.

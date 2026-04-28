@@ -115,15 +115,15 @@
   .proposal-min { font-family: "JetBrains Mono", monospace; font-size: 28px; font-weight: 600; line-height: 1; }
   .proposal-mm { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-soft); }
 
-  .chart-wrap { height: 340px; margin-top: 20px; position: relative; }
-  .chart-wrap-small { height: 200px; position: relative; }
-  .chart-wrap-month { height: 260px; position: relative; }
+  .chart-wrap { height: clamp(260px, 42vh, 360px); margin-top: 20px; position: relative; }
+  .chart-wrap-small { height: clamp(180px, 28vh, 220px); position: relative; }
+  .chart-wrap-month { height: clamp(220px, 34vh, 280px); position: relative; }
   .chart-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
   .legend-row { display: flex; gap: 20px; margin-top: 14px; font-size: 11px; flex-wrap: wrap; font-family: "JetBrains Mono", monospace; color: var(--ink-soft); }
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
   .legend-line { display: inline-block; width: 18px; height: 2px; }
 
-  .btn { background: var(--ink); color: var(--parchment); padding: 8px 18px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
+  .btn { background: var(--ink); color: var(--parchment); padding: 10px 18px; min-height: 44px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
   .btn:hover { background: var(--moss); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
@@ -137,13 +137,13 @@
   /* Modal */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(42,36,27,.55); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
   .modal-backdrop.open { opacity: 1; pointer-events: auto; }
-  .modal { background: var(--parchment); padding: 32px; max-width: 520px; width: 94%; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; transform: translateY(20px); transition: transform 0.2s; background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px); background-size: 3px 3px, 7px 7px; }
+  .modal { background: var(--parchment); padding: 32px; width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow-y: auto; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; transform: translateY(20px); transition: transform 0.2s; background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px); background-size: 3px 3px, 7px 7px; }
   .modal-backdrop.open .modal { transform: translateY(0); }
   .modal h2 { font-size: 26px; font-style: italic; font-weight: 500; margin-bottom: 4px; }
   .input-field { background: transparent; border: none; border-bottom: 1px solid #2a241b66; padding: 7px 2px; margin-top: 4px; font-family: "JetBrains Mono", monospace; font-size: 15px; color: var(--ink); outline: none; width: 100%; }
   .input-field:focus { border-bottom-color: var(--clay); }
   .preset-chips { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-  .preset-chip { padding: 5px 12px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; background: transparent; border: 1px solid #2a241b44; cursor: pointer; color: var(--ink-soft); }
+  .preset-chip { padding: 8px 14px; min-height: 36px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; background: transparent; border: 1px solid #2a241b44; cursor: pointer; color: var(--ink-soft); }
   .preset-chip:hover { background: var(--ink); color: var(--parchment); }
 
   /* Modal zone grid */
@@ -160,6 +160,24 @@
   footer { padding: 16px 40px 0; display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); font-size: 12px; font-style: italic; color: var(--ink-soft); margin-top: 32px; }
   footer .hairline { margin-bottom: 18px; grid-column: 1/-1; }
   section { padding: 28px 0 0; }
+
+  @media (max-width: 480px) {
+    header { padding: 22px 16px 12px; }
+    .pad { padding: 0 16px; }
+    .grid-status { grid-template-columns: 1fr; gap: 16px; }
+    .banner { margin: 8px 16px; }
+    footer { padding: 16px 16px 0; }
+    .modal { padding: 22px; }
+    .modal-zones { grid-template-columns: 1fr !important; }
+    h1 { font-size: clamp(36px, 12vw, 56px); }
+    .date-big { font-size: 17px; }
+    .gauge-big { font-size: 34px; }
+    .proposal-min { font-size: 24px; }
+    /* override inline section padding=40px on mobile */
+    section[style*="padding"] { padding-left: 16px !important; padding-right: 16px !important; }
+    /* loading state */
+    #content[style*="padding:80px 40px"] { padding: 60px 16px !important; }
+  }
 </style>
 </head>
 <body>
@@ -174,7 +192,7 @@
     <div style="text-align:right;">
       <div class="corner-mark">Vandaag</div>
       <div class="num date-big" id="today-date"></div>
-      <div class="corner-mark" style="margin-top:6px;">Bodem: zand · FC 0.17 · WP 0.07</div>
+      <div class="corner-mark" style="margin-top:6px;">Bodem: zand · <span id="soil-params">FC — · WP —</span></div>
     </div>
   </div>
   <div class="hairline-bold"></div>
@@ -256,8 +274,8 @@
 // =======================================================================
 const CONFIG = { gistId: "__GIST_ID__", githubToken: null };
 
-// Irrigatiesnelheden — synchroon met soil_model.py
-const RATES = { lawn: 20 / 60, shrubs: 2 / 60 }; // mm per minuut
+// Irrigatiesnelheden (mm/min) — fallback; runtime-waarden komen uit data.irrigation_rates.
+let RATES = { lawn: 20 / 60, shrubs: 2 / 60 };
 
 const COLORS = {
   parchment: "#f3ecd9", parchmentDeep: "#e8dec3",
@@ -300,6 +318,11 @@ async function loadData() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
     state.irrigations = state.data.irrigations || {};
+    if (state.data.irrigation_rates
+        && typeof state.data.irrigation_rates.lawn === "number"
+        && typeof state.data.irrigation_rates.shrubs === "number") {
+      RATES = state.data.irrigation_rates;
+    }
     render();
   } catch (e) {
     document.getElementById("banner-slot").innerHTML =
@@ -317,6 +340,10 @@ function render() {
     : `<div class="banner banner-warn">Open-Meteo only. Data van ${generated.toLocaleString("nl-NL")}.</div>`;
   document.getElementById("banner-slot").innerHTML = banner;
   document.getElementById("source-label").textContent = "✓ " + d.source;
+  if (d.soil && typeof d.soil.FC === "number" && typeof d.soil.WP === "number") {
+    document.getElementById("soil-params").textContent =
+      `FC ${d.soil.FC.toFixed(2)} · WP ${d.soil.WP.toFixed(2)}`;
+  }
   renderContent();
   updateWaterLog();
 }

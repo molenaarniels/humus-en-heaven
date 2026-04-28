@@ -323,6 +323,7 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         "wu_days": wu_days,
         "soil": {"FC": SOIL_FC, "WP": SOIL_WP},
         "zones": ZONES,
+        "irrigation_rates": IRRIGATION_RATES,
         "location": {"lat": UTRECHT_LAT, "lon": UTRECHT_LON, "name": "Utrecht Oost"},
         "days": om,
     }

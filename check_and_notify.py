@@ -139,9 +139,10 @@ def format_telegram(status_lawn: dict, status_shrubs: dict,
 
     def zone_line(label: str, status: dict) -> list[str]:
         icon = icons[status["priority"]]
+        available_pct = 100 - status["depletion_pct"]
         lines = [
             f"{icon} <b>{label}</b>: {status['recommendation']}",
-            f"   Depletion: <code>{status['depletion_pct']:.0f}%</code>",
+            f"   Beschikbaar water: <code>{available_pct:.0f}%</code>",
         ]
         if status["proposal_min"] > 0:
             lines.append(
@@ -202,12 +203,12 @@ def format_email(status_lawn: dict, status_shrubs: dict) -> tuple:
     <tr style="border-bottom:1px solid #2a241b33;">
       <td><b>Gras</b><br><small>15 cm wortelzone</small></td>
       <td>{icons[status_lawn['priority']]} {status_lawn['recommendation']}<br>
-          <small style="color:#5c4f3c;">Depletion {status_lawn['depletion_pct']:.0f}%</small></td>
+          <small style="color:#5c4f3c;">Beschikbaar water {100 - status_lawn['depletion_pct']:.0f}%</small></td>
     </tr>
     <tr>
       <td><b>Struiken</b><br><small>40 cm wortelzone</small></td>
       <td>{icons[status_shrubs['priority']]} {status_shrubs['recommendation']}<br>
-          <small style="color:#5c4f3c;">Depletion {status_shrubs['depletion_pct']:.0f}%</small></td>
+          <small style="color:#5c4f3c;">Beschikbaar water {100 - status_shrubs['depletion_pct']:.0f}%</small></td>
     </tr>
   </table>
   <p style="margin-top:24px;">

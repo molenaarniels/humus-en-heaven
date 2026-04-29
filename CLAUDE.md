@@ -125,9 +125,30 @@ Fully independent — does not touch `soil_model.py`, `check_and_notify.py`, `da
 
 ---
 
+## Project 4: Heating Temperature Notifier
+
+**Goal:** Daily evening Telegram reminder to set the living room thermostat to a random temperature in a comfortable range.
+
+### Files
+- `heating_temp_notify.py` — random temp picker + Telegram
+- `.github/workflows/heating-temp-notify.yml` — cron at 18:00 Amsterdam time + manual dispatch
+
+### Logic
+- Picks a random temperature between 16.0 °C and 19.5 °C in 0.1 °C increments
+- Sends a Telegram message: `🌡️ Zet de woonkamer vanavond op *X.X°C*`
+- `DRY_RUN=1` env var: prints message without sending to Telegram (for local testing)
+
+### Timing
+Single cron at `18:00 Europe/Amsterdam`. GitHub Actions' native `timezone:` field handles DST automatically.
+
+### Relation to other projects
+Fully independent — no weather data, no state file. Shares `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets only.
+
+---
+
 ## Shared secrets (GitHub Actions)
 - `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project only)
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — all three projects
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — all four projects
 - `GIST_ID`, `GIST_TOKEN` — soil project only (irrigation log)
 - `GITHUB_TOKEN` — automatic, sandbox project
 

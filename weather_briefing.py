@@ -31,10 +31,10 @@ HOME_COORDS = (52.0907, 5.1214)
 HOME_RADIUS_KM = 10.0
 
 TIME_BLOCKS = [
-    ("Fietstocht",      6, 0,  6, 30, None),
-    ("KDV brengen",     8, 0,  9,  0, None),
-    ("Naar huis",      16, 30, 17, 30, None),
-    ("Sport (vrouw)",  19, 0, 20,  0, {0, 2}),
+    ("Fietstocht",      6, 0,  6, 30, None,    "🚲"),
+    ("KDV brengen",     8, 0,  9,  0, None,    "🧒"),
+    ("Naar huis",      16, 30, 17, 30, None,   "🏠"),
+    ("Sport (vrouw)",  19, 0, 20,  0, {0, 2},  "🏃"),
 ]
 
 UV_MODERATE = 3.0
@@ -69,6 +69,7 @@ def fetch_forecast(location):
             "precipitation",
             "precipitation_probability",
             "uv_index",
+            "cloud_cover",
         ]),
         "timezone":     location["timezone"],
         "forecast_days": 1,
@@ -90,8 +91,20 @@ def parse_hourly(forecast):
             "precip": h["precipitation"][i],
             "pop":    h["precipitation_probability"][i],
             "uv":     h["uv_index"][i],
+            "cloud":  h.get("cloud_cover", [None] * len(h["time"]))[i],
         })
     return rows
+
+
+def weather_glyph(precip_mm, pop_pct, cloud_pct):
+    """Pick a weather emoji from precip + probability + cloud cover."""
+    if precip_mm >= 1.0 or pop_pct >= 60:
+        return "🌧️"
+    if precip_mm >= 0.2:
+        return "🌦️"
+    if cloud_pct is not None and cloud_pct >= 70:
+        return "☁️"
+    return "☀️"
 
 
 def hours_in_window(rows, target_date, start_h, start_m, end_h, end_m):
@@ -116,6 +129,9 @@ def summarize_block(label, hours):
     feels  = [h["feels"]  for h in hours]
     precip = sum(h["precip"] for h in hours)
     pop    = max(h["pop"]    for h in hours)
+    clouds = [h["cloud"] for h in hours if h.get("cloud") is not None]
+    cloud_avg = sum(clouds) / len(clouds) if clouds else None
+    glyph  = weather_glyph(precip, pop, cloud_avg)
 
     def fmt_range(vals, unit="C"):
         lo, hi = min(vals), max(vals)
@@ -124,7 +140,7 @@ def summarize_block(label, hours):
         return str(round(lo)) + "-" + str(round(hi)) + unit
 
     return (
-        label + "\n"
+        label + " " + glyph + "\n"
         "   Temp " + fmt_range(temps) + " (gevoel " + fmt_range(feels) + ")"
         "  Regen " + str(round(pop)) + "% / " + ("%.1f" % precip) + " mm"
     )
@@ -187,16 +203,16 @@ def format_uv_section(rows, target_date):
     high_windows = uv_windows(rows, target_date, UV_HIGH)
 
     if not mod_windows:
-        return "UV: geen risico vandaag (overal <3)"
+        return "🕶️ UV: geen risico vandaag (overal <3)"
 
     def fmt(ws):
         return ", ".join(a + "-" + b for a, b in ws)
 
-    lines = ["UV >=3: " + fmt(mod_windows)]
+    lines = ["🕶️ UV >=3: " + fmt(mod_windows)]
     if high_windows:
-        lines.append("UV >=5: " + fmt(high_windows))
+        lines.append("🧴 UV >=5: " + fmt(high_windows))
     else:
-        lines.append("UV >=5: niet vandaag")
+        lines.append("🧴 UV >=5: niet vandaag")
     return "\n".join(lines)
 
 
@@ -213,11 +229,11 @@ def build_message(location, forecast, today):
     parts = [header, ""]
 
     if home:
-        for label, sh, sm, eh, em, days in TIME_BLOCKS:
+        for label, sh, sm, eh, em, days, icon in TIME_BLOCKS:
             if days is not None and weekday not in days:
                 continue
             block_hours = hours_in_window(rows, today, sh, sm, eh, em)
-            window_label = label + " " + ("%02d:%02d" % (sh, sm)) + "-" + ("%02d:%02d" % (eh, em))
+            window_label = icon + " " + label + " " + ("%02d:%02d" % (sh, sm)) + "-" + ("%02d:%02d" % (eh, em))
             parts.append(summarize_block(window_label, block_hours))
             parts.append("")
     else:

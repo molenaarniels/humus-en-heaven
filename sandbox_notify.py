@@ -178,17 +178,30 @@ def morning_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 # ── Avondlogica (20:00) ───────────────────────────────────────────────────────
 
 def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
-    morgen     = forecast[1] if len(forecast) > 1 else None
+    today      = forecast[0]
+    raw_morgen = forecast[1] if len(forecast) > 1 else None
     overmorgen = forecast[2] if len(forecast) > 2 else None
     status     = state["status"]
 
-    regen_morgen     = is_rain_expected(morgen) if morgen else False
+    # Forecast soms < 2 dagen (API-hiccup, late run): val terug op vandaag voor
+    # tmax/regen-velden zodat downstream-formatters geen '?' tonen, en zet een
+    # waarschuwing bovenaan het bericht.
+    limited_forecast = raw_morgen is None
+    morgen = raw_morgen if raw_morgen is not None else today
+
+    regen_morgen     = is_rain_expected(raw_morgen) if raw_morgen else False
     regen_overmorgen = is_rain_expected(overmorgen) if overmorgen else False
     regen_nabij      = regen_morgen or regen_overmorgen  # enige regen → afdekken
 
     print(f"[avond] status={status} regen_morgen={regen_morgen} "
-          f"({morgen['precip_prob_max'] if morgen else '-'}%) "
-          f"regen_overmorgen={regen_overmorgen} regen_nabij={regen_nabij}")
+          f"({morgen['precip_prob_max']}%) "
+          f"regen_overmorgen={regen_overmorgen} regen_nabij={regen_nabij} "
+          f"limited_forecast={limited_forecast}")
+
+    def _wrap(msg: str | None) -> str | None:
+        if msg is None or not limited_forecast:
+            return msg
+        return "⚠️ <i>Beperkte forecast (alleen vandaag beschikbaar)</i>\n" + msg
 
     # ── Open ──
     if status == "open":
@@ -205,7 +218,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
                 f"{droge_str}.\n"
                 "→ Dekzeil erop."
             )
-            return msg, {**state, "status": "afgedekt"}
+            return _wrap(msg), {**state, "status": "afgedekt"}
         else:
             # Droog → sluiten tegen katten; morgenochtend krijg je bericht om te openen
             msg = (
@@ -213,7 +226,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
                 "Morgen droog, je krijgt morgenochtend een berichtje om hem te openen.\n"
                 "→ Deksel erop voor de nacht."
             )
-            return msg, {**state, "status": "dicht"}
+            return _wrap(msg), {**state, "status": "dicht"}
 
     # ── Dicht ──
     if status == "dicht":
@@ -230,7 +243,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
                 f"{droge_str}.\n"
                 "→ Dekzeil erop."
             )
-            return msg, {**state, "status": "afgedekt"}
+            return _wrap(msg), {**state, "status": "afgedekt"}
         else:
             # Droog, al dicht → geen actie (morgen ochtend triggert luchten)
             print("[avond] Dicht + droog → geen bericht, ochtend triggert luchten")
@@ -246,12 +259,12 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
             # Droog morgen → aankondiging, ochtendrun stuurt het echte bericht
             msg = (
                 "🌤️ <b>Morgen kan de zandbak gelucht worden!</b>\n"
-                f"Morgen droog ({morgen['precip_prob_max'] if morgen else '?'}% kans) "
-                f"en {morgen['tmax'] if morgen else '?'}°C.\n"
+                f"Morgen droog ({morgen['precip_prob_max']}% kans) "
+                f"en {morgen['tmax']}°C.\n"
                 "→ Je krijgt morgenochtend een berichtje."
             )
             # State blijft "afgedekt" — ochtendrun zet hem op open na het bericht
-            return msg, state
+            return _wrap(msg), state
 
     print(f"[avond] Onbekende status '{status}', geen actie")
     return None, state

@@ -801,9 +801,15 @@ async function saveIrrigation() {
   if (mmLawn > 0) irrigations[`${date}_lawn`] = (irrigations[`${date}_lawn`] || 0) + mmLawn;
   if (mmShrubs > 0) irrigations[`${date}_shrubs`] = (irrigations[`${date}_shrubs`] || 0) + mmShrubs;
 
-  // Sla metadata op
+  // Sla metadata op (optellen bij eventuele eerdere invoer dezelfde dag)
   const meta = irrigations._meta || {};
-  meta[date] = { minLawn, mmLawn, minShrubs, mmShrubs };
+  const prev = meta[date] || { minLawn: 0, mmLawn: 0, minShrubs: 0, mmShrubs: 0 };
+  meta[date] = {
+    minLawn:  prev.minLawn  + minLawn,
+    mmLawn:   Math.round((prev.mmLawn  + mmLawn)  * 10) / 10,
+    minShrubs: prev.minShrubs + minShrubs,
+    mmShrubs: Math.round((prev.mmShrubs + mmShrubs) * 10) / 10,
+  };
   irrigations._meta = meta;
 
   status.innerHTML = '<span class="pulse">⋯ opslaan…</span>';

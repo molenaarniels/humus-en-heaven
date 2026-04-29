@@ -19,15 +19,51 @@ import json
 import os
 import smtplib
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
 import requests
 
-from soil_model import build_full_dataset, assess_status
+from soil_model import (assess_status, build_full_dataset,
+                        build_monthly_totals_from_days, fetch_open_meteo_archive,
+                        _apply_et0_and_balance)
 
 # =============================================================================
+
+def load_existing_monthly_totals() -> dict:
+    """Laad bestaande maandtotalen uit docs/data.json (koude opslag)."""
+    try:
+        with open("docs/data.json") as f:
+            return json.load(f).get("monthly_totals", {})
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
+    """Eenmalige bootstrap: haal ~13 maanden historische data op en bevries voltooide maanden."""
+    today = date.today()
+    first_of_month = today.replace(day=1)
+    # Einddatum = laatste dag van vorige maand (archive API heeft lag, voltooide maanden zijn veilig)
+    end_date = (first_of_month - timedelta(days=1)).isoformat()
+    # Startdatum = 1e dag van de maand 13 maanden geleden
+    start = first_of_month
+    for _ in range(13):
+        start = (start - timedelta(days=1)).replace(day=1)
+    start_date = start.isoformat()
+
+    print(f"[bootstrap] Ophalen historische data: {start_date} → {end_date}")
+    try:
+        series = fetch_open_meteo_archive(start_date, end_date)
+    except Exception as e:
+        print(f"[bootstrap] archive fetch mislukt: {e}")
+        return {}
+
+    _apply_et0_and_balance(series, irrigations_raw)
+    totals = build_monthly_totals_from_days(series)
+    print(f"[bootstrap] {len(totals)} maanden bevroren: {sorted(totals.keys())}")
+    return totals
+
 
 def load_irrigations_from_gist() -> dict:
     """Haalt irrigatie-log uit GitHub Gist. Format: {"YYYY-MM-DD": mm}."""
@@ -197,13 +233,22 @@ def main():
 
     print(f"→ Irrigaties laden uit Gist...")
     irrigations_raw = load_irrigations_from_gist()
-    # _meta en zone-specifieke keys (_lawn/_shrubs) eruit filteren voor het model
-    irrigations = {k: v for k, v in irrigations_raw.items()
-                   if not k.startswith("_") and not k.endswith("_lawn") and not k.endswith("_shrubs")}
 
-    print(f"→ Data bouwen (WU={bool(station)}, Open-Meteo forecast)...")
-    data = build_full_dataset(station, key, irrigations=irrigations_raw)
+    # Bootstrap maandtotalen als er nog geen koude opslag is
+    existing_monthly = load_existing_monthly_totals()
+    if not existing_monthly:
+        print("→ Geen maandtotalen gevonden — eenmalige bootstrap...")
+        existing_monthly = bootstrap_monthly_totals(irrigations_raw)
+
+    print(f"→ Data bouwen (WU={bool(station)}, Open-Meteo forecast, 35 warme dagen)...")
+    data = build_full_dataset(station, key, irrigations=irrigations_raw, days_past=35)
     data["irrigations"] = irrigations_raw
+
+    # Bevries voltooide maanden uit het warme venster en merge met koude opslag
+    new_frozen = build_monthly_totals_from_days(data["days"])
+    merged_monthly = {**existing_monthly, **new_frozen}  # nieuwe data wint bij overlap
+    data["monthly_totals"] = merged_monthly
+    print(f"→ Maandtotalen: {len(merged_monthly)} maanden ({', '.join(sorted(merged_monthly.keys()))})")
 
     status_lawn = assess_status(data, "lawn")
     status_shrubs = assess_status(data, "shrubs")

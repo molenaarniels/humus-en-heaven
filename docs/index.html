@@ -398,7 +398,7 @@ function renderContent() {
   }
 
   // Monthly balance data
-  const monthly = buildMonthlyBalance(days);
+  const monthly = buildMonthlyBalance(d);
 
   const html = `
     <!-- TEGELS 1+2: Bodemwater + Aanbeveling — 2 kolommen -->
@@ -564,25 +564,37 @@ function soilGaugeSVG(filledPct, statusState, height = 160) {
 // =======================================================================
 // MONTHLY BALANCE
 // =======================================================================
-function buildMonthlyBalance(days) {
-  const map = {};
+function buildMonthlyBalance(data) {
+  const days = data.days || [];
+  const cold = data.monthly_totals || {};
+  const hasCold = Object.keys(cold).length > 0;
+  const currentYm = new Date().toISOString().slice(0, 7);
+
+  // Warme data: bij koude opslag alleen huidige maand; anders alle maanden (fallback)
+  const warm = {};
   for (const d of days) {
-    if (d.forecast) continue; // alleen historisch, geen voorspelling
-    const ym = d.date.slice(0, 7); // "YYYY-MM"
-    if (!map[ym]) map[ym] = { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
-    map[ym].rain += d.precip || 0;
-    map[ym].irrigation += (d.lawn_irrigation || 0) + (d.shrubs_irrigation || 0);
-    map[ym].ETc_lawn += d.lawn_ETc || 0;
-    map[ym].ETc_shrubs += d.shrubs_ETc || 0;
+    if (d.forecast) continue;
+    const ym = d.date.slice(0, 7);
+    if (hasCold && ym < currentYm) continue; // koude opslag heeft prioriteit voor oude maanden
+    if (!warm[ym]) warm[ym] = { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
+    warm[ym].rain += d.precip || 0;
+    warm[ym].irrigation += (d.lawn_irrigation || 0) + (d.shrubs_irrigation || 0);
+    warm[ym].ETc_lawn += d.lawn_ETc || 0;
+    warm[ym].ETc_shrubs += d.shrubs_ETc || 0;
   }
-  // Sort chronologically
-  const sorted = Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]));
-  return sorted.map(([ym, v]) => ({
-    label: new Date(ym + "-15").toLocaleDateString("nl-NL", { month: "short", year: "2-digit" }),
-    rain: Math.round(v.rain * 10) / 10,
-    irrigation: Math.round(v.irrigation * 10) / 10,
-    ETc: Math.round(((v.ETc_lawn + v.ETc_shrubs) / 2) * 10) / 10,
-  }));
+
+  // Merge koude + warme maanden en sorteer chronologisch
+  const allYm = new Set([...Object.keys(cold), ...Object.keys(warm)]);
+  return [...allYm].sort().map(ym => {
+    const v = cold[ym] || warm[ym] || { rain: 0, irrigation: 0, ETc_lawn: 0, ETc_shrubs: 0 };
+    return {
+      label: new Date(ym + "-15").toLocaleDateString("nl-NL", { month: "short", year: "2-digit" }),
+      ym,
+      rain: Math.round(v.rain * 10) / 10,
+      irrigation: Math.round(v.irrigation * 10) / 10,
+      ETc: Math.round(((v.ETc_lawn + v.ETc_shrubs) / 2) * 10) / 10,
+    };
+  });
 }
 
 // =======================================================================

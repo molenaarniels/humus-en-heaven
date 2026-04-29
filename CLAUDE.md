@@ -147,3 +147,16 @@ Fully independent — does not touch `soil_model.py`, `check_and_notify.py`, `da
 - **Frontend cache-bust** — always keep `?t=${Date.now()}` on data.json fetch calls
 - All times in UTC in code; display in Europe/Amsterdam on frontend
 - Python 3.11+, no build step for frontend
+
+---
+
+## Security
+
+This repo is **public**. Anyone can read all code, workflow files, and run logs. Keep this in mind for every change.
+
+- **Never add `pull_request` or `pull_request_target` triggers** to any workflow — these allow forks to trigger runs and can expose secrets
+- **Never log secrets** — no `echo $SECRET`, no debug steps that dump env vars, no error handlers that print environment
+- **GITHUB_TOKEN permissions must be minimal** — workflows that only read code use `permissions: contents: read`; only workflows that commit/push use `contents: write`
+- **No community actions without a pinned commit SHA** — `uses: some-action@v2` is not safe; use `uses: some-action@<full-sha>` for any action outside the `actions/` namespace
+- **No untrusted expression interpolation in `run:` steps** — never put `${{ github.event.pull_request.title }}` or similar directly into shell commands; pass via `env:` and read from the environment instead
+- **Secrets stay in GitHub Actions secrets** — never hardcode credentials, never commit `.env` files

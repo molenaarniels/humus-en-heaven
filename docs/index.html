@@ -786,12 +786,8 @@ async function saveIrrigation() {
   const mmShrubs = Math.round(minShrubs * RATES.shrubs * 10) / 10;
 
   const irrigations = await fetchGistIrrigations();
-  // Sla per zone op — model gebruikt het gemiddelde als totaal
   if (mmLawn > 0) irrigations[`${date}_lawn`] = (irrigations[`${date}_lawn`] || 0) + mmLawn;
   if (mmShrubs > 0) irrigations[`${date}_shrubs`] = (irrigations[`${date}_shrubs`] || 0) + mmShrubs;
-  // Ook gecombineerde datum key voor het model (gemiddelde voor de water balance)
-  const combined = (mmLawn + mmShrubs) / (mmLawn > 0 && mmShrubs > 0 ? 2 : 1);
-  irrigations[date] = (irrigations[date] || 0) + combined;
 
   // Sla metadata op
   const meta = irrigations._meta || {};

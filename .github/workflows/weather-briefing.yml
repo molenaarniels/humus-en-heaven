@@ -6,6 +6,9 @@ on:
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   briefing:
     runs-on: ubuntu-latest

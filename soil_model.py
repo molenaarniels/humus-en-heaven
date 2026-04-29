@@ -2,6 +2,7 @@
 Soil moisture model — FAO-56 Penman-Monteith + water balance.
 Shared between the GitHub Action and the data-builder for the static site.
 """
+import calendar as _calendar
 import math
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
@@ -265,16 +266,48 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
 # COMBINED
 # =============================================================================
 
+def _apply_et0_and_balance(series: List[Dict],
+                           irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
+    """Compute ET0 + water balance in-place on a series of day dicts. Returns the series."""
+    lat_rad = math.radians(UTRECHT_LAT)
+    for d in series:
+        doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
+        try:
+            d["ET0"] = round(penman_monteith_et0(
+                Tmax=d["Tmax"], Tmin=d["Tmin"], RHmean=d["RHmean"],
+                u2=d["u2"], Rs=d["Rs"], elev=UTRECHT_ELEV,
+                lat_rad=lat_rad, doy=doy,
+            ), 2)
+        except Exception:
+            d["ET0"] = None
+    for d in series:
+        if d["ET0"] is None:
+            vals = [x["ET0"] for x in series if x["ET0"] is not None]
+            d["ET0"] = sum(vals) / len(vals) if vals else 2.0
+
+    balances = {k: run_water_balance(series, z, k, irrigations) for k, z in ZONES.items()}
+    for i, d in enumerate(series):
+        for k, bal in balances.items():
+            s = bal[i]
+            d[f"{k}_theta"] = s["theta"]
+            d[f"{k}_depletion"] = s["depletion_pct"]
+            d[f"{k}_ETc"] = s["ETc"]
+            d[f"{k}_Kc"] = s["Kc"]
+            d[f"{k}_irrigation"] = s["irrigation"]
+    return series
+
+
 def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
-                       irrigations: Optional[Dict[str, float]] = None) -> Dict:
+                       irrigations: Optional[Dict[str, float]] = None,
+                       days_past: int = 35) -> Dict:
     """Haalt data, merge WU met Open-Meteo, run ET0 + water balance per zone."""
-    om = fetch_open_meteo(days_past=30, days_forecast=7)
+    om = fetch_open_meteo(days_past=days_past, days_forecast=7)
     wu_days = 0
     source_note = "Open-Meteo (Utrecht reanalysis + forecast)"
 
     if station_id and api_key:
         try:
-            wu = fetch_wunderground(station_id, api_key, days=30)
+            wu = fetch_wunderground(station_id, api_key, days=days_past)
             wu_by_date = {d["date"]: d for d in wu}
             for d in om:
                 w = wu_by_date.get(d["date"])
@@ -290,32 +323,7 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         except Exception as e:
             print(f"[WARN] WU merge failed: {e}")
 
-    lat_rad = math.radians(UTRECHT_LAT)
-    for d in om:
-        doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
-        try:
-            d["ET0"] = round(penman_monteith_et0(
-                Tmax=d["Tmax"], Tmin=d["Tmin"], RHmean=d["RHmean"],
-                u2=d["u2"], Rs=d["Rs"], elev=UTRECHT_ELEV,
-                lat_rad=lat_rad, doy=doy,
-            ), 2)
-        except Exception:
-            d["ET0"] = None
-    for d in om:
-        if d["ET0"] is None:
-            vals = [x["ET0"] for x in om if x["ET0"] is not None]
-            d["ET0"] = sum(vals) / len(vals) if vals else 2.0
-
-    balances = {k: run_water_balance(om, z, k, irrigations) for k, z in ZONES.items()}
-    for i, d in enumerate(om):
-        doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
-        for k, series in balances.items():
-            s = series[i]
-            d[f"{k}_theta"] = s["theta"]
-            d[f"{k}_depletion"] = s["depletion_pct"]
-            d[f"{k}_ETc"] = s["ETc"]
-            d[f"{k}_Kc"] = s["Kc"]
-            d[f"{k}_irrigation"] = s["irrigation"]
+    _apply_et0_and_balance(om, irrigations)
 
     return {
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -327,6 +335,78 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         "location": {"lat": UTRECHT_LAT, "lon": UTRECHT_LON, "name": "Utrecht Oost"},
         "days": om,
     }
+
+
+def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
+    """Haalt historische data op via de Open-Meteo archive API (ERA5 reanalysis)."""
+    url = (
+        "https://archive-api.open-meteo.com/v1/archive"
+        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
+        f"&start_date={start_date}&end_date={end_date}"
+        f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+        f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+        f"shortwave_radiation_sum"
+        f"&timezone=Europe%2FAmsterdam"
+    )
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    j = r.json()
+    d = j["daily"]
+    return [
+        {
+            "date": t,
+            "Tmax": d["temperature_2m_max"][i],
+            "Tmin": d["temperature_2m_min"][i],
+            "Tmean": d["temperature_2m_mean"][i],
+            "RHmean": d["relative_humidity_2m_mean"][i],
+            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6,
+            "Rs": d["shortwave_radiation_sum"][i],
+            "precip": d["precipitation_sum"][i] or 0,
+            "forecast": False,
+        }
+        for i, t in enumerate(d["time"])
+    ]
+
+
+def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
+    """Aggregeert voltooide kalendermaanden uit een verwerkte dagenlijst.
+
+    Geeft alleen maanden terug die volledig aanwezig zijn in `days` (alle
+    kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
+    maand wordt nooit bevroren.
+    """
+    today = date.today().isoformat()
+    raw: Dict[str, Dict] = {}
+    for d in days:
+        if d.get("forecast") or d["date"] >= today:
+            continue
+        ym = d["date"][:7]
+        if ym not in raw:
+            raw[ym] = {
+                "rain": 0.0, "irrigation": 0.0,
+                "ETc_lawn": 0.0, "ETc_shrubs": 0.0, "days": 0,
+            }
+        raw[ym]["rain"] += d.get("precip") or 0
+        raw[ym]["irrigation"] += (d.get("lawn_irrigation") or 0) + (d.get("shrubs_irrigation") or 0)
+        raw[ym]["ETc_lawn"] += d.get("lawn_ETc") or 0
+        raw[ym]["ETc_shrubs"] += d.get("shrubs_ETc") or 0
+        raw[ym]["days"] += 1
+
+    result: Dict[str, Dict] = {}
+    for ym, v in raw.items():
+        year, month_num = int(ym[:4]), int(ym[5:7])
+        days_in_month = _calendar.monthrange(year, month_num)[1]
+        last_day = f"{ym}-{days_in_month:02d}"
+        # Only freeze months that are complete AND fully past
+        if last_day >= today or v["days"] < days_in_month:
+            continue
+        result[ym] = {
+            "rain": round(v["rain"], 1),
+            "irrigation": round(v["irrigation"], 1),
+            "ETc_lawn": round(v["ETc_lawn"], 1),
+            "ETc_shrubs": round(v["ETc_shrubs"], 1),
+        }
+    return result
 
 
 # Irrigatiesnelheden per zone (mm per minuut).

@@ -157,10 +157,15 @@ def morning_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
             )
         return msg, {**state, "status": "open"}
 
-    # Open + regen vandaag → waarschuw
-    if status == "open" and regen_vandaag:
+    # Open of dicht + regen vandaag → waarschuw (deksel alleen is niet genoeg)
+    if status in ("open", "dicht") and regen_vandaag:
+        intro = (
+            "🌧️ <b>Regen verwacht vandaag — zandbak staat open!</b>"
+            if status == "open"
+            else "🌧️ <b>Regen verwacht vandaag — zandbak alleen dicht, niet afgedekt!</b>"
+        )
         msg = (
-            "🌧️ <b>Regen verwacht vandaag — zandbak staat open!</b>\n"
+            f"{intro}\n"
             f"{today['precip_prob_max']}% kans, {today['precip_mm']:.0f}mm verwacht.\n"
             "→ Afdekken!"
         )
@@ -205,7 +210,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 
     # ── Open ──
     if status == "open":
-        if regen_nabij:
+        if regen_morgen:
             droge_dag = first_dry_day(forecast, from_index=1)
             droge_str = f"Eerste droge dag: {_format_date(droge_dag)}" if droge_dag else "Geen droge dag in zicht"
             regen_desc = (
@@ -220,7 +225,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
             )
             return _wrap(msg), {**state, "status": "afgedekt"}
         else:
-            # Droog → sluiten tegen katten; morgenochtend krijg je bericht om te openen
+            # Droog morgen → sluiten tegen katten; morgenochtend krijg je bericht om te openen
             msg = (
                 "🐱 <b>Zandbak sluiten tegen de katten</b>\n"
                 "Morgen droog, je krijgt morgenochtend een berichtje om hem te openen.\n"
@@ -230,7 +235,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 
     # ── Dicht ──
     if status == "dicht":
-        if regen_nabij:
+        if regen_morgen:
             droge_dag = first_dry_day(forecast, from_index=1)
             droge_str = f"Eerste droge dag: {_format_date(droge_dag)}" if droge_dag else "Geen droge dag in zicht"
             regen_desc = (
@@ -245,8 +250,8 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
             )
             return _wrap(msg), {**state, "status": "afgedekt"}
         else:
-            # Droog, al dicht → geen actie (morgen ochtend triggert luchten)
-            print("[avond] Dicht + droog → geen bericht, ochtend triggert luchten")
+            # Droog morgen → geen actie (morgen ochtend triggert luchten)
+            print("[avond] Dicht + droog morgen → geen bericht, ochtend triggert luchten")
             return None, state
 
     # ── Afgedekt ──

@@ -3,10 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self' https://api.github.com;
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
 <title>Humus & Heaven · Utrecht Oost</title>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<!--
+  TODO (security): add SRI integrity= attributes to the two scripts below.
+  Run locally:
+    curl -sSL https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js \
+      | openssl dgst -sha384 -binary | openssl base64 -A
+    curl -sSL https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js \
+      | openssl dgst -sha384 -binary | openssl base64 -A
+  Then add integrity="sha384-<hash>" to each tag.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
 <style>
   :root {
     --parchment: #f3ecd9;
@@ -767,15 +787,44 @@ function openWaterModal() {
   if (!CONFIG.gistId || CONFIG.gistId === "__GIST_ID__" || !CONFIG.githubToken) {
     const gid = prompt("Eerste keer: plak je Gist ID (uit de URL van je gist):");
     if (!gid) return;
-    const token = prompt("Plak je GitHub Personal Access Token (met 'gist' scope):");
+    const cleanGid = gid.trim();
+    if (!/^[a-f0-9]{20,}$/i.test(cleanGid)) {
+      alert("Dit ziet er niet uit als een Gist ID (verwacht een hex-string).");
+      return;
+    }
+    const token = prompt(
+      "Plak een GitHub fine-grained token met 'Gists: read & write' " +
+      "(scope dit token tot alleen deze gist).\n\n" +
+      "Let op: het token wordt in jouw browser opgeslagen — gebruik geen " +
+      "classic PAT met brede 'gist' scope, want die geeft toegang tot al je gists."
+    );
     if (!token) return;
-    localStorage.setItem("gist_id", gid);
-    localStorage.setItem("gh_token", token);
-    CONFIG.gistId = gid;
-    CONFIG.githubToken = token;
+    const cleanToken = token.trim();
+    // github_pat_ = fine-grained, ghp_ = classic. Waarschuw bij classic.
+    if (cleanToken.startsWith("ghp_")) {
+      const ok = confirm(
+        "Dit lijkt een classic PAT (ghp_…). Die geeft toegang tot ÁL jouw gists, " +
+        "niet alleen deze. Liever een fine-grained token (github_pat_…) maken.\n\n" +
+        "Toch doorgaan?"
+      );
+      if (!ok) return;
+    }
+    localStorage.setItem("gist_id", cleanGid);
+    localStorage.setItem("gh_token", cleanToken);
+    CONFIG.gistId = cleanGid;
+    CONFIG.githubToken = cleanToken;
   }
   document.getElementById("water-modal").classList.add("open");
   updateWaterLog();
+}
+
+function forgetCredentials() {
+  if (!confirm("Gist ID en token uit deze browser verwijderen?")) return;
+  localStorage.removeItem("gist_id");
+  localStorage.removeItem("gh_token");
+  CONFIG.gistId = "__GIST_ID__";
+  CONFIG.githubToken = null;
+  alert("Verwijderd. Je krijgt opnieuw de prompt zodra je iets opslaat.");
 }
 
 function closeWaterModal() {

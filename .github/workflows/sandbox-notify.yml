@@ -78,18 +78,22 @@ jobs:
         if: >
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.override_status != ''
+        env:
+          OVERRIDE_STATUS: ${{ github.event.inputs.override_status }}
         run: |
-          STATUS="${{ github.event.inputs.override_status }}"
-          echo "Status overschreven naar: $STATUS"
-          python3 -c "
-          import json, datetime, os
-          f = 'sandbox_state.json'
+          python3 << 'EOF'
+          import json, os
+          from datetime import datetime, timezone
+          status = os.environ["OVERRIDE_STATUS"]
+          if status not in ("open", "dicht", "afgedekt"):
+              raise SystemExit(f"Onbekende status: {status!r}")
+          f = "sandbox_state.json"
           state = json.load(open(f)) if os.path.exists(f) else {}
-          state['status'] = '$STATUS'
-          state['last_updated'] = datetime.datetime.utcnow().isoformat()
-          json.dump(state, open(f, 'w'), indent=2)
-          print('Nieuwe state:', state)
-          "
+          state["status"] = status
+          state["last_updated"] = datetime.now(timezone.utc).isoformat()
+          json.dump(state, open(f, "w"), indent=2)
+          print("Nieuwe state:", state)
+          EOF
 
       - name: Voer zandbak check uit
         env:

@@ -18,8 +18,8 @@ SOIL_FC = 0.20  # ophoogzand met kleicomponent, Utrecht Oost (Schildersbuurt)
 SOIL_WP = 0.09
 
 ZONES = {
-    "lawn":   {"name": "Lawn",   "Zr": 0.15},
-    "shrubs": {"name": "Shrubs", "Zr": 0.40},
+    "lawn":   {"name": "Lawn",   "Zr": 0.20},
+    "shrubs": {"name": "Shrubs", "Zr": 0.42},
 }
 
 # Seizoensgebonden Kc per zone (FAO-56, gecalibreerd voor Nederland).
@@ -27,31 +27,39 @@ ZONES = {
 # Tussenliggende waarden worden lineair geïnterpoleerd.
 # Gebaseerd op FAO-56 Tabel 12 + KNMI klimaatdata voor Utrecht.
 KC_SEASONAL = {
+    # Graszone: enkelvoudige curve, maandelijkse ankerpunten.
+    # Bronnen: FAO-56 Tabel 12, KNMI klimaatdata Utrecht, veldcalibratie.
     "lawn": [
-        (  1, 0.40),  # jan: winterrust, nauwelijks groei
-        ( 60, 0.40),  # begin mrt: nog rustig
-        ( 90, 0.65),  # eind mrt: herstelgroei na winter
-        (120, 0.85),  # eind apr: actieve groei
-        (152, 1.00),  # begin jun: vol seizoen, max verdamping
-        (213, 1.00),  # begin aug: vol seizoen
-        (244, 0.90),  # begin sep: lichte afname
-        (274, 0.75),  # begin okt: groei neemt af
-        (305, 0.50),  # begin nov: bijna winterrust
-        (335, 0.40),  # begin dec: winterrust
+        (  1, 0.40),  # jan: winterrust
+        ( 32, 0.40),  # feb: winterrust
+        ( 60, 0.65),  # mrt: herstelgroei
+        ( 91, 0.90),  # apr: actieve groei
+        (121, 0.95),  # mei: vol groeiseizoen
+        (152, 1.00),  # jun: max verdamping
+        (182, 1.00),  # jul: vol seizoen
+        (213, 1.00),  # aug: vol seizoen
+        (244, 0.85),  # sep: lichte afname
+        (274, 0.75),  # okt: groei neemt af
+        (305, 0.50),  # nov: bijna winterrust
+        (335, 0.40),  # dec: winterrust
         (365, 0.40),  # eind dec
     ],
+    # Plantenzone: gewogen mix van fruitbomen (5%), vaste planten (75%), kale grond (20%).
+    # Kc_zone = 0.05*Kc_bomen + 0.75*Kc_vast + 0.20*Kc_kaal
     "shrubs": [
-        (  1, 0.30),  # jan: kale takken, minimale verdamping
-        ( 60, 0.30),  # begin mrt: knoppen zwellen
-        ( 90, 0.50),  # eind mrt: uitlopen
-        (110, 0.65),  # mid apr: blad in ontwikkeling
-        (135, 0.75),  # mid mei: vol blad
-        (182, 0.80),  # begin jul: max seizoen
-        (244, 0.80),  # begin sep: vol blad nog
-        (274, 0.65),  # begin okt: blad verkleurt
-        (305, 0.45),  # begin nov: blad valt
-        (335, 0.30),  # begin dec: winterrust
-        (365, 0.30),  # eind dec
+        (  1, 0.35),  # jan: winterrust mix
+        ( 32, 0.35),  # feb: winterrust mix
+        ( 60, 0.58),  # mrt: uitlopen bomen + vaste planten
+        ( 91, 0.82),  # apr: blad in ontwikkeling
+        (121, 0.87),  # mei: vol blad
+        (152, 0.98),  # jun: max seizoen
+        (182, 0.98),  # jul: vol seizoen
+        (213, 0.98),  # aug: vol seizoen
+        (244, 0.64),  # sep: blad verkleurt, terugval
+        (274, 0.56),  # okt: blad valt
+        (305, 0.38),  # nov: kale takken
+        (335, 0.35),  # dec: winterrust mix
+        (365, 0.35),  # eind dec
     ],
 }
 

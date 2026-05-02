@@ -123,6 +123,11 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
     AWC_max = (SOIL_FC - SOIL_WP) * zone["Zr"] * 1000
     start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
     water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
+    # Voorspelde regen telt niet mee in de bodemvocht-balans: de gauge
+    # moet de werkelijkheid op moment van berekening tonen, niet wat
+    # nog moet vallen. "Vandaag" is bij ochtendrun ook nog grotendeels
+    # voorspelling, dus we knippen op `< today`.
+    today_str = date.today().isoformat()
     out = []
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
@@ -147,7 +152,7 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         RAW = AWC_max * 0.5
         Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
         actual_ET = ETc * Ks
-        rain = d.get("precip") or 0
+        rain = (d.get("precip") or 0) if d["date"] < today_str else 0
         irrig = irrigations.get(f"{d['date']}_{zone_key}", irrigations.get(d["date"], 0))
         water += rain + irrig - actual_ET
         drainage = 0

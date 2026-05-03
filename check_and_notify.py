@@ -25,9 +25,8 @@ from pathlib import Path
 
 import requests
 
-from soil_model import (assess_status, build_full_dataset,
-                        build_monthly_totals_from_days, fetch_open_meteo_archive,
-                        _apply_et0_and_balance)
+from soil_model import (apply_et0_and_balance, assess_status, build_full_dataset,
+                        build_monthly_totals_from_days, fetch_open_meteo_archive)
 
 # =============================================================================
 
@@ -59,7 +58,7 @@ def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
         print(f"[bootstrap] archive fetch mislukt: {e}")
         return {}
 
-    _apply_et0_and_balance(series, irrigations_raw)
+    apply_et0_and_balance(series, irrigations_raw)
     totals = build_monthly_totals_from_days(series)
     print(f"[bootstrap] {len(totals)} maanden bevroren: {sorted(totals.keys())}")
     return totals

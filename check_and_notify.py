@@ -255,6 +255,15 @@ def main():
     print(f"   Gras: {status_lawn['priority']} — {status_lawn['recommendation']}")
     print(f"   Struiken: {status_shrubs['priority']} — {status_shrubs['recommendation']}")
 
+    # Publish a trimmed status per zone so the dashboard reads the same facts
+    # the Telegram message does, instead of re-deriving thresholds in JS.
+    # `recommendation` stays Telegram-only (long-form); the dashboard renders
+    # its own short tile text from these facts.
+    _DASHBOARD_FIELDS = ("state", "priority", "depletion_pct", "days_to_stress",
+                         "rain7_mm", "proposal_mm", "proposal_min")
+    data["lawn_status"]   = {k: status_lawn[k]   for k in _DASHBOARD_FIELDS}
+    data["shrubs_status"] = {k: status_shrubs[k] for k in _DASHBOARD_FIELDS}
+
     # Data.json wegschrijven voor dashboard
     out = Path("docs/data.json")
     out.parent.mkdir(exist_ok=True)

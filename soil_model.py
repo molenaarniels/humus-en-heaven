@@ -231,8 +231,49 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     ]
 
 
+def fetch_wunderground_current(station_id: str, api_key: str) -> Optional[Dict]:
+    """Haalt de meest recente WU observatie. Geeft today's accumulatieve
+    `precipTotal` (sinds middernacht station-tijd). Andere velden blijven
+    leeg zodat de merge alleen precip overschrijft — Tmax/Tmin/RHmean/u2
+    voor today blijven van Open-Meteo komen (daily aggregaten)."""
+    url = (
+        "https://api.weather.com/v2/pws/observations/current"
+        f"?stationId={station_id}&format=json&units=m"
+        f"&numericPrecision=decimal&apiKey={api_key}"
+    )
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        obs_list = r.json().get("observations", [])
+        if not obs_list:
+            return None
+        obs = obs_list[0]
+        m = obs.get("metric", {})
+        precip = m.get("precipTotal")
+        if precip is None:
+            return None
+        # obsTimeLocal is "YYYY-MM-DD HH:MM:SS" in station-tz (Amsterdam).
+        day = (obs.get("obsTimeLocal") or "")[:10]
+        if not day:
+            day = (obs.get("obsTimeUtc") or "")[:10]
+        if not day:
+            return None
+        return {
+            "date": day,
+            "Tmax": None, "Tmin": None, "Tmean": None,
+            "RHmean": None, "u2": None,
+            "precip": precip,
+        }
+    except Exception as e:
+        print(f"[WU] current call failed: {e}")
+        return None
+
+
 def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Dict]:
-    """Haalt WU PWS history. Probeert range-call eerst, dan per-dag fallback."""
+    """Haalt WU PWS history (afgesloten dagen) + current observatie voor
+    today's accumulatieve precip. Probeert range-call eerst, dan per-dag
+    fallback voor history."""
     today = date.today()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
@@ -243,6 +284,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
         f"&numericPrecision=decimal&apiKey={api_key}"
     )
     results = []
+    history_ok = False
     try:
         r = requests.get(url, timeout=20)
         if r.status_code == 200:
@@ -261,39 +303,47 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "u2": (obs.get("windspeedAvg") or 0) / 3.6,
                     "precip": m.get("precipTotal"),
                 })
-            if results:
-                return results
+            history_ok = bool(results)
     except Exception as e:
         print(f"[WU] range call failed: {e}")
 
-    print("[WU] falling back to per-day...")
-    for i in range(days, 0, -1):
-        d = today - timedelta(days=i)
-        url = (
-            "https://api.weather.com/v2/pws/history/daily"
-            f"?stationId={station_id}&format=json&units=m"
-            f"&date={d.strftime('%Y%m%d')}&numericPrecision=decimal&apiKey={api_key}"
-        )
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code != 200:
-                continue
-            obs_list = r.json().get("observations", [])
-            if not obs_list:
-                continue
-            obs = obs_list[0]
-            m = obs.get("metric", {})
-            results.append({
-                "date": d.isoformat(),
-                "Tmax": m.get("tempHigh"),
-                "Tmin": m.get("tempLow"),
-                "Tmean": m.get("tempAvg"),
-                "RHmean": obs.get("humidityAvg"),
-                "u2": (obs.get("windspeedAvg") or 0) / 3.6,
-                "precip": m.get("precipTotal"),
-            })
-        except Exception as e:
-            print(f"[WU] {d} failed: {e}")
+    if not history_ok:
+        print("[WU] falling back to per-day...")
+        for i in range(days, 0, -1):
+            d = today - timedelta(days=i)
+            url = (
+                "https://api.weather.com/v2/pws/history/daily"
+                f"?stationId={station_id}&format=json&units=m"
+                f"&date={d.strftime('%Y%m%d')}&numericPrecision=decimal&apiKey={api_key}"
+            )
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code != 200:
+                    continue
+                obs_list = r.json().get("observations", [])
+                if not obs_list:
+                    continue
+                obs = obs_list[0]
+                m = obs.get("metric", {})
+                results.append({
+                    "date": d.isoformat(),
+                    "Tmax": m.get("tempHigh"),
+                    "Tmin": m.get("tempLow"),
+                    "Tmean": m.get("tempAvg"),
+                    "RHmean": obs.get("humidityAvg"),
+                    "u2": (obs.get("windspeedAvg") or 0) / 3.6,
+                    "precip": m.get("precipTotal"),
+                })
+            except Exception as e:
+                print(f"[WU] {d} failed: {e}")
+
+    # Today's accumulatieve regen via current-endpoint. Overschrijft via de
+    # merge alleen `precip` (andere velden zijn None) — Tmax/Tmin/etc. voor
+    # today blijven van Open-Meteo komen.
+    today_obs = fetch_wunderground_current(station_id, api_key)
+    if today_obs and today_obs["date"] == today.isoformat():
+        results.append(today_obs)
+        print(f"[WU] today: precip={today_obs['precip']} mm tot nu")
     return results
 
 

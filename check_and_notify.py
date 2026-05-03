@@ -25,9 +25,8 @@ from pathlib import Path
 
 import requests
 
-from soil_model import (assess_status, build_full_dataset,
-                        build_monthly_totals_from_days, fetch_open_meteo_archive,
-                        _apply_et0_and_balance)
+from soil_model import (apply_et0_and_balance, assess_status, build_full_dataset,
+                        build_monthly_totals_from_days, fetch_open_meteo_archive)
 
 # =============================================================================
 
@@ -59,7 +58,7 @@ def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
         print(f"[bootstrap] archive fetch mislukt: {e}")
         return {}
 
-    _apply_et0_and_balance(series, irrigations_raw)
+    apply_et0_and_balance(series, irrigations_raw)
     totals = build_monthly_totals_from_days(series)
     print(f"[bootstrap] {len(totals)} maanden bevroren: {sorted(totals.keys())}")
     return totals
@@ -255,6 +254,15 @@ def main():
     status_shrubs = assess_status(data, "shrubs")
     print(f"   Gras: {status_lawn['priority']} — {status_lawn['recommendation']}")
     print(f"   Struiken: {status_shrubs['priority']} — {status_shrubs['recommendation']}")
+
+    # Publish a trimmed status per zone so the dashboard reads the same facts
+    # the Telegram message does, instead of re-deriving thresholds in JS.
+    # `recommendation` stays Telegram-only (long-form); the dashboard renders
+    # its own short tile text from these facts.
+    _DASHBOARD_FIELDS = ("state", "priority", "depletion_pct", "days_to_stress",
+                         "rain7_mm", "proposal_mm", "proposal_min")
+    data["lawn_status"]   = {k: status_lawn[k]   for k in _DASHBOARD_FIELDS}
+    data["shrubs_status"] = {k: status_shrubs[k] for k in _DASHBOARD_FIELDS}
 
     # Data.json wegschrijven voor dashboard
     out = Path("docs/data.json")

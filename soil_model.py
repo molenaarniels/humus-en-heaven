@@ -4,7 +4,7 @@ Shared between the GitHub Action and the data-builder for the static site.
 """
 import calendar as _calendar
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 
@@ -351,8 +351,8 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
 # COMBINED
 # =============================================================================
 
-def _apply_et0_and_balance(series: List[Dict],
-                           irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
+def apply_et0_and_balance(series: List[Dict],
+                          irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
     """Compute ET0 + water balance in-place on a series of day dicts. Returns the series."""
     lat_rad = math.radians(UTRECHT_LAT)
     for d in series:
@@ -408,10 +408,10 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         except Exception as e:
             print(f"[WARN] WU merge failed: {e}")
 
-    _apply_et0_and_balance(om, irrigations)
+    apply_et0_and_balance(om, irrigations)
 
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
         "source": source_note,
         "wu_days": wu_days,
         "soil": {"FC": SOIL_FC, "WP": SOIL_WP},

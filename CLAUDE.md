@@ -80,10 +80,15 @@ This repo contains three independent automation pipelines, all running on GitHub
 - Fetches Open-Meteo hourly forecast for Utrecht
 - Parses 24h window: temp, apparent_temp, precip, pop, uv_index
 - Builds message per time block (configured at top of script):
-  - Fietstocht 06:00–06:30 (daily)
-  - KDV brengen 08:00–09:00 (daily)
-  - Naar huis 16:30–17:30 (daily)
-  - Sport vrouw 19:00–20:00 (Monday + Wednesday only, weekdays={0,2})
+  - Two block sets: `WEEKDAY_BLOCKS` (Mon–Thu) and `PEUTER_BLOCKS` (Fri–Sun)
+  - Weekday blocks:
+    - Fietstocht 06:00–06:30 (Tuesday + Thursday only, weekdays={1,3})
+    - KDV brengen 08:00–09:00 (Monday–Thursday, weekdays={0,1,2,3})
+    - Naar huis 16:30–17:30 (Monday–Thursday, weekdays={0,1,2,3})
+    - Sport vrouw 19:00–20:00 (Monday + Wednesday only, weekdays={0,2})
+  - Peuter blocks (Friday + Saturday + Sunday):
+    - Na fruit 09:30–11:30
+    - Na dutje 15:00–17:00
 - UV windows via linear interpolation between hourly values, rounded to 30 min
 - Windows shorter than 15 min are filtered out
 - HOME_COORDS + HOME_RADIUS_KM (10km from Utrecht) determines home vs vacation mode:

@@ -2,8 +2,10 @@
 Daily weather briefing via Telegram.
 
 Fetches hourly forecast from Open-Meteo and sends a personalized
-briefing covering specific time blocks (commute, school run, return,
-sport on Mon/Wed) plus daily UV exposure windows.
+briefing covering specific time blocks plus daily UV exposure windows.
+
+Weekdays Mon–Thu: commute (bike Tue/Thu only), school run, return home,
+sport (Mon/Wed). Peuter days Fri–Sun: morning outing + post-nap window.
 
 When the configured location is not "home" (>10km from Utrecht),
 only UV info is reported.
@@ -30,12 +32,21 @@ LOCATION = {
 HOME_COORDS = (52.0907, 5.1214)
 HOME_RADIUS_KM = 10.0
 
-TIME_BLOCKS = [
-    ("Fietstocht",      6, 0,  6, 30, None,    "🚲"),
-    ("KDV brengen",     8, 0,  9,  0, None,    "🧒"),
-    ("Naar huis",      16, 30, 17, 30, None,   "🏠"),
-    ("Sport (vrouw)",  19, 0, 20,  0, {0, 2},  "🏃"),
+# Blocks for regular weekdays (Mon–Thu). weekdays: 0=Mon … 6=Sun
+WEEKDAY_BLOCKS = [
+    ("Fietstocht",     6,  0,  6, 30, {1, 3},          "🚲"),
+    ("KDV brengen",    8,  0,  9,  0, {0, 1, 2, 3},    "🧒"),
+    ("Naar huis",     16, 30, 17, 30, {0, 1, 2, 3},    "🏠"),
+    ("Sport (vrouw)", 19,  0, 20,  0, {0, 2},           "🏃"),
 ]
+
+# Blocks for peuter days (Fri–Sun)
+PEUTER_BLOCKS = [
+    ("Na fruit",   9, 30, 11, 30, None, "🍓"),
+    ("Na dutje",  15,  0, 17,  0, None, "💤"),
+]
+
+PEUTER_DAYS = {4, 5, 6}  # Friday, Saturday, Sunday
 
 UV_MODERATE = 3.0
 UV_HIGH     = 5.0
@@ -229,7 +240,8 @@ def build_message(location, forecast, today):
     parts = [header, ""]
 
     if home:
-        for label, sh, sm, eh, em, days, icon in TIME_BLOCKS:
+        blocks = PEUTER_BLOCKS if weekday in PEUTER_DAYS else WEEKDAY_BLOCKS
+        for label, sh, sm, eh, em, days, icon in blocks:
             if days is not None and weekday not in days:
                 continue
             block_hours = hours_in_window(rows, today, sh, sm, eh, em)

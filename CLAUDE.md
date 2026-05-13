@@ -83,7 +83,8 @@ This repo contains three independent automation pipelines, all running on GitHub
   - Two block sets: `WEEKDAY_BLOCKS` (Mon–Thu) and `PEUTER_BLOCKS` (Fri–Sun)
   - Weekday blocks:
     - Fietstocht 06:00–06:30 (Tuesday + Thursday only, weekdays={1,3})
-    - KDV brengen 08:00–09:00 (Monday–Thursday, weekdays={0,1,2,3})
+    - KDV brengen 08:00–09:00 (Mon/Tue/Thu, weekdays={0,1,3})
+    - Naar kantoor 08:00–09:00 (Wednesday only, weekdays={2}) — cycle to work without Ted
     - Naar huis 16:30–17:30 (Monday–Thursday, weekdays={0,1,2,3})
     - Sport vrouw 19:00–20:00 (Monday + Wednesday only, weekdays={0,2})
   - Peuter blocks (Friday + Saturday + Sunday):

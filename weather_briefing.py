@@ -80,6 +80,7 @@ def fetch_forecast(location):
             "precipitation",
             "precipitation_probability",
             "uv_index",
+            "uv_index_clear_sky",
             "cloud_cover",
         ]),
         "timezone":     location["timezone"],
@@ -90,19 +91,39 @@ def fetch_forecast(location):
     return r.json()
 
 
+def cloud_corrected_uv(uv_clear_sky, cloud_cover_pct):
+    """Reduce clear-sky UV by a cloud modification factor.
+
+    Josefsson & Landelius (2000): CMF = 1 - 0.75 * (cloud_fraction)^3.4.
+    Open-Meteo's own `uv_index` under-corrects for cloud cover, so we
+    derive the value ourselves from `uv_index_clear_sky` + `cloud_cover`.
+    """
+    if uv_clear_sky is None or cloud_cover_pct is None:
+        return uv_clear_sky
+    cc = max(0.0, min(100.0, cloud_cover_pct)) / 100.0
+    cmf = 1.0 - 0.75 * (cc ** 3.4)
+    return uv_clear_sky * cmf
+
+
 def parse_hourly(forecast):
     h = forecast["hourly"]
+    n = len(h["time"])
+    uv_clear_series = h.get("uv_index_clear_sky", [None] * n)
+    cloud_series    = h.get("cloud_cover",        [None] * n)
     rows = []
     for i, t in enumerate(h["time"]):
         dt = datetime.fromisoformat(t)
+        uv_clear = uv_clear_series[i]
+        cloud    = cloud_series[i]
+        uv = cloud_corrected_uv(uv_clear, cloud) if uv_clear is not None else h["uv_index"][i]
         rows.append({
             "dt": dt,
             "temp":   h["temperature_2m"][i],
             "feels":  h["apparent_temperature"][i],
             "precip": h["precipitation"][i],
             "pop":    h["precipitation_probability"][i],
-            "uv":     h["uv_index"][i],
-            "cloud":  h.get("cloud_cover", [None] * len(h["time"]))[i],
+            "uv":     uv,
+            "cloud":  cloud,
         })
     return rows
 

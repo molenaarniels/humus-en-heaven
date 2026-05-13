@@ -97,8 +97,8 @@ This repo contains three independent automation pipelines, all running on GitHub
 - UV thresholds: UV_MODERATE = 3.0, UV_HIGH = 5.0
 - `DRY_RUN=1` env var: print output without sending to Telegram (for local testing)
 
-### Known limitation
-Open-Meteo UV index may run ~2 hours longer than actual (clear-sky vs cloud-corrected model). Do not "fix" this without adding a second data source.
+### UV cloud correction
+Open-Meteo's `uv_index` field is only weakly cloud-corrected and reports clear-sky-like values on overcast/rainy days. We therefore fetch `uv_index_clear_sky` and apply the Josefsson & Landelius (2000) cloud modification factor `CMF = 1 - 0.75 * (cloud_fraction)^3.4` using the hourly `cloud_cover` from the same call. The corrected value is what `uv_windows()` thresholds against. If `uv_index_clear_sky` is missing for a given hour, fall back to the raw `uv_index`.
 
 ---
 

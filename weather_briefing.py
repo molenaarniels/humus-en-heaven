@@ -35,7 +35,8 @@ HOME_RADIUS_KM = 10.0
 # Blocks for regular weekdays (Mon–Thu). weekdays: 0=Mon … 6=Sun
 WEEKDAY_BLOCKS = [
     ("Fietstocht",     6,  0,  6, 30, {1, 3},          "🚲"),
-    ("KDV brengen",    8,  0,  9,  0, {0, 1, 2, 3},    "🧒"),
+    ("KDV brengen",    8,  0,  9,  0, {0, 1, 3},       "🧒"),
+    ("Naar kantoor",   8,  0,  9,  0, {2},             "🏢"),
     ("Naar huis",     16, 30, 17, 30, {0, 1, 2, 3},    "🏠"),
     ("Sport (vrouw)", 19,  0, 20,  0, {0, 2},           "🏃"),
 ]
@@ -171,10 +172,15 @@ def summarize_block(label, hours):
             return str(round(lo)) + unit
         return str(round(lo)) + "-" + str(round(hi)) + unit
 
+    if precip < 0.05 and pop >= 30:
+        precip_str = "miezer"
+    else:
+        precip_str = ("%.1f" % precip) + " mm"
+
     return (
         label + " " + glyph + "\n"
         "   Temp " + fmt_range(temps) + " (gevoel " + fmt_range(feels) + ")"
-        "  Regen " + str(round(pop)) + "% / " + ("%.1f" % precip) + " mm"
+        "  Regen " + str(round(pop)) + "% / " + precip_str
     )
 
 def uv_windows(rows, target_date, threshold):

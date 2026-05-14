@@ -23,6 +23,22 @@ ZONES = {
     "shrubs": {"name": "Shrubs", "Zr": 0.42},
 }
 
+# Per-zone depletie-fractie p (FAO-56 Tabel 22): readily-available water
+# = p × AWC. Boven die drempel begint stress (Ks daalt). Cool-season gras
+# heeft p ≈ 0.40; gemengde sierbeplanting houdt 0.50 aan.
+P_DEPLETION = {"lawn": 0.40, "shrubs": 0.50}
+
+# Interceptie per regenbui (mm): water dat op blad/canopy blijft hangen
+# en verdampt voordat het de bodem bereikt. Alleen toegepast als rain > 2 mm
+# (lichte motregen draagt verwaarloosbaar bij; gewogen door event-grootte
+# zou correcter zijn, maar de impact op dagschaal is klein).
+INTERCEPTION = {"lawn": 1.0, "shrubs": 1.5}
+
+# Rolling window (dagen) voor bodemtemperatuur-proxy. Air-Tmean is een te
+# snelle proxy voor bodem; de bodem ijlt na, dus een 5-daagse loopgemiddelde
+# vermijdt dat een enkele koude dag verdamping volledig naar 0 trekt.
+SOIL_TEMP_WINDOW = 5
+
 # Both Open-Meteo en Wunderground PWS leveren wind op 10 m hoogte.
 # FAO-56 Penman-Monteith vereist u2 (2 m). Eq. 47 log-law correctie:
 #   u2 = u_z * 4.87 / ln(67.8 * z - 5.42)
@@ -123,18 +139,31 @@ def penman_monteith_et0(Tmax, Tmin, RHmean, u2, Rs, elev, lat_rad, doy):
 
 
 def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
-                      irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
+                      irrigations: Optional[Dict[str, float]] = None,
+                      seed_theta: Optional[float] = None) -> List[Dict]:
     """Single-bucket balance. irrigations = {"YYYY-MM-DD": mm_gegeven}.
-    Gebruikt seizoensgebonden Kc per dag via seasonal_kc()."""
+    Gebruikt seizoensgebonden Kc per dag via seasonal_kc().
+
+    Als `seed_theta` is meegegeven (v/v) wordt dat de start θ; anders
+    valt het terug op de FAO-56-conventionele 30%-uitputting heuristiek.
+    """
     irrigations = irrigations or {}
     AWC_max = (SOIL_FC - SOIL_WP) * zone["Zr"] * 1000
-    start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
-    water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
+    if seed_theta is not None:
+        # Clamp tussen WP en FC zodat een corrupt seed niet ontspoort.
+        seed_clamped = max(SOIL_WP, min(SOIL_FC, seed_theta))
+        water = (seed_clamped - SOIL_WP) * zone["Zr"] * 1000
+    else:
+        start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
+        water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
     # Voor "vandaag" zit in d["precip"] alleen de regen die al daadwerkelijk
     # gevallen is (WU precipTotal sinds middernacht, of Open-Meteo uurlijks
     # gesommeerd tot het huidige uur in fetch_open_meteo). Voor toekomstige
     # dagen telt de voorspelde regen wél mee — anders zou de voorspellings-
     # lijn alleen verdamping tonen en de impact van aankomende regen missen.
+    p_zone = P_DEPLETION.get(zone_key, 0.50)
+    interception_mm = INTERCEPTION.get(zone_key, 0.0)
+    tmean_window: List[float] = []
     out = []
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
@@ -143,23 +172,36 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         # Bodemtemperatuur drempel (FAO-56 §3.3):
         # Onder 5°C stopt plantengroei nagenoeg volledig — geen verdamping.
         # Tussen 5°C en 8°C lineaire overgang (voorkomt harde knip in de grafiek).
-        # Tmean als proxy voor bodemtemperatuur — vertraagd maar voldoende
-        # nauwkeurig voor dagelijkse beslissingen.
-        tmean = d.get("Tmean") or ((d.get("Tmax", 10) + d.get("Tmin", 0)) / 2)
-        if tmean <= 5.0:
+        # Lucht-Tmean ijlt na in de bodem; we gebruiken een SOIL_TEMP_WINDOW-
+        # daagse loopgemiddelde als proxy voor bodemtemperatuur.
+        tmean_today = d.get("Tmean")
+        if tmean_today is None:
+            tmean_today = (d.get("Tmax", 10) + d.get("Tmin", 0)) / 2
+        tmean_window.append(tmean_today)
+        if len(tmean_window) > SOIL_TEMP_WINDOW:
+            tmean_window.pop(0)
+        tmean_eff = sum(tmean_window) / len(tmean_window)
+        if tmean_eff <= 5.0:
             temp_factor = 0.0
-        elif tmean <= 8.0:
-            temp_factor = (tmean - 5.0) / 3.0  # 0→1 tussen 5 en 8°C
+        elif tmean_eff <= 8.0:
+            temp_factor = (tmean_eff - 5.0) / 3.0  # 0→1 tussen 5 en 8°C
         else:
             temp_factor = 1.0
         kc = round(kc * temp_factor, 3)
 
         ETc = d["ET0"] * kc
         depletion = max(0, AWC_max - water)
-        RAW = AWC_max * 0.5
+        RAW = AWC_max * p_zone
         Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
         actual_ET = ETc * Ks
-        rain = d.get("precip") or 0
+        rain_raw = d.get("precip") or 0
+        # Interceptie: alleen aftrekken bij events groter dan 2 mm. Lichte
+        # motregen wordt grotendeels direct opgenomen door de bodem.
+        if rain_raw > 2.0:
+            intercepted = min(interception_mm, rain_raw)
+        else:
+            intercepted = 0.0
+        rain = rain_raw - intercepted
         irrig = irrigations.get(f"{d['date']}_{zone_key}", irrigations.get(d["date"], 0))
         water += rain + irrig - actual_ET
         drainage = 0
@@ -177,6 +219,7 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
             "Kc": kc,
             "drainage": round(drainage, 2),
             "irrigation": irrig,
+            "interception": round(intercepted, 2),
         })
     return out
 
@@ -358,8 +401,14 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
 # =============================================================================
 
 def apply_et0_and_balance(series: List[Dict],
-                          irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
-    """Compute ET0 + water balance in-place on a series of day dicts. Returns the series."""
+                          irrigations: Optional[Dict[str, float]] = None,
+                          seed_theta: Optional[Dict[str, float]] = None) -> List[Dict]:
+    """Compute ET0 + water balance in-place on a series of day dicts. Returns the series.
+
+    `seed_theta` is optioneel een dict zoals {"lawn": 0.14, "shrubs": 0.16}
+    met de start-θ (v/v) per zone voor de eerste dag. Als afwezig: FAO-56
+    30%-uitputting heuristiek.
+    """
     lat_rad = math.radians(UTRECHT_LAT)
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
@@ -376,7 +425,11 @@ def apply_et0_and_balance(series: List[Dict],
             vals = [x["ET0"] for x in series if x["ET0"] is not None]
             d["ET0"] = sum(vals) / len(vals) if vals else 2.0
 
-    balances = {k: run_water_balance(series, z, k, irrigations) for k, z in ZONES.items()}
+    seed_theta = seed_theta or {}
+    balances = {
+        k: run_water_balance(series, z, k, irrigations, seed_theta=seed_theta.get(k))
+        for k, z in ZONES.items()
+    }
     for i, d in enumerate(series):
         for k, bal in balances.items():
             s = bal[i]
@@ -386,13 +439,20 @@ def apply_et0_and_balance(series: List[Dict],
             d[f"{k}_Kc"] = s["Kc"]
             d[f"{k}_irrigation"] = s["irrigation"]
             d[f"{k}_drainage"] = s["drainage"]
+            d[f"{k}_interception"] = s["interception"]
     return series
 
 
 def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
                        irrigations: Optional[Dict[str, float]] = None,
-                       days_past: int = 35) -> Dict:
-    """Haalt data, merge WU met Open-Meteo, run ET0 + water balance per zone."""
+                       days_past: int = 35,
+                       seed_theta: Optional[Dict[str, float]] = None) -> Dict:
+    """Haalt data, merge WU met Open-Meteo, run ET0 + water balance per zone.
+
+    `seed_theta` is optioneel een dict {"lawn": θ, "shrubs": θ} dat dient
+    als startwaarde voor de waterbalans op dag 0 van het venster. Bedoeld
+    om state continuïteit te geven tussen opeenvolgende runs.
+    """
     om = fetch_open_meteo(days_past=days_past, days_forecast=7)
     wu_days = 0
     source_note = "Open-Meteo (Utrecht reanalysis + forecast)"
@@ -415,7 +475,23 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         except Exception as e:
             print(f"[WARN] WU merge failed: {e}")
 
-    apply_et0_and_balance(om, irrigations)
+    apply_et0_and_balance(om, irrigations, seed_theta=seed_theta)
+
+    # State-carry-over: laatste niet-forecast dag dient als seed voor de
+    # volgende run. Zo convergeert het 35-daagse warmup-venster naar een
+    # consistente initiële conditie in plaats van elke run vanaf 30%-
+    # uitputting te starten.
+    theta_end: Dict[str, Optional[float]] = {}
+    theta_end_date: Optional[str] = None
+    for d in reversed(om):
+        if d.get("forecast"):
+            continue
+        if d.get("lawn_theta") is None:
+            continue
+        theta_end_date = d["date"]
+        for k in ZONES.keys():
+            theta_end[k] = d.get(f"{k}_theta")
+        break
 
     return {
         "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
@@ -425,6 +501,8 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         "zones": ZONES,
         "irrigation_rates": IRRIGATION_RATES,
         "location": {"lat": UTRECHT_LAT, "lon": UTRECHT_LON, "name": "Utrecht Oost"},
+        "seed_source": "previous_run" if seed_theta else "default_30pct",
+        "theta_end": {"as_of": theta_end_date, **theta_end},
         "days": om,
     }
 

@@ -39,6 +39,29 @@ def load_existing_monthly_totals() -> dict:
         return {}
 
 
+def load_previous_theta() -> dict:
+    """Laad de laatst-geregistreerde θ per zone uit docs/data.json zodat de
+    volgende run niet vanaf de generieke 30%-uitputting hoeft te starten.
+
+    Geeft een dict zoals {"lawn": 0.14, "shrubs": 0.16} terug, of {} als
+    er geen vorige run is. We accepteren elke datum: de vorige run heeft
+    35 dagen warmup verteerd, dus de "as_of" hoeft niet aan te sluiten
+    op de eerste dag van de nieuwe run — het is een betere prior dan de
+    statische 30%-uitputting.
+    """
+    try:
+        with open("docs/data.json") as f:
+            prev = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    te = prev.get("theta_end") or {}
+    seed = {k: te[k] for k in ("lawn", "shrubs") if te.get(k) is not None}
+    if seed:
+        print(f"[seed] vorige θ as of {te.get('as_of')}: "
+              f"lawn={seed.get('lawn')}, shrubs={seed.get('shrubs')}")
+    return seed
+
+
 def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
     """Eenmalige bootstrap: haal ~13 maanden historische data op en bevries voltooide maanden."""
     today = date.today()
@@ -240,8 +263,10 @@ def main():
         print("→ Geen maandtotalen gevonden — eenmalige bootstrap...")
         existing_monthly = bootstrap_monthly_totals(irrigations_raw)
 
+    seed_theta = load_previous_theta()
     print(f"→ Data bouwen (WU={bool(station)}, Open-Meteo forecast, 35 warme dagen)...")
-    data = build_full_dataset(station, key, irrigations=irrigations_raw, days_past=35)
+    data = build_full_dataset(station, key, irrigations=irrigations_raw,
+                              days_past=35, seed_theta=seed_theta or None)
     data["irrigations"] = irrigations_raw
 
     # Bevries voltooide maanden uit het warme venster en merge met koude opslag

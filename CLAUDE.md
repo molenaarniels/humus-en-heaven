@@ -38,9 +38,9 @@ This repo contains three independent automation pipelines, all running on GitHub
 - Drainage = excess wortelzone-water boven veldcapaciteit (instantaan, dezelfde dag)
 - Ks stress factor: linear decrease when depletion > p × AWC (FAO-56 Eq. 84)
 - p (depletion fraction): 0.40 voor gras, 0.50 voor struiken (FAO-56 Tabel 22)
-- Interceptie: 1.0 mm (gras) / 1.5 mm (struiken) aftrekken bij regenevent > 2 mm
+- Interceptie: canopy-saturation curve `I = C · (1 − exp(−P / C))` met C = 1.0 mm (gras) / 1.5 mm (struiken). Smooth: kleine events worden grotendeels onderschept, grote events verzadigen de canopy bij C.
 - Oppervlaktelaag-parameters: TEW 18 mm, REW 8 mm, Ze 0.10 m (FAO-56 Tabel 19, sandy-loam → klei-versterkte zand)
-- few = min(1 − fc, fw), met fc = 0.95 (gras) / 0.50 (struiken), fw = 1.0 (regen of sproeier) / 0.30 (druppelirrigatie struiken)
+- few = min(1 − fc, fw), met fc = 0.95 (gras) / 0.75 (struiken — canopy + mulch/bladafval), fw = 1.0 (regen of sproeier) / 0.30 (druppelirrigatie struiken)
 - Kc_max = 1.20 (sub-humide klimaat, u2 ≈ 2 m/s, FAO-56 Eq. 72)
 - Soil params: FC 0.20, WP 0.09 v/v — clay-amended sand (ophoogzand) calibration for Utrecht Oost
 - Zones: lawn (Zr 0.20m), shrubs (Zr 0.42m) — each with own Kcb curve

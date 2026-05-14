@@ -28,10 +28,16 @@ ZONES = {
 # heeft p ≈ 0.40; gemengde sierbeplanting houdt 0.50 aan.
 P_DEPLETION = {"lawn": 0.40, "shrubs": 0.50}
 
-# Interceptie per regenbui (mm): water dat op blad/canopy blijft hangen
-# en verdampt voordat het de bodem bereikt. Alleen toegepast als rain > 2 mm
-# (lichte motregen draagt verwaarloosbaar bij; gewogen door event-grootte
-# zou correcter zijn, maar de impact op dagschaal is klein).
+# Interceptiecapaciteit C (mm): maximale hoeveelheid water die op
+# blad/canopy blijft hangen voordat het de bodem bereikt. De effectieve
+# interceptie per dag volgt de canopy-saturation-curve (Liu 1997, ook
+# bekend als de exponentiële vorm van het Rutter-model):
+#     I = C · (1 − exp(−P / C))
+# Voor kleine events (P ≪ C) schaalt I ongeveer lineair met P en wordt
+# een groot deel van de regen onderschept; bij grote events (P ≫ C)
+# verzadigt de canopy en passeert het overschot naar de bodem. Dit
+# vervangt een eerder hard 2 mm drempelmodel dat bij 2.0–3.0 mm events
+# 50–75% van de regen onderschepte — fysisch niet houdbaar.
 INTERCEPTION = {"lawn": 1.0, "shrubs": 1.5}
 
 # Rolling window (dagen) voor bodemtemperatuur-proxy. Air-Tmean is een te
@@ -107,10 +113,15 @@ SURFACE_LAYER = {"TEW": 18.0, "REW": 8.0, "Ze": 0.10}
 # RHmin/u2-afhankelijke fine-tune en gebruiken één constante.
 KC_MAX = 1.20
 
-# Grondbedekking fc (fractie van bodem onder canopy). Lawn is bijna
-# gesloten in het groeiseizoen; sierbeplanting is een mix met deels
-# kale grond/mulch — gemiddeld ~50%.
-GROUND_COVER = {"lawn": 0.95, "shrubs": 0.50}
+# Grondbedekking fc (fractie van bodem die beschermd is tegen directe
+# zoninstraling). Voor Ke beperkt dit `few = 1 − fc`: alleen de blootgestelde
+# bare-soil fractie draagt bij aan oppervlakteverdamping. Lawn is bijna
+# gesloten in het groeiseizoen. Sierbeplanting in een gevestigde tuin heeft
+# canopy + mulch/bladafval die de bodem grotendeels afschermen; ~25%
+# werkelijk blootgestelde grond is realistischer dan een naïeve 50% canopy-
+# only inschatting. FAO-56 Eq. 76 staat toe `fc` te interpreteren als
+# effectieve bedekking inclusief mulch (zie ch. 11).
+GROUND_COVER = {"lawn": 0.95, "shrubs": 0.75}
 
 # Bevochtigingsfractie fw bij irrigatie. Sproeier op gazon dekt
 # de hele zone; druppelslang bij struiken raakt slechts een smalle
@@ -238,8 +249,8 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         ET0 = d["ET0"] or 0
 
         rain_raw = d.get("precip") or 0
-        if rain_raw > 2.0:
-            intercepted = min(interception_mm, rain_raw)
+        if rain_raw > 0 and interception_mm > 0:
+            intercepted = interception_mm * (1 - math.exp(-rain_raw / interception_mm))
         else:
             intercepted = 0.0
         rain = rain_raw - intercepted

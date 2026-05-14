@@ -23,6 +23,12 @@ ZONES = {
     "shrubs": {"name": "Shrubs", "Zr": 0.42},
 }
 
+# Both Open-Meteo en Wunderground PWS leveren wind op 10 m hoogte.
+# FAO-56 Penman-Monteith vereist u2 (2 m). Eq. 47 log-law correctie:
+#   u2 = u_z * 4.87 / ln(67.8 * z - 5.42)
+WIND_MEASUREMENT_HEIGHT = 10.0
+WIND_2M_FACTOR = 4.87 / math.log(67.8 * WIND_MEASUREMENT_HEIGHT - 5.42)
+
 # Seizoensgebonden Kc per zone (FAO-56, gecalibreerd voor Nederland).
 # Format: lijst van (dag_van_jaar, Kc) ankerpunten.
 # Tussenliggende waarden worden lineair geïnterpoleerd.
@@ -209,7 +215,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     r.raise_for_status()
     j = r.json()
     d = j["daily"]
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
@@ -221,9 +227,10 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "Tmin": d["temperature_2m_min"][i],
             "Tmean": d["temperature_2m_mean"][i],
             "RHmean": d["relative_humidity_2m_mean"][i],
-            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6,
+            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": rain_today_so_far if t == today else (d["precipitation_sum"][i] or 0),
+            "ET0_om": d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))[i],
             "forecast": t > today,
         }
         for i, t in enumerate(d["time"])
@@ -273,7 +280,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
     """Haalt WU PWS history (afgesloten dagen) + current observatie voor
     today's accumulatieve precip. Probeert range-call eerst, dan per-dag
     fallback voor history."""
-    today = date.today()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
     url = (
@@ -299,7 +306,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "Tmin": m.get("tempLow"),
                     "Tmean": m.get("tempAvg"),
                     "RHmean": obs.get("humidityAvg"),
-                    "u2": (obs.get("windspeedAvg") or 0) / 3.6,
+                    "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
                 })
             history_ok = bool(results)
@@ -330,7 +337,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "Tmin": m.get("tempLow"),
                     "Tmean": m.get("tempAvg"),
                     "RHmean": obs.get("humidityAvg"),
-                    "u2": (obs.get("windspeedAvg") or 0) / 3.6,
+                    "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
                 })
             except Exception as e:
@@ -378,6 +385,7 @@ def apply_et0_and_balance(series: List[Dict],
             d[f"{k}_ETc"] = s["ETc"]
             d[f"{k}_Kc"] = s["Kc"]
             d[f"{k}_irrigation"] = s["irrigation"]
+            d[f"{k}_drainage"] = s["drainage"]
     return series
 
 
@@ -443,7 +451,7 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
             "Tmin": d["temperature_2m_min"][i],
             "Tmean": d["temperature_2m_mean"][i],
             "RHmean": d["relative_humidity_2m_mean"][i],
-            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6,
+            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": d["precipitation_sum"][i] or 0,
             "forecast": False,
@@ -459,7 +467,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
     kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
     maand wordt nooit bevroren.
     """
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
     raw: Dict[str, Dict] = {}
     for d in days:
         if d.get("forecast") or d["date"] >= today:

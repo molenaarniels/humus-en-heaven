@@ -33,9 +33,10 @@ This repo contains three independent automation pipelines, all running on GitHub
 - Soil balance: θ[t] = θ[t-1] + rain + irrigation − ETc − drainage
 - Drainage = excess above field capacity
 - Ks stress factor: linear decrease when depletion > 50% AWC
-- Soil params: FC 0.17, WP 0.07 v/v (tunable to 0.20/0.09 for clay)
-- Zones: lawn (Zr 0.15m), shrubs (Zr 0.40m) — each with own Kc curve
+- Soil params: FC 0.20, WP 0.09 v/v — clay-amended sand (ophoogzand) calibration for Utrecht Oost
+- Zones: lawn (Zr 0.20m), shrubs (Zr 0.42m) — each with own Kc curve
 - Irrigation rates: sprinkler 20mm/hr (lawn), drip 2mm/hr (shrubs)
+- Wind: anemometers (Open-Meteo + WU PWS) zijn op 10m; FAO-56 Eq. 47 log-law correctie naar 2m wordt toegepast (u2 = u10 × ~0.748)
 
 ### data.json schema (additive only — never break existing fields)
 ```json
@@ -43,8 +44,8 @@ This repo contains three independent automation pipelines, all running on GitHub
   "generated_at": "ISO timestamp",
   "source": "string",
   "wu_days": 28,
-  "soil": {"FC": 0.17, "WP": 0.07},
-  "zones": {"lawn": {"Zr": 0.15}, "shrubs": {}},
+  "soil": {"FC": 0.20, "WP": 0.09},
+  "zones": {"lawn": {"Zr": 0.20}, "shrubs": {"Zr": 0.42}},
   "irrigations": {"2026-04-22": 10.35, "2026-04-22_lawn": 16.7},
   "days": [{
     "date": "YYYY-MM-DD",

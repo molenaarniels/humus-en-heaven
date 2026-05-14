@@ -458,7 +458,8 @@ function renderContent() {
           <div class="legend-row">
             <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.rain};"></span>Regen</span>
             <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.clay};"></span>ETc · ${ZONE_LABELS[state.selectedZone]}</span>
-            <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.sun};"></span>ET₀</span>
+            <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.sun};"></span>ET₀ (model)</span>
+            <span class="legend-item"><span class="legend-line" style="border-top:2px dashed ${COLORS.inkSoft};"></span>ET₀ (Open-Meteo)</span>
           </div>
         </div>
         <div class="specimen-card">
@@ -469,6 +470,24 @@ function renderContent() {
         </div>
       </div>
     </section>
+
+    <!-- E vs T SPLIT (FAO-56 dual Kc) -->
+    ${days.some(x => x[`${state.selectedZone}_E`] != null) ? `
+    <section style="padding:20px 40px 0;">
+      <div class="specimen-card">
+        <div class="corner-mark">Plaat V·b — Bodemverdamping ↔ Transpiratie</div>
+        <h3 class="card-title">Waar gaat het water heen?</h3>
+        <div style="font-size:12px;font-style:italic;color:var(--ink-soft);margin-bottom:8px;">
+          ETc gesplitst in directe bodemverdamping (E, FAO-56 Kc-ber.) en planttranspiratie (T, FAO-56 Kcb · Ks).
+          Na een regenbui spikes E, daarna domineert weer T.
+        </div>
+        <div class="chart-wrap-small"><canvas id="evap-split-chart"></canvas></div>
+        <div class="legend-row">
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.sun};background:${COLORS.sun}55;height:10px;width:14px;"></span>Bodemverdamping E</span>
+          <span class="legend-item"><span class="legend-line" style="border-top:2px solid ${COLORS.clay};background:${COLORS.clay}55;height:10px;width:14px;"></span>Transpiratie T</span>
+        </div>
+      </div>
+    </section>` : ''}
 
     <!-- MAANDELIJKSE WATERBALANS -->
     <section style="padding:20px 40px 28px;">
@@ -490,6 +509,7 @@ function renderContent() {
   drawMainChart(days, state.selectedZone, FC, WP);
   drawBudgetChart(days, state.selectedZone);
   drawDepletionChart(days, state.selectedZone);
+  drawEvapSplitChart(days, state.selectedZone);
   drawMonthlyChart(monthly);
 }
 
@@ -711,17 +731,65 @@ function drawMainChart(days, zone, FC, WP) {
 function drawBudgetChart(days, zone) {
   state.charts.budget?.destroy();
   const ctx = document.getElementById("budget-chart").getContext("2d");
+  const hasET0om = days.some(d => d.ET0_om != null);
+  const datasets = [
+    { type: "bar", label: "Regen (mm)", data: days.map(d => d.precip), backgroundColor: COLORS.rain, barThickness: 7, order: 4 },
+    { type: "line", label: `ETc · ${ZONE_LABELS[zone]}`, data: days.map(d => d[`${zone}_ETc`]), borderColor: COLORS.clay, borderWidth: 2, pointRadius: 0, tension: 0.3, order: 1 },
+    { type: "line", label: "ET₀ (model)", data: days.map(d => d.ET0), borderColor: COLORS.sun, borderWidth: 1.5, borderDash: [3,3], pointRadius: 0, tension: 0.3, order: 2 },
+  ];
+  if (hasET0om) {
+    datasets.push({
+      type: "line", label: "ET₀ (Open-Meteo)",
+      data: days.map(d => d.ET0_om), borderColor: COLORS.inkSoft, borderWidth: 1, borderDash: [6,3], pointRadius: 0, tension: 0.3, order: 3,
+    });
+  }
   state.charts.budget = new Chart(ctx, {
     type: "bar",
-    data: { labels: days.map(dateLabel), datasets: [
-      { type: "bar", label: "Regen (mm)", data: days.map(d => d.precip), backgroundColor: COLORS.rain, barThickness: 7, order: 3 },
-      { type: "line", label: `ETc · ${ZONE_LABELS[zone]}`, data: days.map(d => d[`${zone}_ETc`]), borderColor: COLORS.clay, borderWidth: 2, pointRadius: 0, tension: 0.3, order: 1 },
-      { type: "line", label: "ET₀", data: days.map(d => d.ET0), borderColor: COLORS.sun, borderWidth: 1.5, borderDash: [3,3], pointRadius: 0, tension: 0.3, order: 2 },
-    ]},
+    data: { labels: days.map(dateLabel), datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: { legend: { display: false }, tooltip: { backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink, borderColor: COLORS.ink, borderWidth: 1, titleFont: { family: "JetBrains Mono", weight: 600 }, bodyFont: { family: "JetBrains Mono" } } },
+      scales: { x: baseAxis(), y: { ...baseAxis(), beginAtZero: true } },
+    },
+  });
+}
+
+function drawEvapSplitChart(days, zone) {
+  state.charts.evapSplit?.destroy();
+  const canvas = document.getElementById("evap-split-chart");
+  if (!canvas) return;  // skip if dual-Kc fields niet beschikbaar
+  const ctx = canvas.getContext("2d");
+  // Stacked: E (bodemverdamping) onderkant, T (planttranspiratie) bovenop.
+  // Cumulatieve data zodat fill: '-1' het stack-effect oplevert; tooltip
+  // toont weer de raw losse waardes via callbacks.
+  const E = days.map(d => d[`${zone}_E`] ?? 0);
+  const T = days.map(d => d[`${zone}_T`] ?? 0);
+  const ET = E.map((e, i) => +(e + T[i]).toFixed(2));
+  state.charts.evapSplit = new Chart(ctx, {
+    type: "line",
+    data: { labels: days.map(dateLabel), datasets: [
+      { label: "Bodemverdamping E (mm)", data: E, borderColor: COLORS.sun, backgroundColor: COLORS.sun + "55", borderWidth: 1, fill: "origin", pointRadius: 0, tension: 0.3, order: 2 },
+      { label: "Transpiratie T (mm)", data: ET, borderColor: COLORS.clay, backgroundColor: COLORS.clay + "55", borderWidth: 1, fill: "-1", pointRadius: 0, tension: 0.3, order: 1 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          borderColor: COLORS.ink, borderWidth: 1,
+          titleFont: { family: "JetBrains Mono", weight: 600 }, bodyFont: { family: "JetBrains Mono" },
+          callbacks: {
+            label: (ctx) => {
+              const i = ctx.dataIndex;
+              if (ctx.datasetIndex === 0) return `E: ${E[i].toFixed(2)} mm`;
+              return `T: ${T[i].toFixed(2)} mm`;
+            },
+          },
+        },
+      },
       scales: { x: baseAxis(), y: { ...baseAxis(), beginAtZero: true } },
     },
   });

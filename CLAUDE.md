@@ -27,15 +27,26 @@ This repo contains three independent automation pipelines, all running on GitHub
 
 ### Scientific model (do not change without explicit ask)
 - ET0: FAO-56 Penman-Monteith using Tmax, Tmin, RHmean, u2, Rs, elevation, lat, doy
-- ETc = ET0 × Kc_seasonal × temp_factor
-- temp_factor = 0 below 5°C, linear 0→1 between 5–8°C
-- Kc: seasonal via linear interpolation over monthly anchor points (jan→dec)
-- Soil balance: θ[t] = θ[t-1] + rain + irrigation − ETc − drainage
-- Drainage = excess above field capacity
-- Ks stress factor: linear decrease when depletion > 50% AWC
-- Soil params: FC 0.17, WP 0.07 v/v (tunable to 0.20/0.09 for clay)
-- Zones: lawn (Zr 0.15m), shrubs (Zr 0.40m) — each with own Kc curve
+- **Dual Kc (FAO-56 ch. 7):** ETc = E + T, met
+  - T = Kcb × Ks × temp_factor × ET0 (transpiratie uit wortelzone)
+  - E = Ke × ET0 (directe bodemverdamping uit oppervlaktelaag), Ke = min(Kr · (Kc_max − Kcb), few · Kc_max) (Eq. 71), Kr lineair tussen REW en TEW (Eq. 74)
+  - Effectieve Kc = (E + T)/ET0
+- temp_factor = 0 below 5°C, linear 0→1 between 5–8°C, op 5-daagse rolling Tmean (lucht-Tmean als proxy voor bodemtemperatuur, gedempt)
+- Kcb: seasonal via linear interpolation over monthly anchor points (jan→dec)
+- Twee buckets: diepe wortelzone (`water`) en oppervlaktelaag (`De`, depletie van 0..TEW)
+- Regen/irrigatie vult oppervlaktelaag eerst tot TEW; overschot infiltreert naar wortelzone
+- Drainage = excess wortelzone-water boven veldcapaciteit (instantaan, dezelfde dag)
+- Ks stress factor: linear decrease when depletion > p × AWC (FAO-56 Eq. 84)
+- p (depletion fraction): 0.40 voor gras, 0.50 voor struiken (FAO-56 Tabel 22)
+- Interceptie: 1.0 mm (gras) / 1.5 mm (struiken) aftrekken bij regenevent > 2 mm
+- Oppervlaktelaag-parameters: TEW 18 mm, REW 8 mm, Ze 0.10 m (FAO-56 Tabel 19, sandy-loam → klei-versterkte zand)
+- few = min(1 − fc, fw), met fc = 0.95 (gras) / 0.50 (struiken), fw = 1.0 (regen of sproeier) / 0.30 (druppelirrigatie struiken)
+- Kc_max = 1.20 (sub-humide klimaat, u2 ≈ 2 m/s, FAO-56 Eq. 72)
+- Soil params: FC 0.20, WP 0.09 v/v — clay-amended sand (ophoogzand) calibration for Utrecht Oost
+- Zones: lawn (Zr 0.20m), shrubs (Zr 0.42m) — each with own Kcb curve
 - Irrigation rates: sprinkler 20mm/hr (lawn), drip 2mm/hr (shrubs)
+- Wind: anemometers (Open-Meteo + WU PWS) zijn op 10m; FAO-56 Eq. 47 log-law correctie naar 2m wordt toegepast (u2 = u10 × ~0.748)
+- **State carry-over:** `theta_end` per zone wordt elke run weggeschreven in data.json. De volgende run leest dit als `seed_theta` zodat het 35-daagse warmup-venster niet elke run vanaf 30%-uitputting hoeft te starten — convergeert naar consistente initiële conditie.
 
 ### data.json schema (additive only — never break existing fields)
 ```json
@@ -43,19 +54,26 @@ This repo contains three independent automation pipelines, all running on GitHub
   "generated_at": "ISO timestamp",
   "source": "string",
   "wu_days": 28,
-  "soil": {"FC": 0.17, "WP": 0.07},
-  "zones": {"lawn": {"Zr": 0.15}, "shrubs": {}},
+  "soil": {"FC": 0.20, "WP": 0.09},
+  "zones": {"lawn": {"Zr": 0.20}, "shrubs": {"Zr": 0.42}},
   "irrigations": {"2026-04-22": 10.35, "2026-04-22_lawn": 16.7},
+  "theta_end": {"as_of": "YYYY-MM-DD", "lawn": 0.14, "shrubs": 0.16},
+  "seed_source": "previous_run | default_30pct",
   "days": [{
     "date": "YYYY-MM-DD",
     "forecast": false,
     "hasWU": true,
     "Tmax": null, "Tmin": null, "Tmean": null, "RHmean": null,
-    "u2": null, "Rs": null, "precip": null, "ET0": null,
+    "u2": null, "Rs": null, "precip": null,
+    "ET0": null, "ET0_om": null,
     "lawn_theta": null, "lawn_depletion": null, "lawn_ETc": null,
-    "lawn_Kc": null, "lawn_irrigation": null,
+    "lawn_Kc": null, "lawn_Kcb": null, "lawn_Ke": null,
+    "lawn_E": null, "lawn_T": null, "lawn_De": null, "lawn_few": null,
+    "lawn_irrigation": null, "lawn_drainage": null, "lawn_interception": null,
     "shrubs_theta": null, "shrubs_depletion": null, "shrubs_ETc": null,
-    "shrubs_Kc": null, "shrubs_irrigation": null
+    "shrubs_Kc": null, "shrubs_Kcb": null, "shrubs_Ke": null,
+    "shrubs_E": null, "shrubs_T": null, "shrubs_De": null, "shrubs_few": null,
+    "shrubs_irrigation": null, "shrubs_drainage": null, "shrubs_interception": null
   }]
 }
 ```

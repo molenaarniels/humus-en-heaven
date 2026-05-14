@@ -23,13 +23,37 @@ ZONES = {
     "shrubs": {"name": "Shrubs", "Zr": 0.42},
 }
 
-# Seizoensgebonden Kc per zone (FAO-56, gecalibreerd voor Nederland).
-# Format: lijst van (dag_van_jaar, Kc) ankerpunten.
-# Tussenliggende waarden worden lineair geïnterpoleerd.
-# Gebaseerd op FAO-56 Tabel 12 + KNMI klimaatdata voor Utrecht.
-KC_SEASONAL = {
-    # Graszone: enkelvoudige curve, maandelijkse ankerpunten.
-    # Bronnen: FAO-56 Tabel 12, KNMI klimaatdata Utrecht, veldcalibratie.
+# Per-zone depletie-fractie p (FAO-56 Tabel 22): readily-available water
+# = p × AWC. Boven die drempel begint stress (Ks daalt). Cool-season gras
+# heeft p ≈ 0.40; gemengde sierbeplanting houdt 0.50 aan.
+P_DEPLETION = {"lawn": 0.40, "shrubs": 0.50}
+
+# Interceptie per regenbui (mm): water dat op blad/canopy blijft hangen
+# en verdampt voordat het de bodem bereikt. Alleen toegepast als rain > 2 mm
+# (lichte motregen draagt verwaarloosbaar bij; gewogen door event-grootte
+# zou correcter zijn, maar de impact op dagschaal is klein).
+INTERCEPTION = {"lawn": 1.0, "shrubs": 1.5}
+
+# Rolling window (dagen) voor bodemtemperatuur-proxy. Air-Tmean is een te
+# snelle proxy voor bodem; de bodem ijlt na, dus een 5-daagse loopgemiddelde
+# vermijdt dat een enkele koude dag verdamping volledig naar 0 trekt.
+SOIL_TEMP_WINDOW = 5
+
+# Both Open-Meteo en Wunderground PWS leveren wind op 10 m hoogte.
+# FAO-56 Penman-Monteith vereist u2 (2 m). Eq. 47 log-law correctie:
+#   u2 = u_z * 4.87 / ln(67.8 * z - 5.42)
+WIND_MEASUREMENT_HEIGHT = 10.0
+WIND_2M_FACTOR = 4.87 / math.log(67.8 * WIND_MEASUREMENT_HEIGHT - 5.42)
+
+# Seizoensgebonden Kcb (basal transpiration coefficient) per zone.
+# FAO-56 hoofdstuk 7 (dual-Kc): Kc = Kcb + Ke, waarbij Kcb de
+# transpiratie van het gewas representeert en Ke de directe verdamping
+# van het bodemoppervlak na bevochtiging. De curves hier zijn de
+# bestaande seizoensankerpunten, geïnterpreteerd als Kcb — de waarden
+# zijn al dichtbij FAO-56 Tabel 17 (cool-season turf Kcb_mid ≈ 0.90;
+# gemengde sierbeplanting Kcb_mid 0.85–1.00).
+# Format: lijst van (dag_van_jaar, Kcb) ankerpunten; lineair geïnterpoleerd.
+KCB_SEASONAL = {
     "lawn": [
         (  1, 0.40),  # jan: winterrust
         ( 32, 0.40),  # feb: winterrust
@@ -46,7 +70,7 @@ KC_SEASONAL = {
         (365, 0.40),  # eind dec
     ],
     # Plantenzone: gewogen mix van fruitbomen (5%), vaste planten (75%), kale grond (20%).
-    # Kc_zone = 0.05*Kc_bomen + 0.75*Kc_vast + 0.20*Kc_kaal
+    # Kcb_zone = 0.05*Kcb_bomen + 0.75*Kcb_vast + 0.20*Kcb_kaal
     "shrubs": [
         (  1, 0.35),  # jan: winterrust mix
         ( 32, 0.35),  # feb: winterrust mix
@@ -64,10 +88,32 @@ KC_SEASONAL = {
     ],
 }
 
+# Oppervlaktelaag voor Ke (FAO-56 Tabel 19, voor sandy-loam aangepast aan
+# klei-versterkte zandgrond Utrecht):
+#   TEW  = totaal verdampbaar water in topbodem (~0.10 m)
+#   REW  = readily-evaporable water (geen Kr-reductie tot deze grens)
+#   Ze   = informatieve laagdikte (TEW is al in mm uitgedrukt)
+SURFACE_LAYER = {"TEW": 18.0, "REW": 8.0, "Ze": 0.10}
 
-def seasonal_kc(zone_key: str, doy: int) -> float:
-    """Geeft de Kc-waarde voor een zone op dag `doy` via lineaire interpolatie."""
-    anchors = KC_SEASONAL[zone_key]
+# Bovengrens voor de effectieve Kc (Kcb + Ke). FAO-56 Eq. 72 stelt
+# Kc_max ≈ 1.20 voor sub-humide klimaat met u2 ~ 2 m/s. We negeren de
+# RHmin/u2-afhankelijke fine-tune en gebruiken één constante.
+KC_MAX = 1.20
+
+# Grondbedekking fc (fractie van bodem onder canopy). Lawn is bijna
+# gesloten in het groeiseizoen; sierbeplanting is een mix met deels
+# kale grond/mulch — gemiddeld ~50%.
+GROUND_COVER = {"lawn": 0.95, "shrubs": 0.50}
+
+# Bevochtigingsfractie fw bij irrigatie. Sproeier op gazon dekt
+# de hele zone; druppelslang bij struiken raakt slechts een smalle
+# strook (~30%). Regen wordt altijd fw=1.0 verondersteld.
+WETTING_FRACTION = {"lawn": 1.0, "shrubs": 0.30}
+
+
+def seasonal_kcb(zone_key: str, doy: int) -> float:
+    """Lineair geïnterpoleerde basal Kcb voor zone op dag `doy`."""
+    anchors = KCB_SEASONAL[zone_key]
     if doy <= anchors[0][0]:
         return anchors[0][1]
     if doy >= anchors[-1][0]:
@@ -79,6 +125,11 @@ def seasonal_kc(zone_key: str, doy: int) -> float:
             t = (doy - d0) / (d1 - d0)
             return round(k0 + t * (k1 - k0), 3)
     return 0.75  # fallback
+
+
+# Back-compat alias zodat externe importeerders (tests etc.) niet breken.
+seasonal_kc = seasonal_kcb
+KC_SEASONAL = KCB_SEASONAL
 
 
 # =============================================================================
@@ -117,60 +168,148 @@ def penman_monteith_et0(Tmax, Tmin, RHmean, u2, Rs, elev, lat_rad, doy):
 
 
 def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
-                      irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
-    """Single-bucket balance. irrigations = {"YYYY-MM-DD": mm_gegeven}.
-    Gebruikt seizoensgebonden Kc per dag via seasonal_kc()."""
+                      irrigations: Optional[Dict[str, float]] = None,
+                      seed_theta: Optional[float] = None) -> List[Dict]:
+    """FAO-56 dual-Kc waterbalans (Kcb + Ke) met twee buckets:
+
+    * `water` — diepe wortelzone (mm beschikbaar boven WP). Daaruit komt
+      transpiratie T = Kcb · Ks · temp_factor · ET0 (gewasstress via Ks).
+    * `De` — depletie van de oppervlaktelaag (mm). Daaruit komt directe
+      bodemevaporatie E = Ke · ET0 (Ke door Kr-droogcurve gemoduleerd).
+
+    Regen/irrigatie vult eerst de oppervlaktelaag tot TEW; overschot
+    infiltreert naar de diepe bucket. ETc-output blijft = E + T zodat
+    bestaande dashboard-velden compatibel blijven.
+
+    `seed_theta` is start-θ (v/v) van de wortelzone; `De` start altijd
+    op REW (matig vochtig oppervlak) tenzij FC volledig wordt geraakt.
+    """
     irrigations = irrigations or {}
     AWC_max = (SOIL_FC - SOIL_WP) * zone["Zr"] * 1000
-    start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
-    water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
+    if seed_theta is not None:
+        seed_clamped = max(SOIL_WP, min(SOIL_FC, seed_theta))
+        water = (seed_clamped - SOIL_WP) * zone["Zr"] * 1000
+    else:
+        start_theta = SOIL_FC - (SOIL_FC - SOIL_WP) * 0.3
+        water = (start_theta - SOIL_WP) * zone["Zr"] * 1000
+
     # Voor "vandaag" zit in d["precip"] alleen de regen die al daadwerkelijk
-    # gevallen is (WU precipTotal sinds middernacht, of Open-Meteo uurlijks
-    # gesommeerd tot het huidige uur in fetch_open_meteo). Voor toekomstige
-    # dagen telt de voorspelde regen wél mee — anders zou de voorspellings-
-    # lijn alleen verdamping tonen en de impact van aankomende regen missen.
+    # gevallen is. Voor toekomstige dagen telt de voorspelde regen wél mee.
+    p_zone = P_DEPLETION.get(zone_key, 0.50)
+    interception_mm = INTERCEPTION.get(zone_key, 0.0)
+    fc_zone = GROUND_COVER.get(zone_key, 0.50)
+    fw_irrig = WETTING_FRACTION.get(zone_key, 1.0)
+    TEW = SURFACE_LAYER["TEW"]
+    REW = SURFACE_LAYER["REW"]
+
+    # Oppervlaktelaag start op REW (overgang van Kr=1 naar Kr<1); de eerste
+    # paar regendagen drukken dit snel naar 0 (verzadigd oppervlak).
+    De = REW
+    tmean_window: List[float] = []
     out = []
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
-        kc = seasonal_kc(zone_key, doy)
+        kcb = seasonal_kcb(zone_key, doy)
 
-        # Bodemtemperatuur drempel (FAO-56 §3.3):
-        # Onder 5°C stopt plantengroei nagenoeg volledig — geen verdamping.
-        # Tussen 5°C en 8°C lineaire overgang (voorkomt harde knip in de grafiek).
-        # Tmean als proxy voor bodemtemperatuur — vertraagd maar voldoende
-        # nauwkeurig voor dagelijkse beslissingen.
-        tmean = d.get("Tmean") or ((d.get("Tmax", 10) + d.get("Tmin", 0)) / 2)
-        if tmean <= 5.0:
+        # Bodemtemperatuur drempel (FAO-56 §3.3): air-Tmean ijlt na in
+        # bodem; we gebruiken SOIL_TEMP_WINDOW-daagse loopgemiddelde.
+        tmean_today = d.get("Tmean")
+        if tmean_today is None:
+            tmean_today = (d.get("Tmax", 10) + d.get("Tmin", 0)) / 2
+        tmean_window.append(tmean_today)
+        if len(tmean_window) > SOIL_TEMP_WINDOW:
+            tmean_window.pop(0)
+        tmean_eff = sum(tmean_window) / len(tmean_window)
+        if tmean_eff <= 5.0:
             temp_factor = 0.0
-        elif tmean <= 8.0:
-            temp_factor = (tmean - 5.0) / 3.0  # 0→1 tussen 5 en 8°C
+        elif tmean_eff <= 8.0:
+            temp_factor = (tmean_eff - 5.0) / 3.0
         else:
             temp_factor = 1.0
-        kc = round(kc * temp_factor, 3)
+        kcb_eff = round(kcb * temp_factor, 3)
 
-        ETc = d["ET0"] * kc
-        depletion = max(0, AWC_max - water)
-        RAW = AWC_max * 0.5
-        Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
-        actual_ET = ETc * Ks
-        rain = d.get("precip") or 0
+        ET0 = d["ET0"] or 0
+
+        rain_raw = d.get("precip") or 0
+        if rain_raw > 2.0:
+            intercepted = min(interception_mm, rain_raw)
+        else:
+            intercepted = 0.0
+        rain = rain_raw - intercepted
         irrig = irrigations.get(f"{d['date']}_{zone_key}", irrigations.get(d["date"], 0))
-        water += rain + irrig - actual_ET
-        drainage = 0
+
+        # Wetting events vullen de oppervlaktelaag eerst; overschot is
+        # infiltratie naar de wortelzone. FAO-56 stelt fw = 1 voor regen
+        # en de toegepaste WETTING_FRACTION voor irrigatie.
+        wetting = rain + irrig  # mm op de zone-skaal (regen + irrigatie tellen samen)
+        surface_absorbed = min(De, wetting)
+        De = max(0.0, De - wetting)
+        deep_infiltration = wetting - surface_absorbed
+
+        # few = fraction of soil that is both exposed AND wetted (FAO-56
+        # Eq. 75). Bij regen telt fw = 1; bij druppelirrigatie zonder regen
+        # zou few smaller zijn — voor dagschaal nemen we de gewogen mix.
+        if wetting > 0 and rain > 0:
+            fw_eff = 1.0  # regendag domineert
+        elif irrig > 0:
+            fw_eff = fw_irrig
+        else:
+            fw_eff = 1.0  # zonder bevochtiging is few irrelevant (E ≈ 0)
+        few = max(0.01, min(1.0 - fc_zone, fw_eff))
+
+        # Kr-droogcurve (FAO-56 Eq. 74).
+        if De <= REW:
+            Kr = 1.0
+        elif De >= TEW:
+            Kr = 0.0
+        else:
+            Kr = (TEW - De) / (TEW - REW)
+        # Ke (FAO-56 Eq. 71). temp_factor demt ook E onder 5–8 °C: als de
+        # bovengrondse omstandigheden geen verdamping ondersteunen, geldt
+        # dat ook voor het oppervlak.
+        Ke = max(0.0, min(Kr * (KC_MAX - kcb_eff), few * KC_MAX)) * temp_factor
+
+        # Stress en transpiratie uit de diepe bucket.
+        depletion = max(0, AWC_max - water)
+        RAW = AWC_max * p_zone
+        Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
+        T = kcb_eff * Ks * ET0
+
+        # Surface evap: niet meer dan beschikbaar in oppervlaktelaag.
+        E_max_available = max(0.0, TEW - De)
+        E = min(Ke * ET0, E_max_available)
+
+        # Update oppervlaktelaag met evaporatie.
+        De = min(TEW, De + E)
+
+        # Update diepe bucket: infiltratie min transpiratie.
+        water += deep_infiltration - T
+        drainage = 0.0
         if water > AWC_max:
             drainage = water - AWC_max
             water = AWC_max
         if water < 0:
             water = 0
+
         theta = SOIL_WP + water / (zone["Zr"] * 1000)
         depletion_pct = (AWC_max - water) / AWC_max * 100
+        ETc_total = E + T
+        Kc_eff = (ETc_total / ET0) if ET0 > 0 else (kcb_eff + Ke)
+
         out.append({
             "theta": round(theta, 4),
             "depletion_pct": round(depletion_pct, 1),
-            "ETc": round(actual_ET, 2),
-            "Kc": kc,
+            "ETc": round(ETc_total, 2),
+            "Kc": round(Kc_eff, 3),
+            "Kcb": kcb_eff,
+            "Ke": round(Ke, 3),
+            "E": round(E, 2),
+            "T": round(T, 2),
+            "De": round(De, 2),
+            "few": round(few, 3),
             "drainage": round(drainage, 2),
             "irrigation": irrig,
+            "interception": round(intercepted, 2),
         })
     return out
 
@@ -209,7 +348,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     r.raise_for_status()
     j = r.json()
     d = j["daily"]
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
@@ -221,9 +360,10 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "Tmin": d["temperature_2m_min"][i],
             "Tmean": d["temperature_2m_mean"][i],
             "RHmean": d["relative_humidity_2m_mean"][i],
-            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6,
+            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": rain_today_so_far if t == today else (d["precipitation_sum"][i] or 0),
+            "ET0_om": d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))[i],
             "forecast": t > today,
         }
         for i, t in enumerate(d["time"])
@@ -273,7 +413,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
     """Haalt WU PWS history (afgesloten dagen) + current observatie voor
     today's accumulatieve precip. Probeert range-call eerst, dan per-dag
     fallback voor history."""
-    today = date.today()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
     url = (
@@ -299,7 +439,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "Tmin": m.get("tempLow"),
                     "Tmean": m.get("tempAvg"),
                     "RHmean": obs.get("humidityAvg"),
-                    "u2": (obs.get("windspeedAvg") or 0) / 3.6,
+                    "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
                 })
             history_ok = bool(results)
@@ -330,7 +470,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "Tmin": m.get("tempLow"),
                     "Tmean": m.get("tempAvg"),
                     "RHmean": obs.get("humidityAvg"),
-                    "u2": (obs.get("windspeedAvg") or 0) / 3.6,
+                    "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
                 })
             except Exception as e:
@@ -351,8 +491,14 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
 # =============================================================================
 
 def apply_et0_and_balance(series: List[Dict],
-                          irrigations: Optional[Dict[str, float]] = None) -> List[Dict]:
-    """Compute ET0 + water balance in-place on a series of day dicts. Returns the series."""
+                          irrigations: Optional[Dict[str, float]] = None,
+                          seed_theta: Optional[Dict[str, float]] = None) -> List[Dict]:
+    """Compute ET0 + water balance in-place on a series of day dicts. Returns the series.
+
+    `seed_theta` is optioneel een dict zoals {"lawn": 0.14, "shrubs": 0.16}
+    met de start-θ (v/v) per zone voor de eerste dag. Als afwezig: FAO-56
+    30%-uitputting heuristiek.
+    """
     lat_rad = math.radians(UTRECHT_LAT)
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
@@ -369,7 +515,11 @@ def apply_et0_and_balance(series: List[Dict],
             vals = [x["ET0"] for x in series if x["ET0"] is not None]
             d["ET0"] = sum(vals) / len(vals) if vals else 2.0
 
-    balances = {k: run_water_balance(series, z, k, irrigations) for k, z in ZONES.items()}
+    seed_theta = seed_theta or {}
+    balances = {
+        k: run_water_balance(series, z, k, irrigations, seed_theta=seed_theta.get(k))
+        for k, z in ZONES.items()
+    }
     for i, d in enumerate(series):
         for k, bal in balances.items():
             s = bal[i]
@@ -378,13 +528,27 @@ def apply_et0_and_balance(series: List[Dict],
             d[f"{k}_ETc"] = s["ETc"]
             d[f"{k}_Kc"] = s["Kc"]
             d[f"{k}_irrigation"] = s["irrigation"]
+            d[f"{k}_drainage"] = s["drainage"]
+            d[f"{k}_interception"] = s["interception"]
+            d[f"{k}_Kcb"] = s["Kcb"]
+            d[f"{k}_Ke"] = s["Ke"]
+            d[f"{k}_E"] = s["E"]
+            d[f"{k}_T"] = s["T"]
+            d[f"{k}_De"] = s["De"]
+            d[f"{k}_few"] = s["few"]
     return series
 
 
 def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
                        irrigations: Optional[Dict[str, float]] = None,
-                       days_past: int = 35) -> Dict:
-    """Haalt data, merge WU met Open-Meteo, run ET0 + water balance per zone."""
+                       days_past: int = 35,
+                       seed_theta: Optional[Dict[str, float]] = None) -> Dict:
+    """Haalt data, merge WU met Open-Meteo, run ET0 + water balance per zone.
+
+    `seed_theta` is optioneel een dict {"lawn": θ, "shrubs": θ} dat dient
+    als startwaarde voor de waterbalans op dag 0 van het venster. Bedoeld
+    om state continuïteit te geven tussen opeenvolgende runs.
+    """
     om = fetch_open_meteo(days_past=days_past, days_forecast=7)
     wu_days = 0
     source_note = "Open-Meteo (Utrecht reanalysis + forecast)"
@@ -407,7 +571,23 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         except Exception as e:
             print(f"[WARN] WU merge failed: {e}")
 
-    apply_et0_and_balance(om, irrigations)
+    apply_et0_and_balance(om, irrigations, seed_theta=seed_theta)
+
+    # State-carry-over: laatste niet-forecast dag dient als seed voor de
+    # volgende run. Zo convergeert het 35-daagse warmup-venster naar een
+    # consistente initiële conditie in plaats van elke run vanaf 30%-
+    # uitputting te starten.
+    theta_end: Dict[str, Optional[float]] = {}
+    theta_end_date: Optional[str] = None
+    for d in reversed(om):
+        if d.get("forecast"):
+            continue
+        if d.get("lawn_theta") is None:
+            continue
+        theta_end_date = d["date"]
+        for k in ZONES.keys():
+            theta_end[k] = d.get(f"{k}_theta")
+        break
 
     return {
         "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
@@ -417,6 +597,8 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
         "zones": ZONES,
         "irrigation_rates": IRRIGATION_RATES,
         "location": {"lat": UTRECHT_LAT, "lon": UTRECHT_LON, "name": "Utrecht Oost"},
+        "seed_source": "previous_run" if seed_theta else "default_30pct",
+        "theta_end": {"as_of": theta_end_date, **theta_end},
         "days": om,
     }
 
@@ -443,7 +625,7 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
             "Tmin": d["temperature_2m_min"][i],
             "Tmean": d["temperature_2m_mean"][i],
             "RHmean": d["relative_humidity_2m_mean"][i],
-            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6,
+            "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": d["precipitation_sum"][i] or 0,
             "forecast": False,
@@ -459,7 +641,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
     kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
     maand wordt nooit bevroren.
     """
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
     raw: Dict[str, Dict] = {}
     for d in days:
         if d.get("forecast") or d["date"] >= today:

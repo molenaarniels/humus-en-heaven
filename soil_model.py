@@ -48,43 +48,50 @@ WIND_2M_FACTOR = 4.87 / math.log(67.8 * WIND_MEASUREMENT_HEIGHT - 5.42)
 # Seizoensgebonden Kcb (basal transpiration coefficient) per zone.
 # FAO-56 hoofdstuk 7 (dual-Kc): Kc = Kcb + Ke, waarbij Kcb de
 # transpiratie van het gewas representeert en Ke de directe verdamping
-# van het bodemoppervlak na bevochtiging. De curves hier zijn de
-# bestaande seizoensankerpunten, geïnterpreteerd als Kcb — de waarden
-# zijn al dichtbij FAO-56 Tabel 17 (cool-season turf Kcb_mid ≈ 0.90;
-# gemengde sierbeplanting Kcb_mid 0.85–1.00).
+# van het bodemoppervlaktelaag na bevochtiging.
+#
+# Kalibratie: de oorspronkelijke "lumped" Kc-curves voor deze tuin gaven
+# in de praktijk realistische irrigatie-aanbevelingen. Bij overgang naar
+# dual-Kc bouwt Ke daarboven op (lawn few≈0.05 → Ke≈0.06; shrubs few≈0.50
+# → Ke≈0.20 gemiddeld). Om de oude lange-termijn effectieve Kc te
+# behouden zijn de basal-anchors hier neerwaarts geschaald:
+#   • lawn   × 0.90 (mid 1.00 → 0.90; ruwweg ouwe Kc minus Ke_avg≈0.06)
+#   • shrubs × 0.816 (mid 0.98 → 0.80; ouwe Kc minus Ke_avg≈0.20)
+# Waarden blijven binnen FAO-56 Tabel 17 bandbreedte (cool-season turf
+# Kcb_mid 0.85-0.95; sierbeplanting/mixed cover 0.75-0.85).
 # Format: lijst van (dag_van_jaar, Kcb) ankerpunten; lineair geïnterpoleerd.
 KCB_SEASONAL = {
     "lawn": [
-        (  1, 0.40),  # jan: winterrust
-        ( 32, 0.40),  # feb: winterrust
-        ( 60, 0.65),  # mrt: herstelgroei
-        ( 91, 0.90),  # apr: actieve groei
-        (121, 0.95),  # mei: vol groeiseizoen
-        (152, 1.00),  # jun: max verdamping
-        (182, 1.00),  # jul: vol seizoen
-        (213, 1.00),  # aug: vol seizoen
-        (244, 0.85),  # sep: lichte afname
-        (274, 0.75),  # okt: groei neemt af
-        (305, 0.50),  # nov: bijna winterrust
-        (335, 0.40),  # dec: winterrust
-        (365, 0.40),  # eind dec
+        (  1, 0.36),  # jan: winterrust
+        ( 32, 0.36),  # feb: winterrust
+        ( 60, 0.59),  # mrt: herstelgroei
+        ( 91, 0.81),  # apr: actieve groei
+        (121, 0.86),  # mei: vol groeiseizoen
+        (152, 0.90),  # jun: max transpiratie
+        (182, 0.90),  # jul: vol seizoen
+        (213, 0.90),  # aug: vol seizoen
+        (244, 0.77),  # sep: lichte afname
+        (274, 0.68),  # okt: groei neemt af
+        (305, 0.45),  # nov: bijna winterrust
+        (335, 0.36),  # dec: winterrust
+        (365, 0.36),  # eind dec
     ],
     # Plantenzone: gewogen mix van fruitbomen (5%), vaste planten (75%), kale grond (20%).
-    # Kcb_zone = 0.05*Kcb_bomen + 0.75*Kcb_vast + 0.20*Kcb_kaal
+    # Mid-seizoen Kcb 0.80 is consistent met FAO-56 Tabel 17 voor mixed-cover sierbeplanting.
     "shrubs": [
-        (  1, 0.35),  # jan: winterrust mix
-        ( 32, 0.35),  # feb: winterrust mix
-        ( 60, 0.58),  # mrt: uitlopen bomen + vaste planten
-        ( 91, 0.82),  # apr: blad in ontwikkeling
-        (121, 0.87),  # mei: vol blad
-        (152, 0.98),  # jun: max seizoen
-        (182, 0.98),  # jul: vol seizoen
-        (213, 0.98),  # aug: vol seizoen
-        (244, 0.64),  # sep: blad verkleurt, terugval
-        (274, 0.56),  # okt: blad valt
-        (305, 0.38),  # nov: kale takken
-        (335, 0.35),  # dec: winterrust mix
-        (365, 0.35),  # eind dec
+        (  1, 0.29),  # jan: winterrust mix
+        ( 32, 0.29),  # feb: winterrust mix
+        ( 60, 0.47),  # mrt: uitlopen bomen + vaste planten
+        ( 91, 0.67),  # apr: blad in ontwikkeling
+        (121, 0.71),  # mei: vol blad
+        (152, 0.80),  # jun: max seizoen
+        (182, 0.80),  # jul: vol seizoen
+        (213, 0.80),  # aug: vol seizoen
+        (244, 0.52),  # sep: blad verkleurt, terugval
+        (274, 0.46),  # okt: blad valt
+        (305, 0.31),  # nov: kale takken
+        (335, 0.29),  # dec: winterrust mix
+        (365, 0.29),  # eind dec
     ],
 }
 

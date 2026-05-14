@@ -238,19 +238,20 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         rain = rain_raw - intercepted
         irrig = irrigations.get(f"{d['date']}_{zone_key}", irrigations.get(d["date"], 0))
 
-        # Wetting events vullen de oppervlaktelaag eerst; overschot is
-        # infiltratie naar de wortelzone. FAO-56 stelt fw = 1 voor regen
-        # en de toegepaste WETTING_FRACTION voor irrigatie.
-        wetting = rain + irrig  # mm op de zone-skaal (regen + irrigatie tellen samen)
-        surface_absorbed = min(De, wetting)
+        # FAO-56 §7.4.5: De en Dr zijn parallelle boekhoudingen van
+        # hetzelfde fysieke water in respectievelijk de bovenste Ze m
+        # (oppervlaktelaag, gebruikt om Ke te moduleren) en de volle Zr m
+        # (wortelzone, bepaalt θ en stress). Regen + irrigatie wordt van
+        # beide buckets afgetrokken (Eq. 77 en Eq. 85); ETc = E + T komt
+        # bij beide weer toe — E uit de oppervlaktelaag, T uit de diepe
+        # zone. Overschot in De boven 0 (saturatie) verlaat de oppervlakte-
+        # laag als deep-percolation maar blijft binnen de wortelzone.
+        wetting = rain + irrig
         De = max(0.0, De - wetting)
-        deep_infiltration = wetting - surface_absorbed
 
-        # few = fraction of soil that is both exposed AND wetted (FAO-56
-        # Eq. 75). Bij regen telt fw = 1; bij druppelirrigatie zonder regen
-        # zou few smaller zijn — voor dagschaal nemen we de gewogen mix.
+        # few = fractie blootgesteld én bevochtigd oppervlak (FAO-56 Eq. 75).
         if wetting > 0 and rain > 0:
-            fw_eff = 1.0  # regendag domineert
+            fw_eff = 1.0  # regendag domineert de bevochtigingsfractie
         elif irrig > 0:
             fw_eff = fw_irrig
         else:
@@ -264,9 +265,7 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
             Kr = 0.0
         else:
             Kr = (TEW - De) / (TEW - REW)
-        # Ke (FAO-56 Eq. 71). temp_factor demt ook E onder 5–8 °C: als de
-        # bovengrondse omstandigheden geen verdamping ondersteunen, geldt
-        # dat ook voor het oppervlak.
+        # Ke (FAO-56 Eq. 71). temp_factor demt ook E onder 5–8 °C.
         Ke = max(0.0, min(Kr * (KC_MAX - kcb_eff), few * KC_MAX)) * temp_factor
 
         # Stress en transpiratie uit de diepe bucket.
@@ -275,15 +274,17 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         Ks = 1 if depletion <= RAW else max(0, (AWC_max - depletion) / (AWC_max - RAW))
         T = kcb_eff * Ks * ET0
 
-        # Surface evap: niet meer dan beschikbaar in oppervlaktelaag.
+        # Surface evap mag niet meer dan beschikbaar in oppervlaktelaag.
         E_max_available = max(0.0, TEW - De)
         E = min(Ke * ET0, E_max_available)
 
         # Update oppervlaktelaag met evaporatie.
         De = min(TEW, De + E)
 
-        # Update diepe bucket: infiltratie min transpiratie.
-        water += deep_infiltration - T
+        # Update wortelzone: regen/irrigatie komt erin, E + T gaan eruit.
+        # Beide verliezen tellen omdat de oppervlaktelaag binnen de wortel-
+        # zone valt (Ze < Zr); water dat als E verdampt verlaat dus ook Dr.
+        water += wetting - T - E
         drainage = 0.0
         if water > AWC_max:
             drainage = water - AWC_max

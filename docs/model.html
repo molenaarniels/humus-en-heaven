@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'none';
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Het Model · Humus &amp; Heaven</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --parchment: #f3ecd9;
+    --parchment-deep: #e8dec3;
+    --ink: #2a241b;
+    --ink-soft: #5c4f3c;
+    --moss: #3d5a3a;
+    --moss-light: #6b8562;
+    --clay: #b8532a;
+    --sand: #c9a978;
+    --rain: #4a6b8a;
+    --sun: #d4a017;
+    --dry: #a0421a;
+    --wet: #2d4a5c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, var(--parchment-deep) 0%, var(--parchment) 60%);
+    color: var(--ink);
+    font-family: "Cormorant Garamond", Georgia, serif;
+    min-height: 100vh;
+    padding-bottom: 60px;
+  }
+  a { color: inherit; }
+  .num { font-family: "JetBrains Mono", monospace; font-feature-settings: "tnum"; }
+  .rule-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft); }
+  .corner-mark { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.15em; color: var(--ink-soft); text-transform: uppercase; }
+  .stamp { display: inline-block; padding: 3px 10px; border: 1.5px solid currentColor; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; transform: rotate(-1.5deg); }
+  .mono { font-family: "JetBrains Mono", monospace; }
+
+  header { padding: 32px 40px 16px; }
+  .title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px; }
+  h1 { font-size: clamp(40px, 5.5vw, 76px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+  .subtitle { font-size: 14px; font-style: italic; color: var(--ink-soft); max-width: 620px; margin-top: 6px; line-height: 1.4; }
+  .back-link { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 2px; }
+  .back-link:hover { color: var(--clay); }
+
+  .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
+  .hairline { border-top: 1px solid #2a241b33; }
+  .dash { border-top: 1px dashed #2a241b66; }
+
+  .pad { padding: 0 40px; }
+  .grid { display: grid; gap: 24px; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+  .specimen-card {
+    background: var(--parchment);
+    border: 1px solid #2a241b22;
+    box-shadow: 2px 4px 0 #2a241b11, inset 0 0 40px #e8dec380;
+    position: relative; padding: 24px;
+    background-image:
+      radial-gradient(#2a241b08 1px, transparent 1px),
+      radial-gradient(#2a241b05 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+  }
+  .specimen-card::before { content: ""; position: absolute; inset: 6px; border: 1px solid #2a241b1a; pointer-events: none; }
+  .card-title { font-size: 24px; font-style: italic; margin: 4px 0 8px; font-weight: 500; }
+  .card-lead { font-size: 14px; font-style: italic; color: var(--ink-soft); margin-bottom: 14px; line-height: 1.45; }
+
+  .section-head { display: flex; align-items: baseline; gap: 14px; margin: 48px 0 14px; padding: 0 40px; }
+  .section-head .num-mark { font-family: "JetBrains Mono", monospace; font-size: 12px; letter-spacing: 0.25em; color: var(--clay); }
+  .section-head h2 { font-size: 30px; font-style: italic; font-weight: 500; }
+
+  .prose p { font-size: 15px; line-height: 1.55; margin: 10px 0; }
+  .prose p + p { margin-top: 8px; }
+  .prose em { color: var(--ink); }
+  .prose code, .formula { font-family: "JetBrains Mono", monospace; font-size: 12px; background: var(--parchment-deep); padding: 1px 6px; border: 1px solid #2a241b22; }
+  .formula-block { font-family: "JetBrains Mono", monospace; font-size: 13px; background: var(--parchment-deep); padding: 12px 14px; border-left: 3px solid var(--clay); margin: 14px 0; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+  .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed #2a241b22; }
+  .stat-val { font-size: 14px; font-weight: 600; font-family: "JetBrains Mono", monospace; }
+  .stat-sub { font-size: 11px; color: var(--ink-soft); margin-left: 6px; }
+
+  .zone-chips { display: flex; gap: 8px; margin: 8px 0 14px; }
+  .zone-chip { padding: 8px 18px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; background: transparent; border: 1px solid #2a241b44; cursor: pointer; transition: all 0.2s; color: var(--ink); }
+  .zone-chip.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+
+  .slider-row { display: grid; grid-template-columns: 130px 1fr 90px; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px dashed #2a241b22; }
+  .slider-row label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); }
+  .slider-row .val { text-align: right; font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 600; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; background: #2a241b33; outline: none; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; background: var(--clay); border-radius: 50%; cursor: pointer; }
+  input[type=range]::-moz-range-thumb { width: 16px; height: 16px; background: var(--clay); border: none; border-radius: 50%; cursor: pointer; }
+
+  .big-readout { text-align: center; padding: 14px 0 8px; }
+  .big-readout .v { font-family: "JetBrains Mono", monospace; font-size: 48px; font-weight: 600; line-height: 1; color: var(--clay); }
+  .big-readout .u { font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--ink-soft); margin-left: 4px; }
+  .big-readout .caption { font-size: 12px; font-style: italic; color: var(--ink-soft); margin-top: 6px; }
+
+  .chart-wrap { height: clamp(220px, 32vh, 300px); margin-top: 12px; position: relative; }
+  .chart-wrap-small { height: clamp(160px, 22vh, 200px); margin-top: 8px; position: relative; }
+  .legend-row { display: flex; gap: 18px; margin-top: 10px; font-size: 11px; flex-wrap: wrap; font-family: "JetBrains Mono", monospace; color: var(--ink-soft); }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-line { display: inline-block; width: 18px; height: 2px; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+  .btn { background: var(--ink); color: var(--parchment); padding: 9px 16px; min-height: 40px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
+  .btn:hover { background: var(--moss); }
+  .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+  .btn-secondary:hover { background: var(--ink); color: var(--parchment); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 6px; }
+
+  /* Bucket diagram */
+  .bucket-wrap { display: flex; gap: 24px; align-items: stretch; margin-top: 14px; flex-wrap: wrap; }
+  .bucket-svg-col { flex: 0 0 220px; display: flex; flex-direction: column; align-items: center; }
+  .bucket-stats { flex: 1 1 280px; }
+  .bucket-svg { width: 100%; height: auto; max-width: 220px; }
+  .bucket-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; color: var(--ink-soft); text-transform: uppercase; }
+
+  /* Zone-compare table */
+  .compare-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .compare-table th, .compare-table td { padding: 9px 10px; text-align: left; border-bottom: 1px dashed #2a241b22; }
+  .compare-table th { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); font-weight: 400; }
+  .compare-table td.num { font-family: "JetBrains Mono", monospace; font-weight: 600; }
+  .compare-table .row-label { font-style: italic; }
+  .compare-table .row-note { font-size: 11px; color: var(--ink-soft); font-style: italic; display: block; margin-top: 2px; }
+
+  .pill { display: inline-block; padding: 2px 8px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; border: 1px solid currentColor; border-radius: 999px; }
+  .pill-moss { color: var(--moss); }
+  .pill-clay { color: var(--clay); }
+  .pill-rain { color: var(--rain); }
+  .pill-sun { color: var(--sun); }
+
+  footer { padding: 24px 40px 0; display: grid; gap: 24px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); font-size: 12px; font-style: italic; color: var(--ink-soft); margin-top: 48px; }
+  footer .hairline { margin-bottom: 18px; grid-column: 1/-1; }
+  footer a { color: var(--clay); text-decoration: none; border-bottom: 1px solid currentColor; }
+
+  .sandbox-banner { margin: 6px 40px 0; padding: 8px 14px; font-size: 12px; font-style: italic; color: var(--moss); background: #3d5a3a11; border-left: 3px solid var(--moss); }
+
+  @media (max-width: 680px) {
+    header { padding: 22px 16px 12px; }
+    .pad { padding: 0 16px; }
+    .section-head { padding: 0 16px; margin: 36px 0 12px; }
+    .section-head h2 { font-size: 24px; }
+    footer { padding: 16px 16px 0; }
+    .slider-row { grid-template-columns: 110px 1fr 70px; gap: 8px; }
+    h1 { font-size: clamp(34px, 11vw, 52px); }
+    .sandbox-banner { margin: 6px 16px 0; }
+    .big-readout .v { font-size: 38px; }
+    .bucket-svg-col { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <div class="corner-mark">Terroir de Utrecht · Fol. II</div>
+      <h1>Het Model</h1>
+      <div class="subtitle">Hoe het dagelijkse advies tot stand komt — van zon, regen en wind, via gewasfactoren en bodembuckets, tot een aantal millimeters water. Schuif aan de knoppen en zie wat er gebeurt.</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="corner-mark">Navigatie</div>
+      <div style="margin-top:8px;"><a href="index.html" class="back-link">← Dashboard</a></div>
+    </div>
+  </div>
+  <div class="hairline-bold"></div>
+</header>
+
+<div class="sandbox-banner">⚗︎ Speeltuin — alle knoppen op deze pagina zijn lokaal. Niets wordt opgeslagen of teruggekoppeld naar het dashboard.</div>
+
+<!-- =============================================================== -->
+<!-- § 1  INPUTS                                                      -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 01</div>
+  <h2>De ingrediënten</h2>
+</div>
+<div class="pad grid grid-3">
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--rain);">Weather Underground</div>
+    <div class="card-title" style="font-size:20px;">Regen, T, RH, wind</div>
+    <p style="font-size:13px;line-height:1.5;color:var(--ink-soft);font-style:italic;">Eigen weerstation in Utrecht Oost. Levert de afgelopen 30 dagen met de echte regen op het eigen perceel — modellen op afstand missen vaak de lokale buien.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--sun);">Open-Meteo</div>
+    <div class="card-title" style="font-size:20px;">Zonstraling + voorspelling</div>
+    <p style="font-size:13px;line-height:1.5;color:var(--ink-soft);font-style:italic;">Vult de straling (Rs, in MJ/m²/dag) aan die het PWS niet meet, en geeft 7 dagen vooruit weer. Bij conflict wint Wunderground voor regen en temperatuur.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--moss);">Irrigatie-logboek</div>
+    <div class="card-title" style="font-size:20px;">GitHub Gist</div>
+    <p style="font-size:13px;line-height:1.5;color:var(--ink-soft);font-style:italic;">Elke keer dat er handmatig water wordt gegeven gaat dat in een Gist als mm per zone. Het model trekt dat bij de regen op om de bodem bij te vullen.</p>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 2  PENMAN-MONTEITH ET0                                         -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 02</div>
+  <h2>Referentie-verdamping (ET₀)</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--clay);">FAO-56 Penman-Monteith</div>
+    <p>ET₀ is de hoeveelheid water die een <em>standaard kort gras-oppervlak</em> op een dag zou verdampen. Het is geen tuinmaat, maar een ijkpunt — alle gewasfactoren schalen ermee.</p>
+    <p>De formule combineert vier krachten: <span class="pill pill-sun">straling</span> drijft verdamping, <span class="pill pill-rain">luchtvochtigheid</span> remt het af, <span class="pill" style="color:var(--moss);">wind</span> jaagt vochtige lucht weg, en <span class="pill pill-clay">temperatuur</span> bepaalt hoeveel waterdamp de lucht überhaupt kan dragen.</p>
+    <div class="formula-block">ET₀ = [0.408 Δ (Rn − G) + γ · 900/(T+273) · u₂ · (es − ea)]
+       / [Δ + γ (1 + 0.34 u₂)]</div>
+    <p style="font-size:12px;color:var(--ink-soft);">Schuif rechts aan de knoppen. De berekening is een directe Python→JS port van <span class="mono">penman_monteith_et0()</span>. G (bodemwarmtefluks) is voor dagsommen verwaarloosbaar.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--clay);">Speeltuin · ET₀ rekenmachine</div>
+    <div class="card-title">Voel de variabelen</div>
+    <div class="slider-row">
+      <label>Tmax</label>
+      <input type="range" id="et0-tmax" min="0" max="35" step="0.5" value="22">
+      <div class="val"><span id="et0-tmax-val">22.0</span> °C</div>
+    </div>
+    <div class="slider-row">
+      <label>Tmin</label>
+      <input type="range" id="et0-tmin" min="-5" max="25" step="0.5" value="12">
+      <div class="val"><span id="et0-tmin-val">12.0</span> °C</div>
+    </div>
+    <div class="slider-row">
+      <label>RH gemiddeld</label>
+      <input type="range" id="et0-rh" min="20" max="100" step="1" value="65">
+      <div class="val"><span id="et0-rh-val">65</span> %</div>
+    </div>
+    <div class="slider-row">
+      <label>Wind u₂</label>
+      <input type="range" id="et0-u2" min="0" max="6" step="0.1" value="2.0">
+      <div class="val"><span id="et0-u2-val">2.0</span> m/s</div>
+    </div>
+    <div class="slider-row">
+      <label>Straling Rs</label>
+      <input type="range" id="et0-rs" min="0" max="30" step="0.5" value="18">
+      <div class="val"><span id="et0-rs-val">18.0</span> MJ/m²</div>
+    </div>
+    <div class="slider-row">
+      <label>Dag v/h jaar</label>
+      <input type="range" id="et0-doy" min="1" max="365" step="1" value="172">
+      <div class="val"><span id="et0-doy-val">172</span></div>
+    </div>
+    <div class="big-readout">
+      <span class="v" id="et0-out">—</span><span class="u">mm/dag</span>
+      <div class="caption" id="et0-caption">Een typische zomerdag in Utrecht ligt rond de 4–5 mm.</div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 3  KCB JAARRITME                                                -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 03</div>
+  <h2>Gewasfactor Kcb — het jaarritme</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--moss);">Basal crop coefficient</div>
+    <p>De Kcb zegt hoeveel van ET₀ de planten <em>zelf</em> verdampen via huidmondjes (transpiratie). Hij verandert door het seizoen mee met blad en wortels.</p>
+    <p>Het model gebruikt twee curves — één voor het gras, één voor de struiken — opgebouwd uit twaalf maandlijkse ankerpunten en lineair daartussen.</p>
+    <div class="formula-block">T = Kcb · Ks · temp_factor · ET₀</div>
+    <p>Naast Kcb komt nog een tweede term: <span class="formula">E = Ke · ET₀</span>, de directe verdamping vanaf de bovenste 10 cm grond (zie § 6). Samen geven ze ETc, de werkelijke verdamping.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--moss);">Kcb door het jaar</div>
+    <div class="card-title">Lawn vs. shrubs</div>
+    <div class="chart-wrap"><canvas id="kcb-chart"></canvas></div>
+    <div class="legend-row">
+      <span class="legend-item"><span class="legend-line" style="background:#6b8562;"></span>Gras (lawn)</span>
+      <span class="legend-item"><span class="legend-line" style="background:#3d5a3a;"></span>Struiken (shrubs)</span>
+      <span class="legend-item"><span class="legend-line" style="background:#b8532a;height:0;border-top:1px dashed #b8532a;"></span>Vandaag</span>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 4  KOUDEDREMPEL                                                 -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 04</div>
+  <h2>Koude-drempel · de bodem ijlt na</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--wet);">temp_factor</div>
+    <p>Onder 5 °C transpireren planten nauwelijks — wortels en huidmondjes staan op standby. Tussen 5 en 8 °C komt het systeem geleidelijk op gang.</p>
+    <p>De grafiek tikt af op een <em>5-daags loopgemiddelde</em> van de gemiddelde luchttemperatuur, als ruwe proxy voor bodemtemperatuur (de bodem reageert trager dan de lucht).</p>
+    <div class="formula-block">temp_factor = 0                  als Tmean ≤ 5 °C
+            = (Tmean − 5) / 3   als 5 < Tmean ≤ 8 °C
+            = 1                  als Tmean > 8 °C</div>
+    <p style="font-size:12px;color:var(--ink-soft);">Deze factor schaalt zowel transpiratie (T) als bodemverdamping (E) terug. In maart-april zie je hierdoor opvallend lage ETc, ook bij stevige zonne­straling.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--wet);">Speeltuin · drempelcurve</div>
+    <div class="card-title">Schuif de Tmean</div>
+    <div class="slider-row">
+      <label>Tmean (5-d)</label>
+      <input type="range" id="tf-t" min="-2" max="15" step="0.1" value="10">
+      <div class="val"><span id="tf-t-val">10.0</span> °C</div>
+    </div>
+    <div class="big-readout">
+      <span class="v" id="tf-out">1.00</span>
+      <div class="caption" id="tf-caption">Volledig actief — transpiratie wordt niet gedempt.</div>
+    </div>
+    <div class="chart-wrap-small"><canvas id="tf-chart"></canvas></div>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 5  INTERCEPTIE                                                  -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 05</div>
+  <h2>Interceptie · het blad pakt eerst</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--moss);">Canopy-saturation</div>
+    <p>Niet alle regen bereikt de bodem. Bladeren vangen druppels op tot een verzadigingscapaciteit C; daarboven druipt het door.</p>
+    <p>De curve volgt het exponentiële Rutter-model (Liu, 1997):</p>
+    <div class="formula-block">I = C · (1 − exp(−P / C))</div>
+    <p>Lawn: C = 1.0 mm. Struiken: C = 1.5 mm (meer blad­oppervlak). Een buitje van 0.5 mm wordt grotendeels onderschept; een plens van 10 mm verzadigt de canopy snel — de rest komt door.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--moss);">Speeltuin · onderschepping per zone</div>
+    <div class="card-title">Schuif de bui</div>
+    <div class="slider-row">
+      <label>Neerslag P</label>
+      <input type="range" id="int-p" min="0" max="20" step="0.1" value="3">
+      <div class="val"><span id="int-p-val">3.0</span> mm</div>
+    </div>
+    <div class="chart-wrap-small"><canvas id="int-chart"></canvas></div>
+    <div class="grid grid-2" style="margin-top:14px;gap:14px;">
+      <div>
+        <div class="rule-label">Gras (C=1.0)</div>
+        <div class="stat-row"><span>Opgevangen</span><span class="stat-val" id="int-lawn-i">—</span></div>
+        <div class="stat-row"><span>Bereikt bodem</span><span class="stat-val" id="int-lawn-t">—</span></div>
+      </div>
+      <div>
+        <div class="rule-label">Struiken (C=1.5)</div>
+        <div class="stat-row"><span>Opgevangen</span><span class="stat-val" id="int-shrubs-i">—</span></div>
+        <div class="stat-row"><span>Bereikt bodem</span><span class="stat-val" id="int-shrubs-t">—</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 6  TWEE BUCKETS                                                 -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 06</div>
+  <h2>Twee buckets · de bodemwaterbalans</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--clay);">Dual-Kc (FAO-56 §7)</div>
+    <p>De bodem is geen één-emmer-systeem. Bovenin droogt een dunne laag snel uit en bepaalt hoeveel water er <em>direct</em> verdampt (E). Daaronder zit de wortelzone die transpiratie levert (T).</p>
+    <p>Regen vult eerst de oppervlaktelaag (tot TEW = 18 mm). Daarna druppelt overschot door naar de wortelzone. Komt die boven veldcapaciteit (FC), dan draineert het meerdere.</p>
+    <p>De volgorde elke dag:</p>
+    <ol style="font-size:14px;margin:10px 0 10px 22px;line-height:1.55;">
+      <li>Regen − interceptie + irrigatie → vul beide buckets bij.</li>
+      <li>Bereken Kr-droogcurve in oppervlaktelaag → Ke.</li>
+      <li>Bereken Ks-stressfactor in wortelzone → T.</li>
+      <li>E ↓ uit oppervlak, T ↓ uit wortelzone (E telt ook in wortelzone).</li>
+      <li>Te veel water? → drainage.</li>
+    </ol>
+    <div class="formula-block">Ke = min(Kr·(Kc_max−Kcb), few·Kc_max) · temp_factor
+Kr = (TEW − De)/(TEW − REW)  binnen [REW, TEW]
+Ks = (AWC − D)/(AWC − p·AWC) als D > p·AWC</div>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--clay);">Speeltuin · simulator</div>
+    <div class="card-title">Pour, schijn, herhaal</div>
+    <div class="zone-chips">
+      <button class="zone-chip active" data-bucket-zone="lawn">Gras · Zr 20 cm</button>
+      <button class="zone-chip" data-bucket-zone="shrubs">Struiken · Zr 50 cm</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="b-rain-2">+ 2 mm regen</button>
+      <button class="btn btn-secondary" id="b-rain-10">+ 10 mm regen</button>
+      <button class="btn btn-secondary" id="b-irrig">+ 8 mm irrigatie</button>
+      <button class="btn btn-secondary" id="b-day">Dag verder · ET₀ 4 mm</button>
+      <button class="btn" id="b-reset">↺ Reset</button>
+    </div>
+    <div class="bucket-wrap">
+      <div class="bucket-svg-col">
+        <svg class="bucket-svg" viewBox="0 0 200 280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Surface layer container -->
+          <rect x="20" y="20" width="160" height="40" fill="#e8dec3" stroke="#2a241b" stroke-width="1.5"/>
+          <!-- Surface layer fill (water present = TEW - De) -->
+          <rect id="bk-surf-fill" x="22" y="22" width="156" height="36" fill="#4a6b8a" opacity="0.7"/>
+          <!-- REW line -->
+          <line x1="20" y1="42" x2="180" y2="42" stroke="#a0421a" stroke-width="0.8" stroke-dasharray="3 3"/>
+          <text x="184" y="45" font-family="JetBrains Mono" font-size="8" fill="#5c4f3c">REW</text>
+          <text x="100" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#5c4f3c" letter-spacing="1">OPPERVLAK · 10 cm</text>
+
+          <!-- Root zone container -->
+          <rect x="20" y="80" width="160" height="180" fill="#e8dec3" stroke="#2a241b" stroke-width="1.5"/>
+          <!-- Root zone fill -->
+          <rect id="bk-root-fill" x="22" y="100" width="156" height="158" fill="#3d5a3a" opacity="0.55"/>
+          <!-- FC line -->
+          <line x1="20" y1="100" x2="180" y2="100" stroke="#2d4a5c" stroke-width="0.8" stroke-dasharray="3 3"/>
+          <text x="184" y="103" font-family="JetBrains Mono" font-size="8" fill="#5c4f3c">FC</text>
+          <!-- WP line at bottom -->
+          <line x1="20" y1="260" x2="180" y2="260" stroke="#a0421a" stroke-width="0.8" stroke-dasharray="3 3"/>
+          <text x="184" y="263" font-family="JetBrains Mono" font-size="8" fill="#5c4f3c">WP</text>
+          <!-- p·AWC line -->
+          <line id="bk-p-line" x1="20" y1="164" x2="180" y2="164" stroke="#b8532a" stroke-width="0.8" stroke-dasharray="2 4"/>
+          <text x="184" y="167" font-family="JetBrains Mono" font-size="8" fill="#b8532a">RAW</text>
+          <text x="100" y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#5c4f3c" letter-spacing="1">WORTELZONE</text>
+        </svg>
+        <div class="bucket-label" style="margin-top:6px;">Dag <span id="bk-day">0</span> · sim sinds reset</div>
+      </div>
+      <div class="bucket-stats">
+        <div class="stat-row"><span>θ wortelzone</span><span class="stat-val"><span id="bk-theta">—</span> v/v</span></div>
+        <div class="stat-row"><span>Depletie</span><span class="stat-val"><span id="bk-dep">—</span> %</span></div>
+        <div class="stat-row"><span>AWC max</span><span class="stat-val"><span id="bk-awc">—</span> mm</span></div>
+        <div class="stat-row"><span>RAW (p · AWC)</span><span class="stat-val"><span id="bk-raw">—</span> mm</span></div>
+        <div class="stat-row"><span>De (oppervlak)</span><span class="stat-val"><span id="bk-de">—</span> mm</span></div>
+        <div class="stat-row"><span>Kcb · Ks</span><span class="stat-val"><span id="bk-kcb">—</span> · <span id="bk-ks">—</span></span></div>
+        <div class="stat-row"><span>E + T = ETc</span><span class="stat-val"><span id="bk-e">—</span> + <span id="bk-t">—</span> = <span id="bk-etc">—</span></span></div>
+        <div class="stat-row"><span>Drainage</span><span class="stat-val"><span id="bk-drain">—</span> mm</span></div>
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--ink-soft);font-style:italic;margin-top:14px;">De grafische emmer is een visuele weergave: de blauwe balk boven toont (TEW − De), de groene balk onder toont het beschikbare water boven WP, met FC en p·AWC als hulplijnen.</p>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 7  KS STRESS                                                    -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 07</div>
+  <h2>Stressfactor Ks · wanneer de plant het voelt</h2>
+</div>
+<div class="pad grid grid-2">
+  <div class="specimen-card prose">
+    <div class="rule-label" style="color:var(--dry);">Ks-curve</div>
+    <p>Zolang de wortelzone nog "Readily Available Water" (RAW = p · AWC) heeft, transpireert de plant volop (Ks = 1). Daarboven raakt water moeilijker bereikbaar en zakt Ks lineair naar 0 bij volledige uitputting.</p>
+    <p>De depletie-fractie p verschilt per zone:</p>
+    <ul style="font-size:14px;margin:8px 0 8px 22px;line-height:1.55;">
+      <li><strong>Gras:</strong> p = 0.40 — stress vanaf 40% depletie.</li>
+      <li><strong>Struiken:</strong> p = 0.50 — meer wortelreserve, geduldiger.</li>
+    </ul>
+    <p>Dit is waarom gras eerder geel wordt dan een vaste plant naast hetzelfde stuk grond.</p>
+  </div>
+  <div class="specimen-card">
+    <div class="rule-label" style="color:var(--dry);">Stress vs. depletie</div>
+    <div class="card-title">Waar slaat het om?</div>
+    <div class="chart-wrap"><canvas id="ks-chart"></canvas></div>
+    <div class="legend-row">
+      <span class="legend-item"><span class="legend-line" style="background:#6b8562;"></span>Gras (p=0.40)</span>
+      <span class="legend-item"><span class="legend-line" style="background:#3d5a3a;"></span>Struiken (p=0.50)</span>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 8  ZONES NAAST ELKAAR                                           -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 08</div>
+  <h2>Twee zones, twee karakters</h2>
+</div>
+<div class="pad">
+  <div class="specimen-card">
+    <div class="rule-label">Vergelijking</div>
+    <div class="card-title">Wat onderscheidt gras van struiken?</div>
+    <table class="compare-table">
+      <thead><tr><th></th><th>Gras</th><th>Struiken</th><th>Waarom</th></tr></thead>
+      <tbody>
+        <tr><td class="row-label">Wortelzone Zr</td><td class="num">0.20 m</td><td class="num">0.50 m</td><td><span class="row-note">Dieper wortelpakket → grotere voorraad, trager droog.</span></td></tr>
+        <tr><td class="row-label">Depletie-fractie p</td><td class="num">0.40</td><td class="num">0.50</td><td><span class="row-note">Cool-season gras stress eerder dan mixed sierbeplanting.</span></td></tr>
+        <tr><td class="row-label">Grondbedekking fc</td><td class="num">0.95</td><td class="num">0.90</td><td><span class="row-note">Zeer weinig bloot oppervlak; ground cover + mulch beschermen.</span></td></tr>
+        <tr><td class="row-label">Bevochtiging fw (irrig.)</td><td class="num">1.00</td><td class="num">0.30</td><td><span class="row-note">Sproeier dekt alles; druppelslang raakt smalle strook.</span></td></tr>
+        <tr><td class="row-label">Interceptie C</td><td class="num">1.0 mm</td><td class="num">1.5 mm</td><td><span class="row-note">Meer bladoppervlak vangt meer kleine buien af.</span></td></tr>
+        <tr><td class="row-label">Kcb piek (zomer)</td><td class="num">0.90</td><td class="num">0.83</td><td><span class="row-note">Cool-season turf transpireert iets harder dan gemengde sierbeplanting.</span></td></tr>
+        <tr><td class="row-label">Kcb winter</td><td class="num">0.36</td><td class="num">0.34</td><td><span class="row-note">Wintergras op standby; haag blijft licht actief.</span></td></tr>
+        <tr><td class="row-label">Irrigatiesnelheid</td><td class="num">20 mm/u</td><td class="num">2 mm/u</td><td><span class="row-note">Sproeier (lawn) vs. druppelslang (shrubs).</span></td></tr>
+        <tr><td class="row-label">AWC (Zr·(FC−WP))</td><td class="num">22 mm</td><td class="num">55 mm</td><td><span class="row-note">Beschikbaar vocht bij FC. Bepaalt hoe lang zonder regen.</span></td></tr>
+        <tr><td class="row-label">RAW (p · AWC)</td><td class="num">8.8 mm</td><td class="num">27.5 mm</td><td><span class="row-note">Drempel vóór stress begint.</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- =============================================================== -->
+<!-- § 9  VAN MODEL NAAR ADVIES                                        -->
+<!-- =============================================================== -->
+<div class="section-head">
+  <div class="num-mark">§ 09</div>
+  <h2>Van model naar advies</h2>
+</div>
+<div class="pad">
+  <div class="specimen-card prose">
+    <div class="rule-label">Slotsom</div>
+    <p>Het dashboard gebruikt drie signalen voor elk zone-advies:</p>
+    <ol style="font-size:15px;margin:10px 0 10px 22px;line-height:1.6;">
+      <li><strong>Huidige depletie</strong> ten opzichte van RAW. Onder RAW: rust. Tussen RAW en AWC: stress begint. Boven AWC: kritiek (zou eigenlijk niet mogen voorkomen).</li>
+      <li><strong>Voorspeld weer</strong> · valt er ≥ 5 mm regen in de komende 3 dagen? Dan geen onnodige irrigatie.</li>
+      <li><strong>Aanbevolen mm</strong> · vul tot ongeveer FC, vertaal terug naar minuten op basis van de zone-specifieke irrigatiesnelheid.</li>
+    </ol>
+    <p>Het hele systeem is bewust transparant: alle tussenvariabelen (Kcb, Ks, Ke, E, T, De, drainage, interceptie) staan in <a class="back-link" href="data.json" style="font-size:12px;">data.json</a>, zodat elke aanbeveling te reconstrueren is.</p>
+    <p style="font-style:italic;color:var(--ink-soft);">Wil je zien wat het model vandaag in <em>jouw</em> tuin doet? Terug naar het <a class="back-link" href="index.html" style="font-size:12px;">dashboard ↗</a>.</p>
+  </div>
+</div>
+
+<footer>
+  <div class="hairline"></div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Methode</div>FAO-56 Penman-Monteith ET₀ met dual-Kc (Kcb + Ke) bodemwaterbalans. Twee buckets per zone (oppervlaktelaag + wortelzone), seizoens-Kcb, koudedrempel op 5-daags loopgemiddelde, interceptie volgens Rutter-Liu.</div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Bronnen</div>Allen, R.G. et al. (1998), <a href="https://www.fao.org/4/x0490e/x0490e00.htm">FAO Irrigation &amp; Drainage Paper 56</a>. Liu, S. (1997). Code: <span class="mono">soil_model.py</span>.</div>
+  <div><div class="rule-label" style="margin-bottom:6px;">Speeltuin</div>Geen waarden op deze pagina worden opgeslagen of doorgestuurd. Het dashboard blijft ongewijzigd.</div>
+</footer>
+
+<script>
+// =============================================================================
+// Het Model — interactieve uitleg
+//
+// Alle formules op deze pagina zijn een directe JS-port van soil_model.py.
+// De waarden zijn illustratief; geen enkele input wordt gepersisteerd of
+// teruggekoppeld naar het dashboard. Per ontwerp: geen fetch, geen
+// localStorage, geen externe API-calls.
+// =============================================================================
+
+const COLORS = {
+  parchment: "#f3ecd9", parchmentDeep: "#e8dec3",
+  ink: "#2a241b", inkSoft: "#5c4f3c",
+  moss: "#3d5a3a", mossLight: "#6b8562",
+  clay: "#b8532a", sand: "#c9a978",
+  rain: "#4a6b8a", sun: "#d4a017",
+  dry: "#a0421a", wet: "#2d4a5c",
+};
+
+// --- Constants gemirrorde van soil_model.py ---------------------------------
+const SOIL_FC = 0.20;
+const SOIL_WP = 0.09;
+const KC_MAX = 1.20;
+const TEW = 18.0, REW = 8.0;
+const UTRECHT_LAT = 52.0907;
+const UTRECHT_ELEV = 5.0;
+
+const ZONES = {
+  lawn:   { Zr: 0.20, p: 0.40, fc: 0.95, fw: 1.00, C: 1.0, color: COLORS.mossLight },
+  shrubs: { Zr: 0.50, p: 0.50, fc: 0.90, fw: 0.30, C: 1.5, color: COLORS.moss },
+};
+
+const KCB_SEASONAL = {
+  lawn: [
+    [1,0.36],[32,0.36],[60,0.59],[91,0.81],[121,0.86],[152,0.90],
+    [182,0.90],[213,0.90],[244,0.77],[274,0.68],[305,0.45],[335,0.36],[365,0.36],
+  ],
+  shrubs: [
+    [1,0.34],[32,0.34],[60,0.49],[91,0.69],[121,0.74],[152,0.83],
+    [182,0.83],[213,0.83],[244,0.55],[274,0.46],[305,0.36],[335,0.34],[365,0.34],
+  ],
+};
+
+function seasonalKcb(zone, doy) {
+  const a = KCB_SEASONAL[zone];
+  if (doy <= a[0][0]) return a[0][1];
+  if (doy >= a[a.length-1][0]) return a[a.length-1][1];
+  for (let i = 0; i < a.length - 1; i++) {
+    const [d0,k0] = a[i], [d1,k1] = a[i+1];
+    if (doy >= d0 && doy <= d1) {
+      const t = (doy - d0) / (d1 - d0);
+      return k0 + t * (k1 - k0);
+    }
+  }
+  return 0.75;
+}
+
+function tempFactor(t) {
+  if (t <= 5.0) return 0.0;
+  if (t <= 8.0) return (t - 5.0) / 3.0;
+  return 1.0;
+}
+
+// FAO-56 Penman-Monteith — port van penman_monteith_et0() in soil_model.py.
+function penmanMonteith(Tmax, Tmin, RHmean, u2, Rs, elev, latRad, doy) {
+  const Tmean = (Tmax + Tmin) / 2;
+  const P = 101.3 * Math.pow((293 - 0.0065 * elev) / 293, 5.26);
+  const gamma = 0.000665 * P;
+  const delta = (4098 * (0.6108 * Math.exp((17.27 * Tmean) / (Tmean + 237.3)))) /
+                Math.pow(Tmean + 237.3, 2);
+  const eTmax = 0.6108 * Math.exp((17.27 * Tmax) / (Tmax + 237.3));
+  const eTmin = 0.6108 * Math.exp((17.27 * Tmin) / (Tmin + 237.3));
+  const es = (eTmax + eTmin) / 2;
+  const ea = es * RHmean / 100;
+  const dr = 1 + 0.033 * Math.cos(2 * Math.PI * doy / 365);
+  const decl = 0.409 * Math.sin(2 * Math.PI * doy / 365 - 1.39);
+  const ws = Math.acos(-Math.tan(latRad) * Math.tan(decl));
+  const Ra = (24 * 60 / Math.PI) * 0.082 * dr * (
+    ws * Math.sin(latRad) * Math.sin(decl) +
+    Math.cos(latRad) * Math.cos(decl) * Math.sin(ws)
+  );
+  const Rso = (0.75 + 2e-5 * elev) * Ra;
+  const Rns = (1 - 0.23) * Rs;
+  const sigma = 4.903e-9;
+  const Rnl = sigma * (
+    (Math.pow(Tmax + 273.16, 4) + Math.pow(Tmin + 273.16, 4)) / 2
+  ) * (0.34 - 0.14 * Math.sqrt(Math.max(ea, 0))) * (
+    1.35 * Math.min(Math.max(Rs / Rso, 0.3), 1) - 0.35
+  );
+  const Rn = Rns - Rnl;
+  const num = 0.408 * delta * Rn + gamma * (900 / (Tmean + 273)) * u2 * (es - ea);
+  const den = delta + gamma * (1 + 0.34 * u2);
+  return Math.max(num / den, 0);
+}
+
+// =============================================================================
+// § 2 — ET₀ rekenmachine
+// =============================================================================
+function updateEt0() {
+  const Tmax = parseFloat(document.getElementById("et0-tmax").value);
+  const Tmin = Math.min(parseFloat(document.getElementById("et0-tmin").value), Tmax);
+  const RH   = parseFloat(document.getElementById("et0-rh").value);
+  const u2   = parseFloat(document.getElementById("et0-u2").value);
+  const Rs   = parseFloat(document.getElementById("et0-rs").value);
+  const doy  = parseInt(document.getElementById("et0-doy").value);
+  document.getElementById("et0-tmax-val").textContent = Tmax.toFixed(1);
+  document.getElementById("et0-tmin-val").textContent = Tmin.toFixed(1);
+  document.getElementById("et0-rh-val").textContent = RH.toFixed(0);
+  document.getElementById("et0-u2-val").textContent = u2.toFixed(1);
+  document.getElementById("et0-rs-val").textContent = Rs.toFixed(1);
+  document.getElementById("et0-doy-val").textContent = doy;
+  const et0 = penmanMonteith(Tmax, Tmin, RH, u2, Rs, UTRECHT_ELEV, UTRECHT_LAT * Math.PI / 180, doy);
+  document.getElementById("et0-out").textContent = et0.toFixed(2);
+  let cap;
+  if (et0 < 1.0) cap = "Heel weinig verdamping — winter of bewolkte koude dag.";
+  else if (et0 < 2.5) cap = "Bescheiden ETo — voor- of najaar of bewolkt.";
+  else if (et0 < 4.0) cap = "Normale lente/zomer-dag.";
+  else if (et0 < 6.0) cap = "Stevige zomerdag met zon en droge lucht.";
+  else cap = "Hittegolfomstandigheden — dit is fors.";
+  document.getElementById("et0-caption").textContent = cap;
+}
+["et0-tmax","et0-tmin","et0-rh","et0-u2","et0-rs","et0-doy"].forEach(id => {
+  document.getElementById(id).addEventListener("input", updateEt0);
+});
+updateEt0();
+
+// =============================================================================
+// § 3 — Kcb jaarchart
+// =============================================================================
+(function buildKcbChart() {
+  const days = Array.from({length: 365}, (_, i) => i + 1);
+  const lawn = days.map(d => seasonalKcb("lawn", d));
+  const shrubs = days.map(d => seasonalKcb("shrubs", d));
+  const today = new Date();
+  const start = new Date(today.getFullYear(), 0, 0);
+  const todayDoy = Math.floor((today - start) / 86400000);
+  const monthLabels = ["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
+  const monthStarts = [1,32,60,91,121,152,182,213,244,274,305,335];
+  new Chart(document.getElementById("kcb-chart"), {
+    type: "line",
+    data: {
+      labels: days,
+      datasets: [
+        { label: "Lawn", data: lawn, borderColor: COLORS.mossLight, borderWidth: 2, pointRadius: 0, tension: 0.2 },
+        { label: "Shrubs", data: shrubs, borderColor: COLORS.moss, borderWidth: 2, pointRadius: 0, tension: 0.2 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        annotation: {
+          annotations: {
+            today: {
+              type: "line", xMin: todayDoy, xMax: todayDoy,
+              borderColor: COLORS.clay, borderWidth: 1.5, borderDash: [4,4],
+              label: { display: true, content: "vandaag", position: "start", backgroundColor: "transparent", color: COLORS.clay, font: { family: "JetBrains Mono", size: 9 } }
+            }
+          }
+        },
+        tooltip: {
+          callbacks: { title: (items) => `Dag ${items[0].label}` }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 },
+            callback: function(val) {
+              const d = this.getLabelForValue(val);
+              const idx = monthStarts.indexOf(parseInt(d));
+              return idx >= 0 ? monthLabels[idx] : "";
+            },
+            maxRotation: 0, autoSkip: false,
+          },
+          grid: { display: false }
+        },
+        y: {
+          min: 0, max: 1.0,
+          ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } },
+          grid: { color: "#2a241b11" },
+          title: { display: true, text: "Kcb", color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }
+        }
+      }
+    }
+  });
+})();
+
+// =============================================================================
+// § 4 — Temp factor
+// =============================================================================
+let tfChart;
+(function buildTfChart() {
+  const xs = [];
+  const ys = [];
+  for (let t = -2; t <= 15; t += 0.25) { xs.push(t.toFixed(2)); ys.push(tempFactor(t)); }
+  tfChart = new Chart(document.getElementById("tf-chart"), {
+    type: "line",
+    data: {
+      labels: xs,
+      datasets: [
+        { label: "temp_factor", data: ys, borderColor: COLORS.wet, borderWidth: 2, pointRadius: 0, tension: 0.0, fill: { target: "origin", above: COLORS.wet + "22" } },
+        { label: "huidige", data: xs.map(x => parseFloat(x) === 10 ? 1.0 : null), borderColor: COLORS.clay, backgroundColor: COLORS.clay, pointRadius: 0 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        annotation: {
+          annotations: {
+            lo: { type: "line", xMin: "5.00", xMax: "5.00", borderColor: COLORS.dry, borderWidth: 1, borderDash: [3,3] },
+            hi: { type: "line", xMin: "8.00", xMax: "8.00", borderColor: COLORS.moss, borderWidth: 1, borderDash: [3,3] },
+            cursor: { type: "point", xValue: "10.00", yValue: 1.0, radius: 5, backgroundColor: COLORS.clay, borderColor: COLORS.clay }
+          }
+        },
+        tooltip: { callbacks: { title: (i) => `Tmean ${i[0].label} °C` } }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 },
+            callback: function(val) { const v = parseFloat(this.getLabelForValue(val)); return Number.isInteger(v) && v % 5 === 0 ? v + "°" : ""; },
+            maxRotation: 0, autoSkip: false,
+          },
+          grid: { display: false }
+        },
+        y: { min: 0, max: 1.05, ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }, grid: { color: "#2a241b11" } }
+      }
+    }
+  });
+})();
+function updateTf() {
+  const t = parseFloat(document.getElementById("tf-t").value);
+  document.getElementById("tf-t-val").textContent = t.toFixed(1);
+  const f = tempFactor(t);
+  document.getElementById("tf-out").textContent = f.toFixed(2);
+  let cap;
+  if (f === 0) cap = "Volledig gedempt — geen verdamping in het model.";
+  else if (f < 0.5) cap = "Sterk gedempt — vroeg voorjaar, planten kruipen op gang.";
+  else if (f < 1.0) cap = "Geleidelijke opstart.";
+  else cap = "Volledig actief — transpiratie wordt niet gedempt.";
+  document.getElementById("tf-caption").textContent = cap;
+  // cursor on chart
+  const ann = tfChart.options.plugins.annotation.annotations.cursor;
+  ann.xValue = t.toFixed(2);
+  ann.yValue = f;
+  tfChart.update("none");
+}
+document.getElementById("tf-t").addEventListener("input", updateTf);
+updateTf();
+
+// =============================================================================
+// § 5 — Interceptie
+// =============================================================================
+let intChart;
+(function buildIntChart() {
+  const xs = [];
+  const ysLawn = [];
+  const ysShrubs = [];
+  for (let p = 0; p <= 20; p += 0.2) {
+    xs.push(p.toFixed(1));
+    ysLawn.push(ZONES.lawn.C * (1 - Math.exp(-p / ZONES.lawn.C)));
+    ysShrubs.push(ZONES.shrubs.C * (1 - Math.exp(-p / ZONES.shrubs.C)));
+  }
+  intChart = new Chart(document.getElementById("int-chart"), {
+    type: "line",
+    data: {
+      labels: xs,
+      datasets: [
+        { label: "Gras", data: ysLawn, borderColor: COLORS.mossLight, borderWidth: 2, pointRadius: 0, tension: 0.0 },
+        { label: "Struiken", data: ysShrubs, borderColor: COLORS.moss, borderWidth: 2, pointRadius: 0, tension: 0.0 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "bottom", labels: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 }, boxWidth: 12 }
+        },
+        annotation: {
+          annotations: {
+            cursor: { type: "line", xMin: "3.0", xMax: "3.0", borderColor: COLORS.clay, borderWidth: 1, borderDash: [3,3] }
+          }
+        },
+        tooltip: { callbacks: { title: (i) => `P = ${i[0].label} mm`, label: (i) => `${i.dataset.label}: ${i.raw.toFixed(2)} mm onderschept` } }
+      },
+      scales: {
+        x: {
+          ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 }, callback: function(val) { const v = parseFloat(this.getLabelForValue(val)); return Number.isInteger(v) && v % 5 === 0 ? v + " mm" : ""; }, maxRotation: 0, autoSkip: false },
+          grid: { display: false },
+          title: { display: true, text: "Neerslag P", color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }
+        },
+        y: { min: 0, max: 2.0, ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }, grid: { color: "#2a241b11" }, title: { display: true, text: "I (mm onderschept)", color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } } }
+      }
+    }
+  });
+})();
+function updateInt() {
+  const P = parseFloat(document.getElementById("int-p").value);
+  document.getElementById("int-p-val").textContent = P.toFixed(1);
+  const il = ZONES.lawn.C * (1 - Math.exp(-P / ZONES.lawn.C));
+  const is = ZONES.shrubs.C * (1 - Math.exp(-P / ZONES.shrubs.C));
+  document.getElementById("int-lawn-i").textContent = il.toFixed(2) + " mm";
+  document.getElementById("int-lawn-t").textContent = (P - il).toFixed(2) + " mm";
+  document.getElementById("int-shrubs-i").textContent = is.toFixed(2) + " mm";
+  document.getElementById("int-shrubs-t").textContent = (P - is).toFixed(2) + " mm";
+  intChart.options.plugins.annotation.annotations.cursor.xMin = P.toFixed(1);
+  intChart.options.plugins.annotation.annotations.cursor.xMax = P.toFixed(1);
+  intChart.update("none");
+}
+document.getElementById("int-p").addEventListener("input", updateInt);
+updateInt();
+
+// =============================================================================
+// § 6 — Twee buckets simulator
+// =============================================================================
+const bucket = {
+  zone: "lawn",
+  day: 0,
+  water: 0,      // mm boven WP in wortelzone
+  De: REW,       // depletie oppervlaktelaag (mm)
+};
+function bucketReset() {
+  bucket.zone = bucket.zone || "lawn";
+  bucket.day = 0;
+  // Start: 30% depletie (zelfde als seed default in soil_model.py:219)
+  const z = ZONES[bucket.zone];
+  const AWC = (SOIL_FC - SOIL_WP) * z.Zr * 1000;
+  bucket.water = AWC * 0.7;
+  bucket.De = REW;
+  bucketRender();
+}
+function bucketRender() {
+  const z = ZONES[bucket.zone];
+  const AWC = (SOIL_FC - SOIL_WP) * z.Zr * 1000;
+  const RAW = AWC * z.p;
+  const depletion = Math.max(0, AWC - bucket.water);
+  const depPct = AWC > 0 ? depletion / AWC * 100 : 0;
+  const theta = SOIL_WP + bucket.water / (z.Zr * 1000);
+
+  document.getElementById("bk-day").textContent = bucket.day;
+  document.getElementById("bk-theta").textContent = theta.toFixed(3);
+  document.getElementById("bk-dep").textContent = depPct.toFixed(0);
+  document.getElementById("bk-awc").textContent = AWC.toFixed(1);
+  document.getElementById("bk-raw").textContent = RAW.toFixed(1);
+  document.getElementById("bk-de").textContent = bucket.De.toFixed(1);
+
+  // SVG fills
+  // Surface bar: blue height proportional to (TEW - De) / TEW
+  const surfFrac = Math.max(0, Math.min(1, (TEW - bucket.De) / TEW));
+  const surfFill = document.getElementById("bk-surf-fill");
+  const surfH = 36 * surfFrac;
+  surfFill.setAttribute("y", (22 + (36 - surfH)).toFixed(1));
+  surfFill.setAttribute("height", surfH.toFixed(1));
+
+  // Root bar: green height proportional to water / AWC (top of root box = FC, bottom = WP)
+  const rootFrac = AWC > 0 ? Math.max(0, Math.min(1, bucket.water / AWC)) : 0;
+  const rootFill = document.getElementById("bk-root-fill");
+  const rootH = 158 * rootFrac;
+  rootFill.setAttribute("y", (258 - rootH).toFixed(1));
+  rootFill.setAttribute("height", rootH.toFixed(1));
+
+  // p·AWC line position (depletion = p·AWC reached when water = AWC·(1-p))
+  const pLineY = 100 + 158 * z.p;
+  document.getElementById("bk-p-line").setAttribute("y1", pLineY.toFixed(1));
+  document.getElementById("bk-p-line").setAttribute("y2", pLineY.toFixed(1));
+}
+
+function bucketApplyDay(rain, irrig, ET0) {
+  const z = ZONES[bucket.zone];
+  const AWC = (SOIL_FC - SOIL_WP) * z.Zr * 1000;
+  const RAW = AWC * z.p;
+  const doy = (new Date().getDate() < 1 ? 1 : Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000)) || 172;
+  const kcb = seasonalKcb(bucket.zone, doy);
+  // temp_factor = 1 voor de simulator (we simuleren een actieve dag);
+  // de koude-drempel-knop staat in § 4.
+  const tf = 1.0;
+  const kcbEff = kcb * tf;
+
+  // Interceptie van regen
+  const rainNet = rain > 0 ? rain - z.C * (1 - Math.exp(-rain / z.C)) : 0;
+  const irr = irrig || 0;
+  const wetting = rainNet + irr;
+
+  // De daalt door wetting
+  bucket.De = Math.max(0, bucket.De - wetting);
+
+  // few
+  let fwEff;
+  if (wetting > 0 && rainNet > 0) fwEff = 1.0;
+  else if (irr > 0) fwEff = z.fw;
+  else fwEff = 1.0;
+  const few = Math.max(0.01, Math.min(1.0 - z.fc, fwEff));
+
+  // Kr
+  let Kr;
+  if (bucket.De <= REW) Kr = 1.0;
+  else if (bucket.De >= TEW) Kr = 0.0;
+  else Kr = (TEW - bucket.De) / (TEW - REW);
+  const Ke = Math.max(0.0, Math.min(Kr * (KC_MAX - kcbEff), few * KC_MAX)) * tf;
+
+  // Ks + T
+  const depletion = Math.max(0, AWC - bucket.water);
+  const Ks = depletion <= RAW ? 1.0 : Math.max(0, (AWC - depletion) / (AWC - RAW));
+  const T = kcbEff * Ks * ET0;
+
+  // E begrensd door beschikbaar in oppervlak
+  const Eavail = Math.max(0, TEW - bucket.De);
+  const E = Math.min(Ke * ET0, Eavail);
+  bucket.De = Math.min(TEW, bucket.De + E);
+
+  // Update wortelzone: wetting in, E + T uit
+  bucket.water += wetting - T - E;
+  let drain = 0;
+  if (bucket.water > AWC) { drain = bucket.water - AWC; bucket.water = AWC; }
+  if (bucket.water < 0) bucket.water = 0;
+
+  bucket.day += 1;
+
+  // Update side-readouts
+  document.getElementById("bk-kcb").textContent = kcb.toFixed(2);
+  document.getElementById("bk-ks").textContent = Ks.toFixed(2);
+  document.getElementById("bk-e").textContent = E.toFixed(2);
+  document.getElementById("bk-t").textContent = T.toFixed(2);
+  document.getElementById("bk-etc").textContent = (E + T).toFixed(2);
+  document.getElementById("bk-drain").textContent = drain.toFixed(2);
+
+  bucketRender();
+}
+
+document.querySelectorAll("[data-bucket-zone]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-bucket-zone]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    bucket.zone = btn.dataset.bucketZone;
+    bucketReset();
+  });
+});
+document.getElementById("b-rain-2").addEventListener("click", () => bucketApplyDay(2, 0, 0));
+document.getElementById("b-rain-10").addEventListener("click", () => bucketApplyDay(10, 0, 0));
+document.getElementById("b-irrig").addEventListener("click", () => bucketApplyDay(0, 8, 0));
+document.getElementById("b-day").addEventListener("click", () => bucketApplyDay(0, 0, 4));
+document.getElementById("b-reset").addEventListener("click", bucketReset);
+bucketReset();
+
+// =============================================================================
+// § 7 — Ks stress chart
+// =============================================================================
+(function buildKsChart() {
+  const xs = [];
+  const ysLawn = [];
+  const ysShrubs = [];
+  for (let d = 0; d <= 100; d += 1) {
+    xs.push(d);
+    const dep = d / 100;
+    for (const [arr, p] of [[ysLawn, ZONES.lawn.p], [ysShrubs, ZONES.shrubs.p]]) {
+      if (dep <= p) arr.push(1.0);
+      else arr.push(Math.max(0, (1 - dep) / (1 - p)));
+    }
+  }
+  new Chart(document.getElementById("ks-chart"), {
+    type: "line",
+    data: {
+      labels: xs,
+      datasets: [
+        { label: "Gras", data: ysLawn, borderColor: COLORS.mossLight, borderWidth: 2, pointRadius: 0, tension: 0.0 },
+        { label: "Struiken", data: ysShrubs, borderColor: COLORS.moss, borderWidth: 2, pointRadius: 0, tension: 0.0 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        annotation: {
+          annotations: {
+            pLawn: { type: "line", xMin: 40, xMax: 40, borderColor: COLORS.mossLight, borderWidth: 1, borderDash: [3,3], label: { display: true, content: "p=0.40", position: "start", color: COLORS.mossLight, backgroundColor: "transparent", font: { family: "JetBrains Mono", size: 9 } } },
+            pShrubs: { type: "line", xMin: 50, xMax: 50, borderColor: COLORS.moss, borderWidth: 1, borderDash: [3,3], label: { display: true, content: "p=0.50", position: "end", color: COLORS.moss, backgroundColor: "transparent", font: { family: "JetBrains Mono", size: 9 } } },
+          }
+        },
+        tooltip: { callbacks: { title: (i) => `Depletie ${i[0].label}%` } }
+      },
+      scales: {
+        x: {
+          ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 }, callback: (v) => v % 20 === 0 ? v + "%" : "", maxRotation: 0, autoSkip: false },
+          grid: { display: false },
+          title: { display: true, text: "Depletie als % van AWC", color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }
+        },
+        y: { min: 0, max: 1.05, ticks: { color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } }, grid: { color: "#2a241b11" }, title: { display: true, text: "Ks", color: COLORS.inkSoft, font: { family: "JetBrains Mono", size: 10 } } }
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

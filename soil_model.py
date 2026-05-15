@@ -20,7 +20,11 @@ SOIL_WP = 0.09
 
 ZONES = {
     "lawn":   {"name": "Lawn",   "Zr": 0.20},
-    "shrubs": {"name": "Shrubs", "Zr": 0.42},
+    # Gewogen rooting depth voor gemengde sierbeplanting + 25% volwassen
+    # fruitbomen. Volwassen vrucht- en sierboomwortels reiken in zandgrond
+    # vaak 0.6–1.0 m; gewogen met perennials (~0.4 m) en hedge (~0.4 m)
+    # komt het effectieve diepteveld neer op ~0.50 m.
+    "shrubs": {"name": "Shrubs", "Zr": 0.50},
 }
 
 # Per-zone depletie-fractie p (FAO-56 Tabel 22): readily-available water
@@ -82,22 +86,26 @@ KCB_SEASONAL = {
         (335, 0.36),  # dec: winterrust
         (365, 0.36),  # eind dec
     ],
-    # Plantenzone: gewogen mix van fruitbomen (5%), vaste planten (75%), kale grond (20%).
-    # Mid-seizoen Kcb 0.80 is consistent met FAO-56 Tabel 17 voor mixed-cover sierbeplanting.
+    # Plantenzone: gewogen mix van volwassen fruitbomen (25%), evergreen lage
+    # haag (buxus/taxus, 10%), vaste planten/groundcover (60%), mulch/kale
+    # grond (5%). Mid-seizoen Kcb ≈ 0.83 volgt uit 0.25·0.95 (FAO-56 Tbl 17
+    # deciduous fruit, active cover) + 0.10·0.70 (clipped evergreen hedge) +
+    # 0.60·0.85 (perennials in bloei) ≈ 0.82, na dual-Kc Ke-aftrek ~0.83.
+    # Winter ondergrens 0.34 omdat de evergreen haag blijft transpireren.
     "shrubs": [
-        (  1, 0.29),  # jan: winterrust mix
-        ( 32, 0.29),  # feb: winterrust mix
-        ( 60, 0.47),  # mrt: uitlopen bomen + vaste planten
-        ( 91, 0.67),  # apr: blad in ontwikkeling
-        (121, 0.71),  # mei: vol blad
-        (152, 0.80),  # jun: max seizoen
-        (182, 0.80),  # jul: vol seizoen
-        (213, 0.80),  # aug: vol seizoen
-        (244, 0.52),  # sep: blad verkleurt, terugval
-        (274, 0.46),  # okt: blad valt
-        (305, 0.31),  # nov: kale takken
-        (335, 0.29),  # dec: winterrust mix
-        (365, 0.29),  # eind dec
+        (  1, 0.34),  # jan: winterrust + evergreen haag actief
+        ( 32, 0.34),  # feb: winterrust + evergreen haag actief
+        ( 60, 0.49),  # mrt: uitlopen bomen + vaste planten
+        ( 91, 0.69),  # apr: blad in ontwikkeling
+        (121, 0.74),  # mei: vol blad
+        (152, 0.83),  # jun: max seizoen
+        (182, 0.83),  # jul: vol seizoen
+        (213, 0.83),  # aug: vol seizoen
+        (244, 0.55),  # sep: blad verkleurt, terugval
+        (274, 0.46),  # okt: blad valt, evergreen haag compenseert deels
+        (305, 0.36),  # nov: kale takken, alleen haag + groundcover
+        (335, 0.34),  # dec: winterrust + evergreen haag actief
+        (365, 0.34),  # eind dec
     ],
 }
 
@@ -116,12 +124,12 @@ KC_MAX = 1.20
 # Grondbedekking fc (fractie van bodem die beschermd is tegen directe
 # zoninstraling). Voor Ke beperkt dit `few = 1 − fc`: alleen de blootgestelde
 # bare-soil fractie draagt bij aan oppervlakteverdamping. Lawn is bijna
-# gesloten in het groeiseizoen. Sierbeplanting in een gevestigde tuin heeft
-# canopy + mulch/bladafval die de bodem grotendeels afschermen; ~25%
-# werkelijk blootgestelde grond is realistischer dan een naïeve 50% canopy-
-# only inschatting. FAO-56 Eq. 76 staat toe `fc` te interpreteren als
-# effectieve bedekking inclusief mulch (zie ch. 11).
-GROUND_COVER = {"lawn": 0.95, "shrubs": 0.75}
+# gesloten in het groeiseizoen. De plantenzone in deze tuin is dicht
+# beplant: fruitbomen + evergreen haag + groundcover (geranium, alchemilla)
+# bedekken de bodem vrijwel volledig, met mulch in de paar resterende
+# hoekjes — visueel ~0% blootgestelde grond. FAO-56 Eq. 76 staat toe `fc`
+# te interpreteren als effectieve bedekking inclusief mulch (zie ch. 11).
+GROUND_COVER = {"lawn": 0.95, "shrubs": 0.90}
 
 # Bevochtigingsfractie fw bij irrigatie. Sproeier op gazon dekt
 # de hele zone; druppelslang bij struiken raakt slechts een smalle

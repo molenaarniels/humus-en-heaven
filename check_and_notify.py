@@ -191,6 +191,21 @@ def format_telegram(status_lawn: dict, status_shrubs: dict,
         f"🌧️ Regen komende 7d: <b>{status_lawn['rain7_mm']:.1f} mm</b>",
     ]
 
+    # Effectief netto (na probability + canopy-interceptie) — toon alleen
+    # als het wezenlijk afwijkt van de ruwe regen, anders is het ruis.
+    raw7 = status_lawn["rain7_mm"]
+    eff7_lawn = status_lawn.get("eff_rain_7d_mm", raw7)
+    eff7_shr = status_shrubs.get("eff_rain_7d_mm", raw7)
+    if raw7 >= 1 and (raw7 - eff7_lawn) >= 1.0:
+        lines.append(
+            f"   <i>Effectief (3d): gras {status_lawn.get('eff_rain_3d_mm', 0):.1f} mm · "
+            f"struiken {status_shrubs.get('eff_rain_3d_mm', 0):.1f} mm</i>"
+        )
+        lines.append(
+            f"   <i>Effectief (7d): gras {eff7_lawn:.1f} mm · "
+            f"struiken {eff7_shr:.1f} mm</i>"
+        )
+
     if one_needs:
         lines += [""]
         if both_need:
@@ -284,8 +299,11 @@ def main():
     # the Telegram message does, instead of re-deriving thresholds in JS.
     # `recommendation` stays Telegram-only (long-form); the dashboard renders
     # its own short tile text from these facts.
-    _DASHBOARD_FIELDS = ("state", "priority", "depletion_pct", "days_to_stress",
-                         "rain7_mm", "proposal_mm", "proposal_min")
+    _DASHBOARD_FIELDS = ("state", "priority", "depletion_pct", "deficit_mm",
+                         "days_to_stress", "rain7_mm",
+                         "eff_rain_3d_mm", "eff_rain_7d_mm",
+                         "eff_rain_intercepted_7d_mm",
+                         "proposal_mm", "proposal_min")
     data["lawn_status"]   = {k: status_lawn[k]   for k in _DASHBOARD_FIELDS}
     data["shrubs_status"] = {k: status_shrubs[k] for k in _DASHBOARD_FIELDS}
 

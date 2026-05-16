@@ -676,6 +676,8 @@ const dateLabel = d => d.date.slice(5);
 function drawMainChart(days, zone, FC, WP) {
   const labels = days.map(dateLabel);
   const theta = days.map(d => d[`${zone}_theta`]);
+  const era5Theta = days.map(d => d[`era5_theta_${zone}`] ?? null);
+  const hasEra5 = era5Theta.some(v => v != null);
   const precip = days.map(d => d.precip);
   const irrig = days.map(d => d[`${zone}_irrigation`] || 0);
   const fi = days.findIndex(d => d.forecast);
@@ -684,14 +686,24 @@ function drawMainChart(days, zone, FC, WP) {
 
   state.charts.main?.destroy();
   const ctx = document.getElementById("main-chart").getContext("2d");
+  const datasets = [
+    { type: "bar", label: "Regen (mm)", data: precip, yAxisID: "y1", backgroundColor: COLORS.rain + "e0", borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
+    { type: "bar", label: "Irrigatie (mm)", data: irrig, yAxisID: "y1", backgroundColor: COLORS.moss, borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
+    { type: "line", label: "θ · historisch", data: histTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2.5, backgroundColor: ZONE_COLORS[zone] + "40", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 1 },
+    { type: "line", label: "θ · voorspelling", data: foreTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2, borderDash: [4, 4], backgroundColor: ZONE_COLORS[zone] + "22", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 2 },
+  ];
+  if (hasEra5) {
+    datasets.push({
+      type: "line", label: "θ · ERA5 (referentie)",
+      data: era5Theta, yAxisID: "y",
+      borderColor: COLORS.inkSoft, borderWidth: 1.2, borderDash: [2, 3],
+      backgroundColor: "transparent", fill: false,
+      tension: 0.35, pointRadius: 0, spanGaps: true, order: 3,
+    });
+  }
   state.charts.main = new Chart(ctx, {
     type: "bar",
-    data: { labels, datasets: [
-      { type: "bar", label: "Regen (mm)", data: precip, yAxisID: "y1", backgroundColor: COLORS.rain + "e0", borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
-      { type: "bar", label: "Irrigatie (mm)", data: irrig, yAxisID: "y1", backgroundColor: COLORS.moss, borderWidth: 0, barThickness: 9, order: 4, stack: "water" },
-      { type: "line", label: "θ · historisch", data: histTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2.5, backgroundColor: ZONE_COLORS[zone] + "40", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 1 },
-      { type: "line", label: "θ · voorspelling", data: foreTheta, yAxisID: "y", borderColor: ZONE_COLORS[zone], borderWidth: 2, borderDash: [4, 4], backgroundColor: ZONE_COLORS[zone] + "22", fill: { target: { value: WP } }, tension: 0.35, pointRadius: 0, order: 2 },
-    ]},
+    data: { labels, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
@@ -708,6 +720,10 @@ function drawMainChart(days, zone, FC, WP) {
               const r = days[ctx.dataIndex];
               if (ctx.dataset.label.includes("Regen")) return `Regen: ${r.precip.toFixed(1)} mm`;
               if (ctx.dataset.label.includes("Irrigatie")) return r[`${zone}_irrigation`] ? `💧 ${r[`${zone}_irrigation`].toFixed(1)} mm` : null;
+              if (ctx.dataset.label.includes("ERA5")) {
+                const v = r[`era5_theta_${zone}`];
+                return v != null ? `ERA5 θ: ${v.toFixed(3)} (referentie)` : null;
+              }
               if (ctx.dataset.label.includes("θ")) return `θ: ${r[`${zone}_theta`].toFixed(3)} · Dep: ${r[`${zone}_depletion`].toFixed(1)}% · ETc: ${r[`${zone}_ETc`].toFixed(2)} mm · Kc: ${r[`${zone}_Kc`]?.toFixed(2)}`;
               return null;
             },

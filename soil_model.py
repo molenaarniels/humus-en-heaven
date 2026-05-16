@@ -136,6 +136,23 @@ GROUND_COVER = {"lawn": 0.95, "shrubs": 0.90}
 # strook (~30%). Regen wordt altijd fw=1.0 verondersteld.
 WETTING_FRACTION = {"lawn": 1.0, "shrubs": 0.30}
 
+# Open-Meteo bodemvochtlagen (m³/m³). Forecast-endpoint levert NWP-model
+# lagen, archive-endpoint levert ERA5 reanalyse-lagen. We bewaren ze in
+# `data.json` als validatie-overlay — het FAO-56 model blijft de bron
+# voor irrigatiebeslissingen. Bounds in meter.
+OM_SM_LAYERS_FORECAST = [
+    ("soil_moisture_0_to_1cm",   0.00, 0.01),
+    ("soil_moisture_1_to_3cm",   0.01, 0.03),
+    ("soil_moisture_3_to_9cm",   0.03, 0.09),
+    ("soil_moisture_9_to_27cm",  0.09, 0.27),
+    ("soil_moisture_27_to_81cm", 0.27, 0.81),
+]
+OM_SM_LAYERS_ARCHIVE = [
+    ("soil_moisture_0_to_7cm",    0.00, 0.07),
+    ("soil_moisture_7_to_28cm",   0.07, 0.28),
+    ("soil_moisture_28_to_100cm", 0.28, 1.00),
+]
+
 
 def seasonal_kcb(zone_key: str, doy: int) -> float:
     """Lineair geïnterpoleerde basal Kcb voor zone op dag `doy`."""
@@ -156,6 +173,74 @@ def seasonal_kcb(zone_key: str, doy: int) -> float:
 # Back-compat alias zodat externe importeerders (tests etc.) niet breken.
 seasonal_kc = seasonal_kcb
 KC_SEASONAL = KCB_SEASONAL
+
+
+def _depth_weighted_sm(layer_means: Dict[str, Optional[float]],
+                       layer_bounds, Zr: float) -> Optional[float]:
+    """Weegt per-laag bodemvocht (m³/m³) over de wortelzone [0, Zr] m.
+
+    `layer_bounds` is een lijst van (key, top, bot) in meter. Elke laag
+    krijgt een gewicht dat gelijk is aan de overlap tussen [top, bot] en
+    [0, Zr], gedeeld door Zr. Lagen geheel buiten de wortelzone wegen 0.
+    Geeft None terug als geen enkele laag beschikbaar is."""
+    total_weight = 0.0
+    total = 0.0
+    for key, top, bot in layer_bounds:
+        v = layer_means.get(key)
+        if v is None:
+            continue
+        overlap = max(0.0, min(bot, Zr) - max(top, 0.0))
+        if overlap <= 0:
+            continue
+        w = overlap / Zr
+        total += v * w
+        total_weight += w
+    if total_weight <= 0:
+        return None
+    # Niet alle lagen aanwezig? Schaal terug naar het gewicht dat we wél
+    # hadden — beter een schatting uit beschikbare lagen dan None.
+    return round(total / total_weight, 4)
+
+
+def effective_forecast_rain(days: List[Dict], zone_key: str,
+                             horizon: int = 7) -> Dict:
+    """Verwacht netto regen voor de komende `horizon` voorspeldagen.
+
+    Per dag:
+      1. raw = d["precip"]
+      2. expected = raw × probability/100 (default 100% als ontbreekt)
+      3. intercepted via canopy-saturation curve (zie run_water_balance)
+      4. net = max(0, expected − intercepted)
+
+    Returns dict met som en per-dag componenten zodat de beslissings-
+    logica en het dashboard dezelfde feiten zien."""
+    interception_mm = INTERCEPTION.get(zone_key, 0.0)
+    forecast_days = [d for d in days if d.get("forecast")][:horizon]
+    raw_sum = 0.0
+    expected_sum = 0.0
+    net_sum = 0.0
+    intercepted_sum = 0.0
+    for d in forecast_days:
+        p_raw = d.get("precip") or 0.0
+        prob_pct = d.get("precip_prob")
+        prob = (prob_pct / 100.0) if prob_pct is not None else 1.0
+        expected = p_raw * prob
+        if expected > 0 and interception_mm > 0:
+            intercepted = interception_mm * (1 - math.exp(-expected / interception_mm))
+        else:
+            intercepted = 0.0
+        net = max(0.0, expected - intercepted)
+        raw_sum += p_raw
+        expected_sum += expected
+        net_sum += net
+        intercepted_sum += intercepted
+    return {
+        "horizon": len(forecast_days),
+        "raw_mm": round(raw_sum, 2),
+        "expected_mm": round(expected_sum, 2),
+        "intercepted_mm": round(intercepted_sum, 2),
+        "net_mm": round(net_sum, 2),
+    }
 
 
 # =============================================================================
@@ -360,14 +445,50 @@ def _today_rain_so_far(hourly: Optional[Dict], today_str: str) -> float:
     return round(total, 2)
 
 
+def _hourly_daily_means(hourly: Optional[Dict], var_keys: List[str]) -> Dict[str, Dict[str, float]]:
+    """Aggregeert per-uur Open-Meteo variabelen naar dagelijkse gemiddeldes.
+
+    Returns: {var_key: {"YYYY-MM-DD": mean, ...}}. Mist-uren tellen niet
+    mee; dagen zonder enkele waarde komen niet voor in de output."""
+    if not hourly or "time" not in hourly:
+        return {k: {} for k in var_keys}
+    out: Dict[str, Dict[str, List[float]]] = {k: {} for k in var_keys}
+    for i, t in enumerate(hourly["time"]):
+        day = t[:10]
+        for k in var_keys:
+            arr = hourly.get(k)
+            if not arr or i >= len(arr):
+                continue
+            v = arr[i]
+            if v is None:
+                continue
+            out[k].setdefault(day, []).append(v)
+    return {k: {day: sum(vals) / len(vals) for day, vals in days.items() if vals}
+            for k, days in out.items()}
+
+
+def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
+                 layer_bounds, day: str) -> Dict[str, Optional[float]]:
+    """Bouwt {zone_key: weighted_sm} voor één dag uit per-laag-per-dag means."""
+    per_layer = {key: layer_means_by_day.get(key, {}).get(day)
+                 for key, _, _ in layer_bounds}
+    return {
+        zone_key: _depth_weighted_sm(per_layer, layer_bounds, z["Zr"])
+        for zone_key, z in ZONES.items()
+    }
+
+
 def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
+    sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_FORECAST]
+    hourly_vars = ["precipitation"] + sm_layer_keys
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
         f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
         f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+        f"precipitation_probability_max,"
         f"shortwave_radiation_sum,et0_fao_evapotranspiration"
-        f"&hourly=precipitation"
+        f"&hourly={','.join(hourly_vars)}"
         f"&past_days={days_past}&forecast_days={days_forecast}"
         f"&timezone=Europe%2FAmsterdam"
     )
@@ -380,8 +501,13 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
     rain_today_so_far = _today_rain_so_far(j.get("hourly"), today)
-    return [
-        {
+    sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
+    precip_prob = d.get("precipitation_probability_max", [None] * len(d["time"]))
+    et0_om = d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))
+    out = []
+    for i, t in enumerate(d["time"]):
+        per_zone = _per_zone_sm(sm_daily, OM_SM_LAYERS_FORECAST, t)
+        row = {
             "date": t,
             "Tmax": d["temperature_2m_max"][i],
             "Tmin": d["temperature_2m_min"][i],
@@ -390,11 +516,14 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": rain_today_so_far if t == today else (d["precipitation_sum"][i] or 0),
-            "ET0_om": d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))[i],
+            "ET0_om": et0_om[i],
+            "precip_prob": precip_prob[i] if i < len(precip_prob) else None,
+            "era5_theta_lawn": per_zone.get("lawn"),
+            "era5_theta_shrubs": per_zone.get("shrubs"),
             "forecast": t > today,
         }
-        for i, t in enumerate(d["time"])
-    ]
+        out.append(row)
+    return out
 
 
 def fetch_wunderground_current(station_id: str, api_key: str) -> Optional[Dict]:
@@ -632,6 +761,7 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
 
 def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
     """Haalt historische data op via de Open-Meteo archive API (ERA5 reanalysis)."""
+    sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_ARCHIVE]
     url = (
         "https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
@@ -639,14 +769,18 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
         f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
         f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
         f"shortwave_radiation_sum"
+        f"&hourly={','.join(sm_layer_keys)}"
         f"&timezone=Europe%2FAmsterdam"
     )
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     j = r.json()
     d = j["daily"]
-    return [
-        {
+    sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
+    out = []
+    for i, t in enumerate(d["time"]):
+        per_zone = _per_zone_sm(sm_daily, OM_SM_LAYERS_ARCHIVE, t)
+        out.append({
             "date": t,
             "Tmax": d["temperature_2m_max"][i],
             "Tmin": d["temperature_2m_min"][i],
@@ -655,10 +789,11 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
             "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
             "precip": d["precipitation_sum"][i] or 0,
+            "era5_theta_lawn": per_zone.get("lawn"),
+            "era5_theta_shrubs": per_zone.get("shrubs"),
             "forecast": False,
-        }
-        for i, t in enumerate(d["time"])
-    ]
+        })
+    return out
 
 
 def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
@@ -731,7 +866,12 @@ def mm_to_minutes(zone: str, mm: float) -> int:
 
 
 def assess_status(data: Dict, zone: str = "lawn") -> Dict:
-    """Bepaalt of water geven nodig is, inclusief irrigatievoorstel in mm en minuten."""
+    """Bepaalt of water geven nodig is, inclusief irrigatievoorstel in mm en minuten.
+
+    Voor de skip-watering beslissing gebruiken we *effectieve* regen
+    (probability-gewogen × na canopy-interceptie), niet de ruwe daily
+    precipitation_sum — een 7d voorspelling van 8 mm verdeeld als
+    1 mm/dag bij 50% kans levert netto bijna geen water in de wortelzone."""
     days = data["days"]
     soil = data["soil"]
     zone_info = data["zones"][zone]
@@ -757,6 +897,16 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
             break
     rain7 = sum((d.get("precip") or 0) for d in future)
 
+    # Effectieve regen (probability × interceptie) over 3d en 7d.
+    eff3 = effective_forecast_rain(days, zone, horizon=3)
+    eff7 = effective_forecast_rain(days, zone, horizon=7)
+    eff_3d = eff3["net_mm"]
+    eff_7d = eff7["net_mm"]
+
+    # Huidige deficit in mm (mate van uitputting onder veldcapaciteit).
+    AWC_max = (soil["FC"] - soil["WP"]) * zone_info["Zr"] * 1000
+    deficit_mm = AWC_max * (dep / 100.0)
+
     # Irrigatievoorstel
     proposal_mm = irrigation_proposal_mm(zone, dep, soil, zone_info)
     proposal_min = mm_to_minutes(zone, proposal_mm)
@@ -765,8 +915,15 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         recommendation = "URGENT: water vandaag — bodem in stress."
         priority = "high"
     elif state == "threshold":
-        if rain7 >= 8:
-            recommendation = f"Nog niet water geven — {rain7:.1f} mm regen verwacht (7d)."
+        # Skip-rule deficit-relatief: alleen overslaan als 3d eff regen
+        # >= 60% van deficit én 7d eff regen >= 90% van deficit. Kleine
+        # buien op droge bodem triggeren dus toch een irrigatie.
+        skip = (eff_3d >= 0.6 * deficit_mm) and (eff_7d >= 0.9 * deficit_mm)
+        if skip:
+            recommendation = (
+                f"Nog niet water geven — {eff_7d:.1f} mm effectieve regen "
+                f"verwacht (7d, dekt deficit {deficit_mm:.1f} mm)."
+            )
             priority = "low"
             proposal_mm = 0
             proposal_min = 0
@@ -774,7 +931,7 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
             recommendation = "Water geven binnen 1–2 dagen."
             priority = "medium"
     elif state == "moist":
-        if days_to_stress and days_to_stress <= 3 and rain7 < 5:
+        if days_to_stress and days_to_stress <= 3 and eff_3d < 3:
             recommendation = f"Let op — stress-grens over ~{days_to_stress} dagen."
             priority = "low"
         else:
@@ -792,8 +949,12 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         "state": state,
         "priority": priority,
         "depletion_pct": dep,
+        "deficit_mm": round(deficit_mm, 1),
         "days_to_stress": days_to_stress,
         "rain7_mm": round(rain7, 1),
+        "eff_rain_3d_mm": eff_3d,
+        "eff_rain_7d_mm": eff_7d,
+        "eff_rain_intercepted_7d_mm": eff7["intercepted_mm"],
         "recommendation": recommendation,
         "proposal_mm": proposal_mm,
         "proposal_min": proposal_min,

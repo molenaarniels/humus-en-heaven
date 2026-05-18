@@ -815,7 +815,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
                 "ETc_lawn": 0.0, "ETc_shrubs": 0.0, "days": 0,
             }
         raw[ym]["rain"] += d.get("precip") or 0
-        raw[ym]["irrigation"] += (d.get("lawn_irrigation") or 0) + (d.get("shrubs_irrigation") or 0)
+        raw[ym]["irrigation"] += ((d.get("lawn_irrigation") or 0) + (d.get("shrubs_irrigation") or 0)) / 2
         raw[ym]["ETc_lawn"] += d.get("lawn_ETc") or 0
         raw[ym]["ETc_shrubs"] += d.get("shrubs_ETc") or 0
         raw[ym]["days"] += 1

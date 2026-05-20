@@ -445,6 +445,33 @@ def _today_rain_so_far(hourly: Optional[Dict], today_str: str) -> float:
     return round(total, 2)
 
 
+def _today_solar_fraction(hourly: Optional[Dict], today_str: str) -> float:
+    """Fractie van today's shortwave_radiation die al gevallen is.
+
+    Symmetrisch met `_today_rain_so_far`: zelfde cutoff (huidig uur in
+    Europe/Amsterdam). Wordt gebruikt om today's ET0 te schalen naar
+    "verdamping tot nu" — Rs is de dominante drijver van Penman-Monteith
+    zodat lineaire scaling een nette eerste-orde benadering geeft, net
+    zoals partial rain de neerslag tot nu reflecteert. Geeft 0..1; 0 bij
+    ontbrekende data of voor zonsopkomst, 1 als de dag voorbij is."""
+    if not hourly or "time" not in hourly or "shortwave_radiation" not in hourly:
+        return 0.0
+    now_ams = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    cutoff = now_ams.strftime("%Y-%m-%dT%H:00")
+    so_far = 0.0
+    full = 0.0
+    for t, rs in zip(hourly["time"], hourly["shortwave_radiation"]):
+        if not t.startswith(today_str):
+            continue
+        v = rs or 0.0
+        full += v
+        if t < cutoff:
+            so_far += v
+    if full <= 0:
+        return 0.0
+    return max(0.0, min(1.0, so_far / full))
+
+
 def _hourly_daily_means(hourly: Optional[Dict], var_keys: List[str]) -> Dict[str, Dict[str, float]]:
     """Aggregeert per-uur Open-Meteo variabelen naar dagelijkse gemiddeldes.
 
@@ -480,7 +507,7 @@ def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
 
 def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_FORECAST]
-    hourly_vars = ["precipitation"] + sm_layer_keys
+    hourly_vars = ["precipitation", "shortwave_radiation"] + sm_layer_keys
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
@@ -501,6 +528,11 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
     rain_today_so_far = _today_rain_so_far(j.get("hourly"), today)
+    # Fractie van today's zonnestraling die al gevallen is — gebruikt om
+    # today's ET0 (en dus ETc) lineair te schalen zodat het bodemvocht-
+    # vermogen consistent is met partial-day rain. Bij run om 06:00
+    # Amsterdam is dit typisch < 0.1, dus today's verdamping = bijna nul.
+    today_solar_fraction = _today_solar_fraction(j.get("hourly"), today)
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
     precip_prob = d.get("precipitation_probability_max", [None] * len(d["time"]))
     et0_om = d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))
@@ -521,6 +553,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "era5_theta_lawn": per_zone.get("lawn"),
             "era5_theta_shrubs": per_zone.get("shrubs"),
             "forecast": t > today,
+            "partial_factor": today_solar_fraction if t == today else 1.0,
         }
         out.append(row)
     return out
@@ -670,6 +703,16 @@ def apply_et0_and_balance(series: List[Dict],
         if d["ET0"] is None:
             vals = [x["ET0"] for x in series if x["ET0"] is not None]
             d["ET0"] = sum(vals) / len(vals) if vals else 2.0
+
+    # Today's row: schaal ET0 met de fractie van zonnestraling die al
+    # gevallen is. Zo telt de balans alleen de evaporatie die echt heeft
+    # plaatsgevonden, net zoals `precip` voor vandaag alleen de regen tot
+    # nu bevat. Past- en forecast-dagen hebben partial_factor == 1.0 en
+    # blijven dus ongewijzigd.
+    for d in series:
+        pf = d.get("partial_factor", 1.0)
+        if pf < 1.0:
+            d["ET0"] = round(d["ET0"] * pf, 2)
 
     seed_theta = seed_theta or {}
     balances = {

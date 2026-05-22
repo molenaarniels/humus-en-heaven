@@ -246,11 +246,11 @@ def format_uv_section(rows, target_date):
     def fmt(ws):
         return ", ".join(a + "-" + b for a, b in ws)
 
-    lines = ["🕶️ UV >=3: " + fmt(mod_windows)]
+    lines = ["🧴 UV >=3: " + fmt(mod_windows)]
     if high_windows:
-        lines.append("🧴 UV >=5: " + fmt(high_windows))
+        lines.append("⛱️ UV >=5: " + fmt(high_windows))
     else:
-        lines.append("🧴 UV >=5: niet vandaag")
+        lines.append("⛱️ UV >=5: niet vandaag")
     return "\n".join(lines)
 
 

@@ -83,6 +83,8 @@ def fetch_forecast(location):
             "uv_index",
             "uv_index_clear_sky",
             "cloud_cover",
+            "direct_radiation",
+            "wind_speed_10m",
         ]),
         "timezone":     location["timezone"],
         "forecast_days": 1,
@@ -119,12 +121,14 @@ def parse_hourly(forecast):
         uv = cloud_corrected_uv(uv_clear, cloud) if uv_clear is not None else h["uv_index"][i]
         rows.append({
             "dt": dt,
-            "temp":   h["temperature_2m"][i],
-            "feels":  h["apparent_temperature"][i],
-            "precip": h["precipitation"][i],
-            "pop":    h["precipitation_probability"][i],
-            "uv":     uv,
-            "cloud":  cloud,
+            "temp":       h["temperature_2m"][i],
+            "feels":      h["apparent_temperature"][i],
+            "precip":     h["precipitation"][i],
+            "pop":        h["precipitation_probability"][i],
+            "uv":         uv,
+            "cloud":      cloud,
+            "direct_rad": h["direct_radiation"][i],
+            "wind_spd":   h["wind_speed_10m"][i],
         })
     return rows
 
@@ -177,9 +181,23 @@ def summarize_block(label, hours):
     else:
         precip_str = ("%.1f" % precip) + " mm"
 
+    direct_rads = [h["direct_rad"] for h in hours if h.get("direct_rad") is not None]
+    wind_spds   = [h["wind_spd"]   for h in hours if h.get("wind_spd")   is not None]
+    if direct_rads:
+        mean_dir  = sum(direct_rads) / len(direct_rads)
+        mean_wind = sum(wind_spds) / len(wind_spds) if wind_spds else 0.0
+        solar_bonus = round(mean_dir * 0.012 * max(0.0, 1 - mean_wind / 10))
+    else:
+        solar_bonus = 0
+
+    if solar_bonus >= 3:
+        feels_str = "gevoel " + fmt_range(feels) + ", +" + str(solar_bonus) + "° in zon"
+    else:
+        feels_str = "gevoel " + fmt_range(feels)
+
     return (
         label + " " + glyph + "\n"
-        "   Temp " + fmt_range(temps) + " (gevoel " + fmt_range(feels) + ")"
+        "   Temp " + fmt_range(temps) + " (" + feels_str + ")"
         "  Regen " + str(round(pop)) + "% / " + precip_str
     )
 

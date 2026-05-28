@@ -52,6 +52,24 @@ PEUTER_DAYS = {4, 5, 6}  # Friday, Saturday, Sunday
 UV_MODERATE = 3.0
 UV_HIGH     = 5.0
 
+FROST_THRESHOLD_C = 0.0
+HEAT_THRESHOLD_C  = 27.0
+
+WIND_GUST_ALERT_MS = 14.0  # Beaufort 7 — krachtige wind
+WIND_GUST_STORM_MS = 20.0  # Beaufort 9 — storm
+
+CLOUD_TREND_DELTA_PCT = 25.0
+
+POLLEN_LABELS_NL = {
+    "alder_pollen":   "els",
+    "birch_pollen":   "berk",
+    "grass_pollen":   "gras",
+    "mugwort_pollen": "bijvoet",
+    "olive_pollen":   "olijf",
+    "ragweed_pollen": "ambrosia",
+}
+POLLEN_API_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -85,6 +103,7 @@ def fetch_forecast(location):
             "cloud_cover",
             "direct_radiation",
             "wind_speed_10m",
+            "wind_gusts_10m",
         ]),
         "timezone":     location["timezone"],
         "forecast_days": 1,
@@ -113,6 +132,7 @@ def parse_hourly(forecast):
     n = len(h["time"])
     uv_clear_series = h.get("uv_index_clear_sky", [None] * n)
     cloud_series    = h.get("cloud_cover",        [None] * n)
+    gust_series     = h.get("wind_gusts_10m",     [None] * n)
     rows = []
     for i, t in enumerate(h["time"]):
         dt = datetime.fromisoformat(t)
@@ -129,6 +149,7 @@ def parse_hourly(forecast):
             "cloud":      cloud,
             "direct_rad": h["direct_radiation"][i],
             "wind_spd":   h["wind_speed_10m"][i],
+            "wind_gust":  gust_series[i],
         })
     return rows
 
@@ -195,10 +216,20 @@ def summarize_block(label, hours):
     else:
         feels_str = "gevoel " + fmt_range(feels)
 
+    gusts = [h["wind_gust"] for h in hours if h.get("wind_gust") is not None]
+    max_gust = max(gusts) if gusts else 0.0
+    if max_gust >= WIND_GUST_STORM_MS:
+        wind_line = "\n   🌪️ Storm: windvlagen tot " + str(round(max_gust)) + " m/s"
+    elif max_gust >= WIND_GUST_ALERT_MS:
+        wind_line = "\n   💨 Wind: vlagen tot " + str(round(max_gust)) + " m/s"
+    else:
+        wind_line = ""
+
     return (
         label + " " + glyph + "\n"
         "   Temp " + fmt_range(temps) + " (" + feels_str + ")"
         "  Regen " + str(round(pop)) + "% / " + precip_str
+        + wind_line
     )
 
 def uv_windows(rows, target_date, threshold):
@@ -272,8 +303,96 @@ def format_uv_section(rows, target_date):
     return "\n".join(lines)
 
 
+def format_extremes_banner(rows, target_date):
+    """Banner for frost or heat across today's hourly temps."""
+    temps = [r["temp"] for r in rows if r["dt"].date() == target_date and r.get("temp") is not None]
+    if not temps:
+        return None
+    tmin, tmax = min(temps), max(temps)
+    if tmin < FROST_THRESHOLD_C:
+        return "❄️ Vorst verwacht: min " + str(round(tmin)) + "°C"
+    if tmax > HEAT_THRESHOLD_C:
+        return "🔥 Hitte verwacht: max " + str(round(tmax)) + "°C"
+    return None
 
-def build_message(location, forecast, today):
+
+def format_cloud_trend(rows, target_date):
+    """Single-line cloud trend across daylight hours, only if shift is meaningful."""
+    morning, afternoon = [], []
+    for r in rows:
+        if r["dt"].date() != target_date:
+            continue
+        if r.get("cloud") is None:
+            continue
+        h = r["dt"].hour
+        if 6 <= h < 12:
+            morning.append(r["cloud"])
+        elif 12 <= h < 20:
+            afternoon.append(r["cloud"])
+    if not morning or not afternoon:
+        return None
+    delta = (sum(afternoon) / len(afternoon)) - (sum(morning) / len(morning))
+    if delta <= -CLOUD_TREND_DELTA_PCT:
+        return "☀️ Trend: opklarend in de middag"
+    if delta >= CLOUD_TREND_DELTA_PCT:
+        return "☁️ Trend: bewolking neemt toe"
+    return None
+
+
+def fetch_pollen(location):
+    """Fetch today's hourly pollen forecast. Returns None on failure (briefing-resilient)."""
+    params = {
+        "latitude":  location["lat"],
+        "longitude": location["lon"],
+        "hourly":    ",".join(POLLEN_LABELS_NL.keys()),
+        "timezone":  location["timezone"],
+        "forecast_days": 1,
+    }
+    try:
+        r = requests.get(POLLEN_API_URL, params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException:
+        return None
+
+
+def _pollen_level(value):
+    if value < 20:
+        return None
+    if value < 50:
+        return "matig"
+    if value < 100:
+        return "hoog"
+    return "zeer hoog"
+
+
+def format_pollen_section(pollen_json, target_date):
+    if not pollen_json or "hourly" not in pollen_json:
+        return None
+    h = pollen_json["hourly"]
+    times = h.get("time", [])
+    day_idx = [i for i, t in enumerate(times) if datetime.fromisoformat(t).date() == target_date]
+    if not day_idx:
+        return None
+    parts = []
+    for key, label in POLLEN_LABELS_NL.items():
+        series = h.get(key)
+        if not series:
+            continue
+        vals = [series[i] for i in day_idx if series[i] is not None]
+        if not vals:
+            continue
+        peak = max(vals)
+        level = _pollen_level(peak)
+        if level is None:
+            continue
+        parts.append(label + " " + level + " (" + str(round(peak)) + ")")
+    if not parts:
+        return None
+    return "🌼 Pollen: " + ", ".join(parts)
+
+
+def build_message(location, forecast, today, pollen=None):
     rows = parse_hourly(forecast)
     home = is_home(location)
     weekday = today.weekday()
@@ -285,6 +404,11 @@ def build_message(location, forecast, today):
     parts = [header, ""]
 
     if home:
+        banner = format_extremes_banner(rows, today)
+        if banner:
+            parts.append(banner)
+            parts.append("")
+
         blocks = PEUTER_BLOCKS if weekday in PEUTER_DAYS else WEEKDAY_BLOCKS
         for label, sh, sm, eh, em, days, icon in blocks:
             if days is not None and weekday not in days:
@@ -293,11 +417,21 @@ def build_message(location, forecast, today):
             window_label = icon + " " + label + " " + ("%02d:%02d" % (sh, sm)) + "-" + ("%02d:%02d" % (eh, em))
             parts.append(summarize_block(window_label, block_hours))
             parts.append("")
+
+        trend = format_cloud_trend(rows, today)
+        if trend:
+            parts.append(trend)
+            parts.append("")
     else:
         parts.append("_(buiten Utrecht - alleen UV-info)_")
         parts.append("")
 
     parts.append(format_uv_section(rows, today))
+
+    if home:
+        pollen_line = format_pollen_section(pollen, today)
+        if pollen_line:
+            parts.append(pollen_line)
 
     return "\n".join(parts)
 
@@ -324,7 +458,8 @@ def main():
     today = datetime.now(tz).date()
 
     forecast = fetch_forecast(LOCATION)
-    message  = build_message(LOCATION, forecast, today)
+    pollen   = fetch_pollen(LOCATION) if is_home(LOCATION) else None
+    message  = build_message(LOCATION, forecast, today, pollen=pollen)
 
     print(message)
     print("---")

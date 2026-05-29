@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self';
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Raam-koeladvies · Humus &amp; Heaven</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --parchment: #f3ecd9; --parchment-deep: #e8dec3;
+    --ink: #2a241b; --ink-soft: #5c4f3c;
+    --moss: #3d5a3a; --moss-light: #6b8562;
+    --clay: #b8532a; --sand: #c9a978;
+    --rain: #4a6b8a; --sun: #d4a017; --dry: #a0421a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, var(--parchment-deep) 0%, var(--parchment) 60%);
+    color: var(--ink); font-family: "Cormorant Garamond", Georgia, serif;
+    min-height: 100vh; padding-bottom: 40px;
+  }
+  .num { font-family: "JetBrains Mono", monospace; font-feature-settings: "tnum"; }
+  .rule-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft); }
+  .corner-mark { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.15em; color: var(--ink-soft); text-transform: uppercase; }
+  header { padding: 32px 40px 16px; }
+  .title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px; }
+  h1 { font-size: clamp(40px, 5.5vw, 72px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+  .subtitle { font-size: 13px; font-style: italic; color: var(--ink-soft); max-width: 520px; margin-top: 4px; }
+  .date-big { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
+  .pulse { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .pad { padding: 0 40px; }
+  .grid { display: grid; gap: 24px; padding: 24px 40px 0; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .specimen-card {
+    background: var(--parchment); border: 1px solid #2a241b22;
+    box-shadow: 2px 4px 0 #2a241b11, inset 0 0 40px #e8dec380;
+    position: relative; padding: 24px;
+    background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px; background-position: 0 0, 1px 2px;
+  }
+  .specimen-card::before { content: ""; position: absolute; inset: 6px; border: 1px solid #2a241b1a; pointer-events: none; }
+  .card-title { font-size: 22px; font-style: italic; margin: 4px 0 14px; font-weight: 500; }
+  .big-num { font-family: "JetBrains Mono", monospace; font-size: 44px; font-weight: 600; line-height: 1; }
+  .big-num span { font-size: 18px; color: var(--ink-soft); margin-left: 3px; }
+  /* open/dicht stempel */
+  .stamp { display: inline-block; padding: 5px 14px; font-family: "JetBrains Mono", monospace; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; border: 1.5px solid currentColor; transform: rotate(-1.5deg); }
+  .stamp-open { color: var(--moss); }
+  .stamp-dicht { color: var(--clay); }
+  .badge { display: inline-block; padding: 4px 12px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; border: 1px solid currentColor; }
+  .badge-warm { color: var(--dry); }
+  .badge-cool { color: var(--rain); }
+  .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed #2a241b22; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+  .stat-row .lbl { color: var(--ink-soft); }
+  .status-line { font-size: 19px; font-style: italic; margin-top: 12px; }
+  .chart-box { position: relative; height: 340px; margin-top: 10px; }
+  .spark { display: block; margin-top: 6px; }
+  /* tijdlijn */
+  .tl-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+  .tl-name { font-family: "JetBrains Mono", monospace; font-size: 12px; width: 96px; flex: none; color: var(--ink-soft); }
+  .tl-track { position: relative; flex: 1; height: 22px; background: #2a241b0d; border: 1px solid #2a241b22; }
+  .tl-seg { position: absolute; top: 0; bottom: 0; background: var(--moss); opacity: 0.8; }
+  .tl-now { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+  .tl-axis { display: flex; justify-content: space-between; font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-soft); margin: 4px 0 0 108px; }
+  a.link { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 2px; }
+  .btn { background: var(--ink); color: var(--parchment); padding: 10px 18px; min-height: 44px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
+  .btn:hover { background: var(--moss); }
+  .banner { padding: 12px 16px; margin: 8px 40px; font-style: italic; font-size: 13px; border-left: 3px solid; }
+  .banner-ok { color: var(--moss); background: #3d5a3a11; border-left-color: var(--moss); }
+  .banner-warn { color: var(--clay); background: #b8532a11; border-left-color: var(--clay); }
+  .banner-error { color: var(--dry); background: #a0421a11; border-left-color: var(--dry); }
+  footer { padding: 40px; margin-top: 24px; font-size: 12px; color: var(--ink-soft); font-style: italic; }
+  @media (max-width: 680px) {
+    header { padding: 24px 16px 12px; }
+    .pad, .grid { padding-left: 16px; padding-right: 16px; }
+    .banner { margin: 8px 16px; }
+    .tl-name { width: 72px; }
+    .tl-axis { margin-left: 84px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <div class="corner-mark" id="folio-mark"></div>
+      <h1>Raam-koeladvies</h1>
+      <div class="subtitle">Wanneer kun je per kamer de ramen openzetten om te koelen — en wanneer juist niet? De Open-Meteo-voorspelling wordt geijkt op het eigen weerstation en gecombineerd met de trend van de kamertemperatuur.</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="corner-mark">Vandaag</div>
+      <div class="num date-big" id="today-date"></div>
+      <div style="margin-top:8px;display:flex;gap:14px;justify-content:flex-end;flex-wrap:wrap;">
+        <a class="link" href="index.html">Bodem</a>
+        <a class="link" href="mowing.html">Gazon</a>
+      </div>
+    </div>
+  </div>
+  <div class="hairline-bold"></div>
+</header>
+
+<section style="padding:14px 40px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+  <button class="btn" id="refresh-btn">↻ Refresh</button>
+  <span id="source-label" style="font-size:11px;color:var(--ink-soft);font-style:italic;"></span>
+</section>
+
+<div id="banner-slot"></div>
+
+<div id="content">
+  <div style="padding:80px 40px;text-align:center;">
+    <div class="pulse" style="font-size:22px;font-style:italic;color:var(--ink-soft);">Het raamboek opslaan…</div>
+  </div>
+</div>
+
+<footer>
+  <div class="rule-label" style="margin-bottom:6px;">Methode</div>
+  De buitentemperatuur-voorspelling (Open-Meteo) wordt geijkt op het eigen WU-station: het
+  actuele verschil <em>station − model</em> wordt bij de voorspelling opgeteld en dooft lineair uit
+  over ~12 uur (dichtbij = stationsanker, ver weg = ruw model). Per kamer wordt de recente
+  binnentemperatuur-trend doorgetrokken (gedempt, geen thermisch huismodel) en gekruist met de
+  geijkte buitenvoorspelling: het raam mag open zodra het binnen warmer is dan comfortabel én
+  buiten minstens de open-marge koeler is. Advies — geen raam wordt automatisch bediend.
+</footer>
+
+<script>
+// ===================== CONFIG =====================
+const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", rain:"#4a6b8a", sun:"#d4a017", dry:"#a0421a", sand:"#c9a978" };
+const ROOM_COLORS = [COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight];
+const state = { data: null, chart: null };
+
+document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ramen`;
+document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+document.getElementById("refresh-btn").addEventListener("click", loadData);
+
+// ===================== DATA =====================
+async function loadData() {
+  document.getElementById("banner-slot").innerHTML = "";
+  document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
+  try {
+    const res = await fetch(`window_data.json?t=${Date.now()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.data = await res.json();
+    render();
+  } catch (e) {
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-error"><strong>Kan data niet laden:</strong> ${e.message}. Heeft de GitHub Action al gedraaid?</div>`;
+    document.getElementById("source-label").textContent = "";
+  }
+}
+
+function clockOf(iso) { const d = new Date(iso); return d.toLocaleTimeString("nl-NL", { hour:"2-digit", minute:"2-digit" }); }
+
+function ageLabel(iso) {
+  const ageH = (Date.now() - new Date(iso).getTime()) / 3.6e6;
+  if (ageH < 1) return "net bijgewerkt";
+  return `${Math.round(ageH)} uur geleden`;
+}
+
+// ===================== RENDER =====================
+function render() {
+  const d = state.data;
+  const srcLabel = d.outside_source === "wu" ? "WU-station" : "Open-Meteo";
+  document.getElementById("source-label").textContent =
+    `Buiten via ${srcLabel} · ververst ${ageLabel(d.generated_at)} (${new Date(d.generated_at).toLocaleString("nl-NL")})`;
+
+  // Banners: gated (koele dag) of verouderd
+  const banners = [];
+  const ageH = (Date.now() - new Date(d.generated_at).getTime()) / 3.6e6;
+  if (ageH > 3) banners.push(`<div class="banner banner-warn">⚠ Data is ${Math.round(ageH)} uur oud — draait de Action nog?</div>`);
+  if (d.gated) banners.push(`<div class="banner banner-ok">🌥 Koele dag (max ${fmtT(d.day_max)}) — koeladvies onderdrukt. Ramen blijven op hun laatste stand; hieronder de verwachting.</div>`);
+  document.getElementById("banner-slot").innerHTML = banners.join("");
+
+  document.getElementById("content").innerHTML = `
+    ${biasStripHTML(d)}
+    <div class="grid grid-2">${ROOMS_ORDER(d).map(r => roomCardHTML(r, d.rooms[r])).join("")}</div>
+    <div class="grid">
+      <div class="specimen-card">
+        <div class="corner-mark">Binnen vs. buiten · gemeten → geijkte voorspelling</div>
+        <div class="chart-box"><canvas id="temp-chart"></canvas></div>
+        ${legendHTML(d)}
+      </div>
+    </div>
+    <div class="grid">
+      <div class="specimen-card">
+        <div class="corner-mark">Open-venster vandaag · per kamer</div>
+        <div style="margin-top:14px;">${timelineHTML(d)}</div>
+      </div>
+    </div>
+  `;
+
+  drawChart();
+}
+
+function ROOMS_ORDER(d) { return Object.keys(d.rooms); }
+function fmtT(v) { return v == null ? "–" : `${v.toFixed(1)}°`; }
+
+function biasStripHTML(d) {
+  const biasTxt = d.bias == null ? "–"
+    : (d.bias === 0 ? "gelijk aan model"
+      : `${d.bias > 0 ? "+" : ""}${d.bias.toFixed(1)}° t.o.v. model`);
+  const dayBadge = d.warm_day
+    ? `<span class="badge badge-warm">Warme dag</span>`
+    : `<span class="badge badge-cool">Koele dag</span>`;
+  return `
+    <div class="grid"><div class="specimen-card">
+      <div class="corner-mark">Buiten nu &amp; ijking</div>
+      <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <div>
+          <div class="big-num">${d.outside_now == null ? "–" : d.outside_now.toFixed(1)}<span>°C</span></div>
+          <div class="rule-label" style="margin-top:4px;">Buiten (${d.outside_source === "wu" ? "station" : "model"})</div>
+        </div>
+        <div style="flex:1;min-width:220px;">
+          <div class="stat-row"><span class="lbl">Stationscorrectie</span><span>${biasTxt}</span></div>
+          <div class="stat-row"><span class="lbl">Model nu (Open-Meteo)</span><span>${fmtT(d.om_now)}</span></div>
+          <div class="stat-row"><span class="lbl">Verwachte dag-max</span><span>${fmtT(d.day_max)}</span></div>
+          <div class="stat-row" style="border:none;"><span class="lbl">Drempel koeladvies</span><span>${dayBadge}</span></div>
+        </div>
+      </div>
+    </div></div>`;
+}
+
+function trendArrow(t) {
+  if (t == null) return `<span style="color:var(--ink-soft)">trend onbekend</span>`;
+  if (t > 0.15)  return `<span style="color:var(--dry)">↑ +${t.toFixed(1)}°/u</span>`;
+  if (t < -0.15) return `<span style="color:var(--rain)">↓ ${t.toFixed(1)}°/u</span>`;
+  return `<span style="color:var(--ink-soft)">→ stabiel</span>`;
+}
+
+function humidityNote(h) {
+  if (h == null) return "";
+  if (h >= 70) return " · vochtig";
+  if (h <= 30) return " · droog";
+  return " · prettig";
+}
+
+function sparkSVG(history) {
+  const pts = (history || []).filter(p => p.temp != null).slice(-16);
+  if (pts.length < 2) return "";
+  const W = 160, H = 32, pad = 2;
+  const temps = pts.map(p => p.temp);
+  const lo = Math.min(...temps), hi = Math.max(...temps);
+  const span = (hi - lo) || 1;
+  const xs = (i) => pad + i * (W - 2*pad) / (pts.length - 1);
+  const ys = (t) => H - pad - (t - lo) / span * (H - 2*pad);
+  const dpath = pts.map((p,i) => `${i ? "L" : "M"}${xs(i).toFixed(1)},${ys(p.temp).toFixed(1)}`).join(" ");
+  return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">
+    <path d="${dpath}" fill="none" stroke="${COLORS.inkSoft}" stroke-width="1.5"/>
+    <circle cx="${xs(pts.length-1).toFixed(1)}" cy="${ys(temps[temps.length-1]).toFixed(1)}" r="2.2" fill="${COLORS.clay}"/>
+  </svg>`;
+}
+
+function roomCardHTML(name, r) {
+  if (!r) return "";
+  const open = r.advice === "open";
+  const stamp = `<span class="stamp ${open ? "stamp-open" : "stamp-dicht"}">${open ? "Open" : "Dicht"}</span>`;
+  const statusColor = r.open_now ? "var(--moss)" : (r.predicted_open ? "var(--ink)" : "var(--ink-soft)");
+  const overComfort = r.inside != null && r.inside > state.data.params.COMFORT_HIGH;
+  return `
+    <div class="specimen-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div><div class="corner-mark">Kamer</div><div class="card-title" style="margin:2px 0 0;">${name}</div></div>
+        <div>${stamp}</div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:14px;margin-top:14px;">
+        <div class="big-num" style="color:${overComfort ? "var(--dry)" : "var(--ink)"};">${r.inside == null ? "–" : r.inside.toFixed(1)}<span>°C</span></div>
+        <div style="padding-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">${trendArrow(r.trend)}</div>
+      </div>
+      ${sparkSVG(r.history)}
+      <div class="status-line" style="color:${statusColor};">${r.status_text}</div>
+      <div style="margin-top:14px;border-top:1px dashed #2a241b33;padding-top:10px;">
+        <div class="stat-row"><span class="lbl">Luchtvochtigheid</span><span>${r.humidity == null ? "–" : r.humidity + "%"}${humidityNote(r.humidity)}</span></div>
+        <div class="stat-row" style="border:none;"><span class="lbl">Comfortgrens</span><span>${state.data.params.COMFORT_HIGH.toFixed(1)}°</span></div>
+      </div>
+    </div>`;
+}
+
+function legendHTML(d) {
+  const rooms = ROOMS_ORDER(d);
+  const items = [
+    `<span style="color:${COLORS.rain}">━ buiten geijkt</span>`,
+    `<span style="color:${COLORS.sand}">┄ buiten (ruw model)</span>`,
+  ].concat(rooms.map((r,i) => `<span style="color:${ROOM_COLORS[i % ROOM_COLORS.length]}">┄ ${r} (binnen)</span>`));
+  return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
+}
+
+// ===================== TIMELINE =====================
+function timelineHTML(d) {
+  const H = 18; // toon 18 uur vooruit
+  const rooms = ROOMS_ORDER(d);
+  const rows = rooms.map(name => {
+    const r = d.rooms[name];
+    const segs = (r.open_intervals || []).map(iv => {
+      const s = Math.max(0, iv.start_h ?? 0), e = Math.min(H, iv.end_h ?? 0);
+      if (e <= s) return "";
+      const left = (s / H * 100).toFixed(1), w = ((e - s) / H * 100).toFixed(1);
+      return `<div class="tl-seg" style="left:${left}%;width:${w}%;" title="${iv.start}–${iv.end}"></div>`;
+    }).join("");
+    const empty = (r.open_intervals || []).length === 0
+      ? `<span style="position:absolute;left:8px;top:3px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink-soft);">dicht houden</span>` : "";
+    return `<div class="tl-row"><div class="tl-name">${name}</div><div class="tl-track"><div class="tl-now" style="left:0;"></div>${segs}${empty}</div></div>`;
+  }).join("");
+  // as-labels: nu, +6u, +12u, +18u
+  const now = new Date(d.as_of_local);
+  const tick = (h) => { const t = new Date(now.getTime() + h*3.6e6); return t.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"}); };
+  return `${rows}<div class="tl-axis"><span>${tick(0)}</span><span>${tick(6)}</span><span>${tick(12)}</span><span>${tick(18)}</span></div>`;
+}
+
+// ===================== CHART =====================
+function drawChart() {
+  const d = state.data;
+  const rooms = ROOMS_ORDER(d);
+  const hist = (d.outside_history || []).filter(p => p.temp != null);
+  const fut = (d.forecast || []).map((f, i) => ({ ...f, i })).filter(f => f.is_future);
+
+  const labels = [...hist.map(p => clockOf(p.t)), ...fut.map(f => clockOf(f.dt))];
+  const nPast = hist.length;
+
+  const measured = [...hist.map(p => p.temp), ...fut.map(() => null)];
+  // verbind de gemeten lijn met de geijkte voorspelling op de "nu"-grens
+  const corr = [...hist.map((p, i) => i === nPast - 1 ? p.temp : null), ...fut.map(f => f.out_corr)];
+  const raw  = [...hist.map(() => null), ...fut.map(f => f.out_raw)];
+
+  const roomData = rooms.map((name, ri) => {
+    const r = d.rooms[name];
+    return {
+      label: name,
+      data: [...hist.map(() => null), ...fut.map(f => (r.proj && r.proj[f.i] != null) ? r.proj[f.i] : null)],
+      borderColor: ROOM_COLORS[ri % ROOM_COLORS.length],
+      borderWidth: 1.2, borderDash: [3,3], pointRadius: 0, tension: 0.3, spanGaps: true,
+    };
+  });
+
+  const P = d.params;
+  state.chart?.destroy();
+  const ctx = document.getElementById("temp-chart").getContext("2d");
+  state.chart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "buiten gemeten", data: measured, borderColor: COLORS.rain, backgroundColor: COLORS.rain + "18",
+        borderWidth: 2.2, pointRadius: 0, tension: 0.3, fill: false, spanGaps: false },
+      { label: "buiten geijkt", data: corr, borderColor: COLORS.rain,
+        borderWidth: 2, borderDash: [6,4], pointRadius: 0, tension: 0.3, spanGaps: true },
+      { label: "buiten ruw model", data: raw, borderColor: COLORS.sand,
+        borderWidth: 1, borderDash: [2,3], pointRadius: 0, tension: 0.3, spanGaps: true },
+      ...roomData,
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          borderColor: COLORS.ink, borderWidth: 1,
+          titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
+          bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
+          callbacks: { label: c => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°` },
+        },
+        annotation: { annotations: {
+          comfort: { type: "line", yMin: P.COMFORT_HIGH, yMax: P.COMFORT_HIGH, borderColor: COLORS.dry, borderWidth: 1.2, borderDash: [4,4],
+            label: { content: `comfort ${P.COMFORT_HIGH}°`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } },
+          warmday: { type: "line", yMin: P.WARM_DAY_MAX, yMax: P.WARM_DAY_MAX, borderColor: COLORS.sun, borderWidth: 1, borderDash: [2,4],
+            label: { content: `warme dag ${P.WARM_DAY_MAX}°`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.sun, backgroundColor: "transparent" } },
+          now: { type: "line", xMin: nPast - 0.5, xMax: nPast - 0.5, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4],
+            label: { content: "nu →", display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink, backgroundColor: "transparent" } },
+        }},
+      },
+      scales: {
+        x: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, maxRotation: 0, autoSkip: true, maxTicksLimit: 14 } },
+        y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+             title: { display: true, text: "°C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+      },
+    },
+  });
+}
+
+loadData();
+</script>
+</body>
+</html>

@@ -29,7 +29,7 @@ weggeschreven; de token-rotatie mág niet overgeslagen worden).
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -43,6 +43,14 @@ OPEN_MARGIN  = 1.5    # °C — open als buiten ≥ deze marge kouder is dan bin
 CLOSE_MARGIN = 0.5    # °C — sluit als buiten tot binnen ± deze marge stijgt
 WARM_DAY_MAX = 22.0   # °C — onder deze verwachte dag-max: geen koeladvies
 LOOKAHEAD_H  = 12     # uur — vooruitblik voor "open weer rond HH:00"
+
+# ── Dashboard-voorspelling (heuristiek, geen thermisch huismodel) ──────────────
+BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
+TREND_WINDOW_H  = 4.0   # uur — historie-venster voor de binnentemp-trend
+TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
+TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
+PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
+HISTORY_KEEP    = 48    # samples — rollend venster aan binnen/buiten-metingen (~2 dagen uurlijks)
 
 # ── Locatie (Utrecht) ──────────────────────────────────────────────────────────
 LATITUDE  = 52.0907
@@ -58,6 +66,9 @@ TADO_API       = "https://my.tado.com/api/v2"
 # ── Gist-opslag ──────────────────────────────────────────────────────────────────
 TOKEN_FILE = "tado_token.json"     # {"refresh_token": "..."}
 STATE_FILE = "window_state.json"   # {"rooms": {...}, "last_updated": ..., "last_notification": ...}
+
+# ── Dashboard-artefact (publiek, gecommit door de Action; géén geheim) ───────────
+DASHBOARD_FILE = os.path.join("docs", "window_data.json")
 
 
 # ── Gist I/O ─────────────────────────────────────────────────────────────────────
@@ -199,6 +210,13 @@ def fetch_wu_current_temp() -> float | None:
         return None
 
 
+def _parse_local(t: str) -> datetime:
+    """Open-Meteo geeft met timezone=Europe/Amsterdam naïeve lokale tijden terug; maak
+    ze tijdzone-bewust zodat ze veilig met `datetime.now(TZ)` te vergelijken zijn."""
+    dt = datetime.fromisoformat(t)
+    return dt.replace(tzinfo=TZ) if dt.tzinfo is None else dt
+
+
 def fetch_open_meteo() -> dict:
     """Huidige temp + uurlijkse forecast (vandaag + morgen)."""
     r = requests.get(
@@ -218,7 +236,7 @@ def fetch_open_meteo() -> dict:
     current = (data.get("current") or {}).get("temperature_2m")
     h = data.get("hourly", {})
     rows = [
-        {"dt": datetime.fromisoformat(t), "temp": temp}
+        {"dt": _parse_local(t), "temp": temp}
         for t, temp in zip(h.get("time", []), h.get("temperature_2m", []))
     ]
     return {"current": current, "hourly": rows}
@@ -240,6 +258,107 @@ def reopen_hour(hourly: list[dict], inside: float, now: datetime) -> str | None:
         if r["temp"] <= inside - OPEN_MARGIN:
             return r["dt"].strftime("%H:%M")
     return None
+
+
+# ── Slimme combinatie: forecast geijkt op het eigen station + binnentrend ─────────
+
+def correct_forecast(hourly: list[dict], bias: float, now: datetime) -> list[dict]:
+    """Ijk de Open-Meteo forecast op het WU-station. `bias` = (WU_nu − model_nu) is de
+    lokale microklimaat/kalibratie-offset; we tellen 'm bij de forecast op maar laten 'm
+    lineair uitdoven over BIAS_DECAY_H (dichtbij = stationsanker, ver weg = ruw model).
+    Geeft per uur {"dt", "out_raw", "out_corr"}."""
+    out = []
+    for r in hourly:
+        raw = r["temp"]
+        if raw is None:
+            out.append({"dt": r["dt"], "out_raw": None, "out_corr": None})
+            continue
+        h_ahead = max(0.0, (r["dt"] - now).total_seconds() / 3600.0)
+        decay = max(0.0, 1.0 - h_ahead / BIAS_DECAY_H)
+        out.append({"dt": r["dt"], "out_raw": raw, "out_corr": raw + bias * decay})
+    return out
+
+
+def room_trend(history: list[dict], now: datetime) -> float | None:
+    """Helling (°C/uur) van de binnentemperatuur over de laatste TREND_WINDOW_H uur,
+    via kleinste-kwadraten over de samples. None bij te weinig historie. Geclamped op
+    ±TREND_MAX_SLOPE zodat één rare meting de projectie niet laat ontsporen."""
+    pts = []  # (uren_geleden_negatief, temp)
+    for s in history:
+        try:
+            t = datetime.fromisoformat(s["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        temp = s.get("temp")
+        if temp is None:
+            continue
+        dt_h = (t - now).total_seconds() / 3600.0  # ≤ 0 voor verleden
+        if dt_h < -TREND_WINDOW_H or dt_h > 0.01:
+            continue
+        pts.append((dt_h, temp))
+    if len(pts) < 2:
+        return None
+    n = len(pts)
+    sx = sum(x for x, _ in pts)
+    sy = sum(y for _, y in pts)
+    sxx = sum(x * x for x, _ in pts)
+    sxy = sum(x * y for x, y in pts)
+    denom = n * sxx - sx * sx
+    if abs(denom) < 1e-9:
+        return None
+    slope = (n * sxy - sx * sy) / denom
+    return max(-TREND_MAX_SLOPE, min(TREND_MAX_SLOPE, slope))
+
+
+def project_inside(inside_now: float, slope: float | None, hours_ahead: float) -> float:
+    """Projecteer de binnentemperatuur vooruit. De huidige trend houdt hooguit
+    TREND_CAP_H uur aan en vlakt dan af (heuristiek, geen thermisch model)."""
+    if slope is None:
+        return inside_now
+    return inside_now + slope * min(hours_ahead, TREND_CAP_H)
+
+
+def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
+                            slope: float | None, now: datetime) -> tuple[list[dict], list]:
+    """Loop de geijkte forecast af (tot PREDICT_HORIZON_H) en vind de uren waarop het
+    raam-open zinvol is: geprojecteerde binnentemp > COMFORT_HIGH én buiten-geijkt
+    ≤ binnen − OPEN_MARGIN. Geeft (open_intervals, proj) waarbij proj de geprojecteerde
+    binnentemp per forecast-uur is (uitgelijnd op forecast_corr)."""
+    proj: list = []
+    intervals: list[dict] = []
+    cur_start: datetime | None = None
+    prev_dt: datetime | None = None
+
+    def _close(end_dt: datetime) -> None:
+        intervals.append({
+            "start":   cur_start.strftime("%H:%M"),
+            "end":     end_dt.strftime("%H:%M"),
+            "start_h": round((cur_start - now).total_seconds() / 3600.0, 2),
+            "end_h":   round((end_dt - now).total_seconds() / 3600.0, 2),
+        })
+
+    for r in forecast_corr:
+        dt, oc = r["dt"], r["out_corr"]
+        h_ahead = (dt - now).total_seconds() / 3600.0
+        if inside_now is None or h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
+            proj.append(None)
+            # buiten het zoekvenster een lopend interval afsluiten
+            if cur_start is not None and prev_dt is not None:
+                _close(prev_dt)
+                cur_start = None
+            continue
+        ip = project_inside(inside_now, slope, max(0.0, h_ahead))
+        proj.append(round(ip, 1))
+        is_open = oc is not None and ip > COMFORT_HIGH and oc <= ip - OPEN_MARGIN
+        if is_open and cur_start is None:
+            cur_start = dt
+        elif not is_open and cur_start is not None:
+            _close(dt)
+            cur_start = None
+        prev_dt = dt
+    if cur_start is not None and prev_dt is not None:
+        _close(prev_dt)
+    return intervals, proj
 
 
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
@@ -272,6 +391,125 @@ def save_state(state: dict) -> None:
     gist_write_files({STATE_FILE: json.dumps(state, indent=2, ensure_ascii=False)})
 
 
+# ── Dashboard-artefact (docs/window_data.json) ─────────────────────────────────────
+
+def read_prev_dashboard() -> dict:
+    """Lees het vorige dashboard-bestand uit de checkout (voor historie-continuïteit)."""
+    try:
+        with open(DASHBOARD_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _append_trim(history: list, sample: dict) -> list:
+    """Voeg een sample toe en houd de laatste HISTORY_KEEP over (chronologisch)."""
+    hist = [h for h in (history or []) if h.get("temp") is not None]
+    hist.append(sample)
+    return hist[-HISTORY_KEEP:]
+
+
+def write_dashboard(payload: dict) -> None:
+    os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
+    with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    print(f"[dashboard] Geschreven → {DASHBOARD_FILE}")
+
+
+def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | None,
+                    outside_source: str, dmax: float | None, prev_rooms: dict,
+                    gated: bool, gate_reason: str) -> dict:
+    """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
+    binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken."""
+    prev = read_prev_dashboard()
+    prev_room_dash = prev.get("rooms", {})
+    om_now = om.get("current")
+
+    # Stationscorrectie: alleen ijken als de WU-meting beschikbaar is.
+    bias = 0.0
+    if outside_source == "wu" and outside is not None and om_now is not None:
+        bias = round(outside - om_now, 2)
+
+    fc = correct_forecast(om["hourly"], bias, now)
+    forecast = [
+        {"dt": r["dt"].isoformat(),
+         "out_raw":  round(r["out_raw"], 1)  if r["out_raw"]  is not None else None,
+         "out_corr": round(r["out_corr"], 1) if r["out_corr"] is not None else None,
+         "is_future": r["dt"] >= now}
+        for r in fc
+    ]
+
+    out_hist = prev.get("outside_history", [])
+    if outside is not None:
+        out_hist = _append_trim(out_hist, {"t": now.isoformat(), "temp": round(outside, 1)})
+
+    warm_day = dmax is not None and dmax >= WARM_DAY_MAX
+
+    rooms_out: dict[str, dict] = {}
+    for room in ROOMS:
+        d = rooms_data.get(room) or {}
+        inside   = d.get("inside")
+        humidity = d.get("humidity")
+
+        prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
+        hist = prev_hist
+        if inside is not None:
+            hist = _append_trim(prev_hist, {"t": now.isoformat(), "temp": round(inside, 1)})
+
+        slope  = room_trend(hist, now)
+        advice = decide(inside, outside, prev_rooms.get(room, "dicht"))
+        intervals, proj = predict_open_intervals(fc, inside, slope, now)
+
+        open_now = (inside is not None and outside is not None
+                    and inside > COMFORT_HIGH and outside <= inside - OPEN_MARGIN)
+        predicted_open = intervals[0]["start"] if intervals else None
+
+        if inside is None:
+            status_text = "Geen meting"
+        elif open_now:
+            end = intervals[0]["end"] if intervals else None
+            status_text = f"Nu open tot ~{end}" if end else "Nu open"
+        elif predicted_open:
+            status_text = f"Open rond {predicted_open}"
+        else:
+            status_text = "Vandaag dicht houden"
+
+        rooms_out[room] = {
+            "inside":         round(inside, 1) if inside is not None else None,
+            "humidity":       round(humidity) if humidity is not None else None,
+            "advice":         advice,
+            "trend":          round(slope, 2) if slope is not None else None,
+            "open_now":       open_now,
+            "predicted_open": predicted_open,
+            "open_intervals": intervals,
+            "status_text":    status_text,
+            "history":        hist,
+            "proj":           proj,
+        }
+
+    return {
+        "generated_at":   datetime.now(timezone.utc).isoformat(),
+        "as_of_local":    now.isoformat(),
+        "source":         "window_advisor",
+        "gated":          gated,
+        "gate_reason":    gate_reason,
+        "outside_now":    round(outside, 1) if outside is not None else None,
+        "outside_source": outside_source,
+        "om_now":         round(om_now, 1) if om_now is not None else None,
+        "bias":           bias,
+        "day_max":        round(dmax, 1) if dmax is not None else None,
+        "warm_day":       warm_day,
+        "params": {
+            "COMFORT_HIGH": COMFORT_HIGH, "OPEN_MARGIN": OPEN_MARGIN,
+            "CLOSE_MARGIN": CLOSE_MARGIN, "WARM_DAY_MAX": WARM_DAY_MAX,
+            "LOOKAHEAD_H": LOOKAHEAD_H,
+        },
+        "outside_history": out_hist,
+        "forecast":        forecast,
+        "rooms":           rooms_out,
+    }
+
+
 # ── Telegram (weerbriefing-groep) ─────────────────────────────────────────────────
 
 def send_telegram(message: str) -> None:
@@ -300,8 +538,10 @@ def main():
     outside  = fetch_wu_current_temp()
     if outside is None:
         outside = om["current"]
+        outside_source = "open-meteo"
         print(f"[buiten] WU niet beschikbaar → Open-Meteo: {outside}°C")
     else:
+        outside_source = "wu"
         print(f"[buiten] WU: {outside}°C")
 
     today  = now.date()
@@ -315,7 +555,15 @@ def main():
         (d["inside"] is not None and d["inside"] > COMFORT_HIGH)
         for d in rooms_data.values()
     )
-    if (dmax is None or dmax < WARM_DAY_MAX) and not warm_room:
+    gated = (dmax is None or dmax < WARM_DAY_MAX) and not warm_room
+    gate_reason = "koele dag — advies onderdrukt" if gated else "warme dag"
+
+    # Dashboard altijd verversen (ook op onderdrukte dagen, zodat de historie en de
+    # "vandaag dicht houden"-status zichtbaar blijven). Telegram blijft ongewijzigd.
+    write_dashboard(build_dashboard(
+        now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason))
+
+    if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")
         # State niet wijzigen; ramen blijven op hun laatste advies staan.
         return

@@ -203,10 +203,50 @@ Independent except for **one deliberate read-only consumption** of `docs/data.js
 
 ---
 
+## Project 6: Tado Window Advisor (raam-koeladvies)
+
+**Goal:** On warm summer days, cool the house by telling — per room — when to open windows (outside cooler than the room) and when to close them (heat-in). Ventilation handles air quality; this is purely a thermal decision. Advice only — no window is actuated.
+
+### Files
+- `window_advisor.py` — hourly brain: tado auth → per-room temps → decide → Telegram
+- `tado_auth_bootstrap.py` — **one-time** local device-code authorization, seeds the refresh token into the secret Gist
+- `.github/workflows/window-notify.yml` — hourly cron at `:00` (Europe/Amsterdam) + manual dispatch (`dry_run` input), `permissions: contents: read`
+
+### Rooms in scope
+tado zone names, matched case-insensitively: **Living room, Ted, hotties, office** (edit `ROOMS` at the top of `window_advisor.py`).
+
+### Hourly flow
+1. Read the rotating tado refresh token from the **secret Gist** (`tado_token.json`), exchange it for an access token, and **immediately write the rotated refresh token back** (tado rotates on every refresh).
+2. tado API: `/me` → home id; `/homes/{id}/zones`; per matching zone `/state` → inside temperature + humidity.
+3. Outside temp **now** from WU PWS current obs (`metric.temp`), fallback Open-Meteo current hour.
+4. Open-Meteo hourly forecast (2 days) → day-max gate + "open again ~HH:00" lookahead.
+5. Per-room decision with hysteresis, update per-room state in the Gist (`window_state.json`).
+6. Telegram only the rooms whose advice **flipped** this run → weerbriefing-groep.
+
+### Decision logic (tunable constants at top of script)
+- `COMFORT_HIGH 23.5`, `OPEN_MARGIN 1.5`, `CLOSE_MARGIN 0.5`, `WARM_DAY_MAX 22.0`.
+- **OPEN** when `inside > COMFORT_HIGH` and `outside ≤ inside − OPEN_MARGIN`.
+- **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` or `inside ≤ COMFORT_HIGH`.
+- In-between → keep current advice (dead-band → no flapping).
+- **Cooling-only gate:** cool forecast day (max `< WARM_DAY_MAX`) and no warm room → no advice.
+
+### tado auth (the catch)
+Since March 2025 tado uses the OAuth2 **device-code flow** (no username/password). Refresh tokens **rotate** (each refresh revokes the previous) and live ≤30 days; hourly runs keep the chain alive. The refresh token lives **only** in the secret Gist + Actions secrets — **never committed** (public repo). Public app `client_id` is hardcoded (not a secret). If the chain breaks, re-run `tado_auth_bootstrap.py`.
+
+### Notification cadence
+Per-room state machine like the sandbox project. One check/hour, message only on a change. `DRY_RUN=1` prints instead of sending (token + state are still persisted — rotation must not be skipped).
+
+### Relation to other projects
+Independent. No new commit-back (token + state live in the Gist, so workflow is `contents: read`). Reuses Telegram (group), `GIST_TOKEN`, and the WU secrets.
+
+---
+
 ## Shared secrets (GitHub Actions)
-- `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project only)
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — all five projects
-- `GIST_ID`, `GIST_TOKEN` — soil project (irrigation log) + mowing advisor (mow log, same Gist)
+- `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project + window advisor)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — soil, sandbox, heating, mowing
+- `TELEGRAM_CHAT_GROUP_ID` — weather briefing + window advisor (group chat)
+- `GIST_ID`, `GIST_TOKEN` — soil project (irrigation log) + mowing advisor (mow log, same Gist); `GIST_TOKEN` also used by the window advisor
+- `TADO_GIST_ID` — **separate secret Gist** for the window advisor: rotating tado refresh token (`tado_token.json`) + per-room advice state (`window_state.json`)
 - `GITHUB_TOKEN` — automatic, sandbox project
 
 ## Variables

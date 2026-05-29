@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self' https://api.github.com;
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Grasmaai-adviseur · Humus &amp; Heaven</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --parchment: #f3ecd9; --parchment-deep: #e8dec3;
+    --ink: #2a241b; --ink-soft: #5c4f3c;
+    --moss: #3d5a3a; --moss-light: #6b8562;
+    --clay: #b8532a; --sand: #c9a978;
+    --rain: #4a6b8a; --sun: #d4a017; --dry: #a0421a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, var(--parchment-deep) 0%, var(--parchment) 60%);
+    color: var(--ink); font-family: "Cormorant Garamond", Georgia, serif;
+    min-height: 100vh; padding-bottom: 40px;
+  }
+  .num { font-family: "JetBrains Mono", monospace; font-feature-settings: "tnum"; }
+  .rule-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft); }
+  .corner-mark { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.15em; color: var(--ink-soft); text-transform: uppercase; }
+  header { padding: 32px 40px 16px; }
+  .title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px; }
+  h1 { font-size: clamp(40px, 5.5vw, 72px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+  .subtitle { font-size: 13px; font-style: italic; color: var(--ink-soft); max-width: 520px; margin-top: 4px; }
+  .date-big { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
+  .pulse { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .pad { padding: 0 40px; }
+  .grid { display: grid; gap: 24px; padding: 24px 40px 0; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+  .specimen-card {
+    background: var(--parchment); border: 1px solid #2a241b22;
+    box-shadow: 2px 4px 0 #2a241b11, inset 0 0 40px #e8dec380;
+    position: relative; padding: 24px;
+    background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px; background-position: 0 0, 1px 2px;
+  }
+  .specimen-card::before { content: ""; position: absolute; inset: 6px; border: 1px solid #2a241b1a; pointer-events: none; }
+  .card-title { font-size: 22px; font-style: italic; margin: 4px 0 14px; font-weight: 500; }
+  .big-num { font-family: "JetBrains Mono", monospace; font-size: 52px; font-weight: 600; line-height: 1; }
+  .big-num span { font-size: 20px; color: var(--ink-soft); margin-left: 3px; }
+  .badge { display: inline-block; padding: 4px 12px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; border: 1px solid currentColor; }
+  .badge-ready { color: var(--moss); }
+  .badge-wait { color: var(--ink-soft); }
+  .badge-over { color: var(--dry); }
+  .chart-box { position: relative; height: 320px; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-family: "JetBrains Mono", monospace; font-size: 12px; margin-top: 6px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px dashed #2a241b22; }
+  th { color: var(--ink-soft); font-weight: 600; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .btn { background: var(--ink); color: var(--parchment); padding: 10px 18px; min-height: 44px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
+  .btn:hover { background: var(--moss); }
+  .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+  .btn-secondary:hover { background: var(--ink); color: var(--parchment); }
+  a.link { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 2px; }
+  .banner { padding: 12px 16px; margin: 8px 40px; font-style: italic; font-size: 13px; border-left: 3px solid; }
+  .banner-ok { color: var(--moss); background: #3d5a3a11; border-left-color: var(--moss); }
+  .banner-warn { color: var(--clay); background: #b8532a11; border-left-color: var(--clay); }
+  .banner-error { color: var(--dry); background: #a0421a11; border-left-color: var(--dry); }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(42,36,27,.55); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+  .modal { background: var(--parchment); padding: 32px; width: min(480px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow-y: auto; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; }
+  .modal h2 { font-size: 26px; font-style: italic; font-weight: 500; margin-bottom: 4px; }
+  .input-field { background: transparent; border: none; border-bottom: 1px solid #2a241b66; padding: 7px 2px; margin-top: 4px; font-family: "JetBrains Mono", monospace; font-size: 15px; color: var(--ink); outline: none; width: 100%; }
+  .input-field:focus { border-bottom-color: var(--clay); }
+  .len-chips { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .len-chip { padding: 12px 20px; min-height: 44px; font-family: "JetBrains Mono", monospace; font-size: 13px; letter-spacing: 0.1em; background: transparent; border: 1px solid #2a241b44; cursor: pointer; color: var(--ink-soft); transition: all 0.15s; }
+  .len-chip:hover { border-color: var(--ink); }
+  .len-chip.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+  .mow-log { max-height: 140px; overflow-y: auto; margin-top: 8px; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+  .log-entry { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #2a241b22; color: var(--ink-soft); }
+  .log-entry .rm { cursor: pointer; color: var(--clay); opacity: 0.5; padding: 0 4px; }
+  .log-entry .rm:hover { opacity: 1; }
+  footer { padding: 40px; margin-top: 24px; font-size: 12px; color: var(--ink-soft); font-style: italic; }
+  @media (max-width: 680px) {
+    header { padding: 24px 16px 12px; }
+    .pad, .grid { padding-left: 16px; padding-right: 16px; }
+    .banner { margin: 8px 16px; }
+    .modal { padding: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <div class="corner-mark" id="folio-mark"></div>
+      <h1>Grasmaai-adviseur</h1>
+      <div class="subtitle">Wanneer is het gazon weer toe aan een beurt — en op welke hoogte? Gebaseerd op de FAO-56 grasgroei uit het bodemmodel, met oog voor een sterk wortelstelsel.</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="corner-mark">Vandaag</div>
+      <div class="num date-big" id="today-date"></div>
+      <div style="margin-top:8px;"><a class="link" href="index.html">← Bodem-dashboard</a></div>
+    </div>
+  </div>
+  <div class="hairline-bold"></div>
+</header>
+
+<section style="padding:14px 40px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+  <button class="btn" id="mow-btn">✂️ Ik heb gemaaid</button>
+  <button class="btn btn-secondary" id="refresh-btn">↻ Refresh</button>
+  <span id="source-label" style="font-size:11px;color:var(--ink-soft);font-style:italic;"></span>
+</section>
+
+<div id="banner-slot"></div>
+
+<div id="content">
+  <div style="padding:80px 40px;text-align:center;">
+    <div class="pulse" style="font-size:22px;font-style:italic;color:var(--ink-soft);">Het grasboek opslaan…</div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-backdrop" id="mow-modal">
+  <div class="modal">
+    <div class="corner-mark">✂️ Registreer maaibeurt</div>
+    <h2>Wanneer &amp; hoe hoog gemaaid?</h2>
+    <p style="font-style:italic;color:var(--ink-soft);margin-top:6px;font-size:13px;">Datum + ingestelde maaihoogte. De duur doet er niet toe — je maait toch alles.</p>
+
+    <div style="margin-top:18px;">
+      <div class="rule-label">Datum</div>
+      <input type="date" class="input-field" id="mow-date" />
+    </div>
+
+    <div style="margin-top:18px;">
+      <div class="rule-label">Maaihoogte</div>
+      <div class="len-chips" id="len-chips">
+        <button class="len-chip" data-len="30" onclick="pickLength(30)">30 mm</button>
+        <button class="len-chip active" data-len="40" onclick="pickLength(40)">40 mm</button>
+        <button class="len-chip" data-len="50" onclick="pickLength(50)">50 mm</button>
+      </div>
+    </div>
+
+    <div style="margin-top:18px;">
+      <div class="rule-label">Recente maaibeurten</div>
+      <div class="mow-log" id="mow-log"><div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Nog niets gelogd.</div></div>
+    </div>
+
+    <div style="margin-top:24px;display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn btn-secondary" id="mow-cancel">Annuleer</button>
+      <button class="btn" id="mow-save">Opslaan</button>
+    </div>
+    <div id="mow-status" style="margin-top:10px;font-size:12px;font-style:italic;color:var(--ink-soft);"></div>
+  </div>
+</div>
+
+<footer>
+  <div class="rule-label" style="margin-bottom:6px;">Methode</div>
+  Groei-eenheden = actuele transpiratie (lawn_T uit het FAO-56 bodemmodel) × hitte-demping. Bij hitte transpireert gras wel, maar groeit het nauwelijks. De accumulatie sinds de laatste maaibeurt bepaalt de maairijpheid; het weer in de komende dagen bepaalt de beste maaidag en de hoogte. Hoog maaien (50 mm) beschermt de wortels bij hitte/droogte; kort (30 mm) mag bij koel, vochtig, rustig groeiend gras.
+</footer>
+
+<script>
+// ===================== CONFIG =====================
+const CONFIG = { gistId: "__GIST_ID__", githubToken: null };
+const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", sun:"#d4a017", dry:"#a0421a" };
+const NL_DAYS = ["maandag","dinsdag","woensdag","donderdag","vrijdag","zaterdag","zondag"];
+const NL_MONTHS = ["","jan","feb","mrt","apr","mei","jun","jul","aug","sep","okt","nov","dec"];
+const state = { data: null, chart: null, mowings: {}, pickedLen: 40 };
+
+document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Gazon`;
+document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+document.getElementById("mow-date").value = new Date().toISOString().slice(0,10);
+
+const lsGist = localStorage.getItem("gist_id");
+const lsToken = localStorage.getItem("gh_token");
+if (lsGist) CONFIG.gistId = lsGist;
+if (lsToken) CONFIG.githubToken = lsToken;
+
+document.getElementById("refresh-btn").addEventListener("click", loadData);
+document.getElementById("mow-btn").addEventListener("click", openMowModal);
+document.getElementById("mow-cancel").addEventListener("click", closeMowModal);
+document.getElementById("mow-save").addEventListener("click", saveMow);
+
+// ===================== DATA =====================
+async function loadData() {
+  document.getElementById("banner-slot").innerHTML = "";
+  document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
+  try {
+    const res = await fetch(`mowing_data.json?t=${Date.now()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.data = await res.json();
+    state.mowings = state.data.mowings || {};
+    render();
+  } catch (e) {
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-error"><strong>Kan data niet laden:</strong> ${e.message}. Heeft de GitHub Action al gedraaid?</div>`;
+    document.getElementById("source-label").textContent = "";
+  }
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso + "T00:00:00");
+  return `${NL_DAYS[(d.getDay()+6)%7]} ${d.getDate()} ${NL_MONTHS[d.getMonth()+1]}`;
+}
+function shortLabel(iso) { const d = new Date(iso+"T00:00:00"); return `${d.getDate()}/${d.getMonth()+1}`; }
+
+function daysUntil(iso) {
+  if (!iso) return null;
+  const a = new Date(state.data.today + "T00:00:00");
+  const b = new Date(iso + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+
+// ===================== RENDER =====================
+function render() {
+  const d = state.data;
+  const src = d.source === "gdd_fallback" ? "vereenvoudigd model (geen bodemdata)" : "FAO-56 bodemmodel";
+  document.getElementById("source-label").textContent =
+    `Bron: ${src} · ververst ${new Date(d.generated_at).toLocaleString("nl-NL")}`;
+
+  if (d.source === "gdd_fallback") {
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-warn">⚠ Vereenvoudigd groeimodel — bodemdata tijdelijk niet beschikbaar.</div>`;
+  }
+
+  const rec = d.recommended_length || {};
+  const optimal = d.optimal_day;
+  const n = daysUntil(d.predicted_next_mow);
+
+  // Status badge + headline
+  let badge, headline, sub;
+  if (d.dormant) {
+    badge = `<span class="badge badge-wait">Winterrust</span>`;
+    headline = "Het gras groeit nauwelijks.";
+    sub = "Geen maaibeurt nodig.";
+  } else if (d.ready) {
+    const over = optimal && optimal.overgrown;
+    badge = `<span class="badge ${over ? "badge-over" : "badge-ready"}">${over ? "Te lang" : "Maairijp"}</span>`;
+    headline = over ? "Het gras staat lang." : "Tijd om te maaien.";
+    if (optimal && optimal.is_today) sub = `Vandaag is een goede maaidag (${optimal.reason}).`;
+    else if (optimal) sub = `Beste maaidag: <b>${fmtDate(optimal.date)}</b> (${optimal.reason}).`;
+    else sub = "Geen goede maaidag in de voorspelling — even afwachten.";
+  } else {
+    badge = `<span class="badge badge-wait">Nog niet</span>`;
+    headline = (n != null && n >= 0) ? `Nog ~${n} ${n === 1 ? "dag" : "dagen"}.` : "Nog even groeien.";
+    sub = d.predicted_next_mow ? `Verwachte maairijpheid rond <b>${fmtDate(d.predicted_next_mow)}</b>.` : "Verwachte datum nog onbekend.";
+  }
+
+  const lastMow = d.last_mow_assumed
+    ? `${fmtDate(d.last_mow)} <span style="color:var(--ink-soft)">(aanname — log je eerste beurt)</span>`
+    : `${fmtDate(d.last_mow)}${d.last_length_mm ? ` · ${d.last_length_mm}mm` : ""}`;
+
+  const lenColor = rec.length_mm >= 50 ? "var(--moss)" : (rec.length_mm <= 30 ? "var(--clay)" : "var(--ink)");
+
+  document.getElementById("content").innerHTML = `
+    <div class="grid grid-2">
+      <div class="specimen-card">
+        <div class="corner-mark">Status</div>
+        <div style="margin:8px 0 10px;">${badge}</div>
+        <div class="card-title" style="margin-top:0;">${headline}</div>
+        <p style="font-size:15px;color:var(--ink-soft);">${sub}</p>
+        <div style="margin-top:16px;border-top:1px dashed #2a241b33;padding-top:12px;font-size:13px;">
+          <div class="rule-label">Laatste maaibeurt</div>
+          <div style="margin-top:2px;font-family:'JetBrains Mono',monospace;font-size:13px;">${lastMow}</div>
+        </div>
+        <div style="margin-top:12px;font-size:13px;">
+          <div class="rule-label">Groei sinds maaien</div>
+          <div style="margin-top:2px;font-family:'JetBrains Mono',monospace;">${d.accum_today.toFixed(1)} / ${d.params.READY_GU_effective.toFixed(1)} groei-eenheden${d.params.self_calibrated ? " <span style='color:var(--moss)'>(geleerd)</span>" : ""}</div>
+        </div>
+      </div>
+
+      <div class="specimen-card">
+        <div class="corner-mark">Advies maaihoogte</div>
+        <div class="big-num" style="margin-top:10px;color:${lenColor};">${rec.length_mm || "—"}<span>mm</span></div>
+        <p style="font-size:15px;color:var(--ink-soft);margin-top:10px;font-style:italic;">${rec.reason || ""}</p>
+        ${d.last_length_mm && d.last_length_mm !== rec.length_mm
+          ? `<p style="margin-top:10px;font-size:12px;color:var(--clay);font-family:'JetBrains Mono',monospace;">↑ vorige keer ${d.last_length_mm}mm — advies wijkt af</p>` : ""}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="specimen-card">
+        <div class="corner-mark">Grasgroei sinds laatste maaibeurt</div>
+        <div class="chart-box"><canvas id="growth-chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="specimen-card">
+        <div class="corner-mark">Maailogboek</div>
+        <div id="history-table"></div>
+      </div>
+    </div>
+  `;
+
+  drawChart();
+  renderHistory();
+}
+
+function drawChart() {
+  const d = state.data;
+  const series = d.series;
+  const labels = series.map(s => shortLabel(s.date));
+  const accum = series.map(s => s.accum);
+  const todayIdx = series.findIndex(s => s.date === d.today);
+  const thr = d.params.READY_GU_effective;
+
+  const pointRadius = series.map(s => s.is_mow ? 5 : 0);
+  const pointColor = series.map(s => s.is_mow ? COLORS.clay : "transparent");
+
+  state.chart?.destroy();
+  const ctx = document.getElementById("growth-chart").getContext("2d");
+  state.chart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets: [{
+      label: "Groei-accumulatie",
+      data: accum,
+      borderColor: COLORS.moss,
+      backgroundColor: COLORS.moss + "22",
+      borderWidth: 2, fill: true, tension: 0.3,
+      pointRadius, pointBackgroundColor: pointColor, pointBorderColor: pointColor,
+      segment: { borderDash: c => series[c.p1DataIndex]?.forecast ? [5,4] : undefined },
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          borderColor: COLORS.ink, borderWidth: 1,
+          titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
+          bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
+          callbacks: {
+            title: items => { const s = series[items[0].dataIndex]; return s.date + (s.forecast ? " (voorspelling)" : ""); },
+            label: c => {
+              const s = series[c.dataIndex];
+              const lines = [`Groei: ${s.accum.toFixed(1)} eenheden`];
+              if (s.is_mow) lines.push(`✂️ Gemaaid op ${s.length_mm}mm`);
+              return lines;
+            },
+          },
+        },
+        annotation: { annotations: {
+          thr: { type: "line", yMin: thr, yMax: thr, borderColor: COLORS.clay, borderWidth: 1.5, borderDash: [4,4],
+                 label: { content: `Maairijp (${thr.toFixed(0)})`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay, backgroundColor: "transparent" } },
+          ...(todayIdx >= 0 ? { today: { type: "line", xMin: todayIdx, xMax: todayIdx, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4],
+                 label: { content: "vandaag →", display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink, backgroundColor: "transparent" } } } : {}),
+        }},
+      },
+      scales: {
+        x: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+        y: { beginAtZero: true, grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+             title: { display: true, text: "groei-eenheden", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+      },
+    },
+  });
+}
+
+function renderHistory() {
+  const el = document.getElementById("history-table");
+  const dates = Object.keys(state.mowings).sort((a,b) => b.localeCompare(a));
+  if (dates.length === 0) {
+    el.innerHTML = `<p style="font-style:italic;color:var(--ink-soft);padding:8px 0;">Nog geen maaibeurten gelogd. Klik op "Ik heb gemaaid" om te beginnen.</p>`;
+    return;
+  }
+  let rows = "";
+  for (let i = 0; i < dates.length; i++) {
+    const cur = dates[i], next = dates[i+1];
+    let gap = "";
+    if (next) gap = `${Math.round((new Date(cur) - new Date(next)) / 86400000)} dgn`;
+    rows += `<tr><td>${fmtDate(cur)}</td><td>${state.mowings[cur].length_mm} mm</td><td style="color:var(--ink-soft)">${gap}</td></tr>`;
+  }
+  el.innerHTML = `<table><thead><tr><th>Datum</th><th>Hoogte</th><th>Interval</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ===================== MODAL =====================
+function pickLength(len) {
+  state.pickedLen = len;
+  document.querySelectorAll(".len-chip").forEach(c => c.classList.toggle("active", +c.dataset.len === len));
+}
+
+function openMowModal() {
+  if (!CONFIG.gistId || CONFIG.gistId === "__GIST_ID__" || !CONFIG.githubToken) {
+    const gid = prompt("Eerste keer: plak je Gist ID (uit de URL van je gist):");
+    if (!gid) return;
+    const cleanGid = gid.trim();
+    if (!/^[a-f0-9]{20,}$/i.test(cleanGid)) { alert("Dit ziet er niet uit als een Gist ID (verwacht een hex-string)."); return; }
+    const token = prompt(
+      "Plak een GitHub fine-grained token met 'Gists: read & write' (scope dit token tot alleen deze gist).\n\n" +
+      "Let op: het token wordt in jouw browser opgeslagen — gebruik geen classic PAT met brede 'gist' scope."
+    );
+    if (!token) return;
+    const cleanToken = token.trim();
+    if (cleanToken.startsWith("ghp_")) {
+      if (!confirm("Dit lijkt een classic PAT (ghp_…) die toegang geeft tot ÁL jouw gists. Liever fine-grained (github_pat_…).\n\nToch doorgaan?")) return;
+    }
+    localStorage.setItem("gist_id", cleanGid);
+    localStorage.setItem("gh_token", cleanToken);
+    CONFIG.gistId = cleanGid; CONFIG.githubToken = cleanToken;
+  }
+  document.getElementById("mow-modal").classList.add("open");
+  updateMowLog();
+}
+
+function closeMowModal() {
+  document.getElementById("mow-modal").classList.remove("open");
+  document.getElementById("mow-status").textContent = "";
+}
+
+async function saveMow() {
+  const date = document.getElementById("mow-date").value;
+  const status = document.getElementById("mow-status");
+  if (!date) { status.textContent = "⚠ Kies een datum."; status.style.color = "var(--dry)"; return; }
+
+  status.innerHTML = '<span class="pulse">⋯ opslaan…</span>';
+  status.style.color = "var(--ink-soft)";
+  try {
+    const mowings = await fetchGistMowings();
+    mowings[date] = { length_mm: state.pickedLen };  // dubbele invoer zelfde dag → overschrijft
+    await saveGistMowings(mowings);
+    state.mowings = mowings;
+    status.innerHTML = `✓ Opgeslagen: ${date} · ${state.pickedLen}mm`;
+    status.style.color = "var(--moss)";
+    updateMowLog();
+    setTimeout(closeMowModal, 1800);
+    await triggerWorkflow();
+  } catch (e) {
+    status.textContent = "✗ Fout: " + e.message;
+    status.style.color = "var(--dry)";
+  }
+}
+
+async function fetchGistMowings() {
+  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, { headers: { Authorization: `token ${CONFIG.githubToken}` } });
+  if (!r.ok) throw new Error(`Gist fetch: HTTP ${r.status}`);
+  const j = await r.json();
+  return JSON.parse(j.files?.["mowings.json"]?.content || "{}");
+}
+
+async function saveGistMowings(data) {
+  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, {
+    method: "PATCH",
+    headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ files: { "mowings.json": { content: JSON.stringify(data, null, 2) } } }),
+  });
+  if (!r.ok) throw new Error(`Gist save: HTTP ${r.status}`);
+}
+
+async function triggerWorkflow() {
+  const host = location.host;
+  const path = location.pathname.split('/').filter(Boolean);
+  if (!host.endsWith('.github.io') || path.length === 0) return;
+  const user = host.split('.')[0];
+  const repo = path[0];
+  try {
+    await fetch(`https://api.github.com/repos/${user}/${repo}/actions/workflows/mowing-notify.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json", Accept: "application/vnd.github+json" },
+      body: JSON.stringify({ ref: "main" }),
+    });
+  } catch (e) { console.warn("Workflow trigger failed:", e); }
+}
+
+function updateMowLog() {
+  const log = document.getElementById("mow-log");
+  const dates = Object.keys(state.mowings).sort((a,b) => b.localeCompare(a)).slice(0, 8);
+  if (dates.length === 0) {
+    log.innerHTML = '<div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Nog niets gelogd.</div>';
+    return;
+  }
+  log.innerHTML = dates.map(date =>
+    `<div class="log-entry"><span>${date} · ${state.mowings[date].length_mm}mm</span><span class="rm" onclick="removeMow('${date}')">×</span></div>`
+  ).join('');
+}
+
+async function removeMow(date) {
+  if (!confirm(`Maaibeurt van ${date} verwijderen?`)) return;
+  const mowings = await fetchGistMowings();
+  delete mowings[date];
+  await saveGistMowings(mowings);
+  state.mowings = mowings;
+  updateMowLog();
+  triggerWorkflow();
+}
+
+loadData();
+</script>
+</body>
+</html>

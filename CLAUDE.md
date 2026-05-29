@@ -231,7 +231,8 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 - **Station bias correction (smart blend):** `bias = WU_now − Open-Meteo_now` is the local microclimate/calibration offset. It is added to the future forecast and **decays linearly to zero over `BIAS_DECAY_H` (12h)** — near-term hours are anchored to the station, far-term relax to the raw model. WU unavailable → `bias = 0`.
 - **Room-temp trend:** a rolling per-room inside-temp history (and outside-now) is kept in `window_data.json`; each run appends the current sample and trims to `HISTORY_KEEP` (~48). The trend `slope` (°C/h, least-squares over `TREND_WINDOW_H` hours, clamped to ±`TREND_MAX_SLOPE`) is projected forward but **damped** (`min(hours, TREND_CAP_H)` then flat) — a heuristic, **not** a thermal house model.
 - **Crossover:** the first future hour (≤ `PREDICT_HORIZON_H`) where `inside_proj > COMFORT_HIGH` **and** `out_corr ≤ inside_proj − OPEN_MARGIN` is the predicted open time; it closes again when `out_corr ≥ inside_proj − CLOSE_MARGIN` → `open_intervals`. No crossover today → "vandaag dicht houden".
-- Dashboard panels: station-vs-model bias readout + warm/cool gate, per-room cards (inside temp, open/dicht stamp, trend arrow + sparkline, humidity, status line), a measured→corrected-forecast temperature chart with `COMFORT_HIGH`/`WARM_DAY_MAX` lines and a "nu" marker, and a per-room open-window timeline.
+- Sparklines clamp to a minimum span (~3.5°C) and draw a faint `COMFORT_HIGH` reference line, so a stable room reads flat instead of magnifying measurement noise.
+- Dashboard panels: station-vs-model bias readout + warm/cool gate (with its own outside trend arrow + sparkline, mirroring the rooms), per-room cards (inside temp, open/dicht stamp, trend arrow + sparkline, humidity, status line), a measured→corrected-forecast temperature chart with `COMFORT_HIGH`/`WARM_DAY_MAX` lines and a "nu" marker, and a per-room open-window timeline.
 
 #### window_data.json schema (additive only — never break existing fields)
 ```json
@@ -239,7 +240,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "generated_at": "ISO UTC", "as_of_local": "ISO+02:00", "source": "window_advisor",
   "gated": false, "gate_reason": "warme dag | koele dag — advies onderdrukt",
   "outside_now": 26.5, "outside_source": "wu | open-meteo", "om_now": 25.0,
-  "bias": 1.5, "day_max": 27.0, "warm_day": true,
+  "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true,
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12},
   "outside_history": [{"t": "ISO", "temp": 24.0}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],

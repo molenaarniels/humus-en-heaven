@@ -442,6 +442,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     out_hist = prev.get("outside_history", [])
     if outside is not None:
         out_hist = _append_trim(out_hist, {"t": now.isoformat(), "temp": round(outside, 1)})
+    outside_slope = room_trend(out_hist, now)
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX
 
@@ -496,6 +497,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "outside_now":    round(outside, 1) if outside is not None else None,
         "outside_source": outside_source,
         "om_now":         round(om_now, 1) if om_now is not None else None,
+        "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
         "bias":           bias,
         "day_max":        round(dmax, 1) if dmax is not None else None,
         "warm_day":       warm_day,

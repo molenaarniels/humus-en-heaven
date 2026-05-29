@@ -61,12 +61,12 @@ def main():
     dev = r.json()
     interval = dev.get("interval", 5)
 
-    print("\n" + "=" * 60)
-    print("Open deze URL en bevestig toegang met je tado-account:")
-    print(f"  {dev['verification_uri_complete']}")
-    print(f"(code: {dev['user_code']})")
-    print("=" * 60 + "\n")
-    print("Wachten op bevestiging…")
+    print("\n" + "=" * 60, flush=True)
+    print("Open deze URL en bevestig toegang met je tado-account:", flush=True)
+    print(f"  {dev['verification_uri_complete']}", flush=True)
+    print(f"(code: {dev['user_code']})", flush=True)
+    print("=" * 60 + "\n", flush=True)
+    print("Wachten op bevestiging… (klik de URL binnen 5 minuten)", flush=True)
 
     # 2) Pollen tot de gebruiker bevestigt.
     deadline = time.time() + dev.get("expires_in", 300)

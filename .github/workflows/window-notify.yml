@@ -1,0 +1,40 @@
+name: Tado Window Advisor
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print advies zonder te versturen"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  advise:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run window advisor
+        env:
+          TADO_GIST_ID:           ${{ secrets.TADO_GIST_ID }}
+          GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
+          WU_STATION_ID:          ${{ secrets.WU_STATION_ID }}
+          WU_API_KEY:             ${{ secrets.WU_API_KEY }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
+          DRY_RUN:                ${{ inputs.dry_run && '1' || '' }}
+        run: python window_advisor.py

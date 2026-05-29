@@ -12,7 +12,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   advise:
@@ -38,3 +38,17 @@ jobs:
           TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
           DRY_RUN:                ${{ inputs.dry_run && '1' || '' }}
         run: python window_advisor.py
+
+      - name: Commit dashboard data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/window_data.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "data: window advisor refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+            # Andere workflows kunnen in hetzelfde venster gepusht hebben — rebase eerst.
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

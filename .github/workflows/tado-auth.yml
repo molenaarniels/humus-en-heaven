@@ -1,0 +1,34 @@
+name: Tado Auth Bootstrap (one-time)
+
+# Eenmalige tado-autorisatie via de browser — geen lokale checkout nodig.
+# Start deze workflow handmatig (Actions → "Run workflow"), open de URL die in
+# het live logboek verschijnt, en bevestig met je tado-account. De refresh
+# token wordt naar de secret Gist geschreven; daarna draait window_advisor.py
+# vanzelf. Re-run alleen als de token-keten verbroken is.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Authorize tado
+        env:
+          TADO_GIST_ID:     ${{ secrets.TADO_GIST_ID }}
+          GIST_TOKEN:       ${{ secrets.GIST_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+        run: python -u tado_auth_bootstrap.py

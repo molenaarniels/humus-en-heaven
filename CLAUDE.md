@@ -240,7 +240,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "generated_at": "ISO UTC", "as_of_local": "ISO+02:00", "source": "window_advisor",
   "gated": false, "gate_reason": "warme dag | koele dag — advies onderdrukt",
   "outside_now": 26.5, "outside_source": "wu | open-meteo", "om_now": 25.0,
-  "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true,
+  "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12},
   "outside_history": [{"t": "ISO", "temp": 24.0}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],
@@ -256,9 +256,11 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 ### Decision logic (tunable constants at top of script)
 - `COMFORT_HIGH 23.5`, `OPEN_MARGIN 1.5`, `CLOSE_MARGIN 0.5`, `WARM_DAY_MAX 22.0`.
 - **OPEN** when `inside > COMFORT_HIGH` and `outside ≤ inside − OPEN_MARGIN`.
-- **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` or `inside ≤ COMFORT_HIGH`.
+- **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` (heat-in), or `inside ≤ COMFORT_HIGH` **unless banking cooling** (see below).
 - In-between → keep current advice (dead-band → no flapping).
+- **Banking cooling (`warm_ahead`):** if the max temp in the next 24h ≥ `WARM_DAY_MAX`, a room is **not** closed just because it dipped below `COMFORT_HIGH` — windows stay open through the night to keep banking coolness for the warm day ahead, as long as outside stays cooler. Heat-in still closes. On a cool day ahead the old "comfortable → close" behaviour applies. `warm_ahead` is a forward-looking 24h check (not calendar-day) so it's correct deep at night.
 - **Cooling-only gate:** cool forecast day (max `< WARM_DAY_MAX`) and no warm room → no advice.
+- **Reopen hint** (`— buiten zakt rond HH weer onder binnen`) on a "Sluit" message only shows when outside is currently *above* the reopen threshold (`outside > inside − OPEN_MARGIN`), i.e. a genuine heat-in close. If outside is already below it, the hint would be meaningless and is suppressed.
 
 ### tado auth (the catch)
 Since March 2025 tado uses the OAuth2 **device-code flow** (no username/password). Refresh tokens **rotate** (each refresh revokes the previous) and live ≤30 days; hourly runs keep the chain alive. The refresh token lives **only** in the secret Gist + Actions secrets — **never committed** (public repo). Public app `client_id` is hardcoded (not a secret). If the chain breaks, re-run `tado_auth_bootstrap.py`.

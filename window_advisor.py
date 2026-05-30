@@ -247,6 +247,18 @@ def day_max_temp(hourly: list[dict], today) -> float | None:
     return max(temps) if temps else None
 
 
+def upcoming_max_temp(hourly: list[dict], now: datetime, horizon_h: int = 24) -> float | None:
+    """Hoogste verwachte temperatuur in de komende `horizon_h` uur. Vooruitkijkend (niet
+    op kalenderdag) zodat 'staat er een warme dag aan?' ook diep in de nacht klopt — de
+    warme piek kan dan later vandaag óf morgen liggen."""
+    cutoff = horizon_h * 3600
+    temps = [
+        r["temp"] for r in hourly
+        if r["temp"] is not None and 0.0 <= (r["dt"] - now).total_seconds() <= cutoff
+    ]
+    return max(temps) if temps else None
+
+
 def reopen_hour(hourly: list[dict], inside: float, now: datetime) -> str | None:
     """Eerste uur binnen LOOKAHEAD_H waarop buiten weer onder (binnen - OPEN_MARGIN)
     zakt → 'HH:00', anders None."""
@@ -363,14 +375,20 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
 
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
 
-def decide(inside: float | None, outside: float | None, prev: str) -> str:
+def decide(inside: float | None, outside: float | None, prev: str,
+           bank_cooling: bool = False) -> str:
     if inside is None or outside is None:
         return prev  # geen meting → advies niet wijzigen
     if inside > COMFORT_HIGH and outside <= inside - OPEN_MARGIN:
         return "open"
-    if outside >= inside - CLOSE_MARGIN or inside <= COMFORT_HIGH:
+    if outside >= inside - CLOSE_MARGIN:
+        return "dicht"  # warmte-instroom: buiten heeft de kamer ingehaald → sluiten
+    # Kamer is comfortabel (≤ COMFORT_HIGH). Normaal sluiten we dan, maar staat er een
+    # warme dag aan te komen, dan blijven we 's nachts koelte "tanken" zolang het buiten
+    # kouder blijft — niet sluiten puur omdat de kamer onder comfort zakt.
+    if inside <= COMFORT_HIGH and not bank_cooling:
         return "dicht"
-    return prev  # tussengebied → huidig advies vasthouden
+    return prev  # tussengebied (of koelte tanken) → huidig advies vasthouden
 
 
 # ── State I/O (in dezelfde secret Gist) ────────────────────────────────────────────
@@ -418,7 +436,7 @@ def write_dashboard(payload: dict) -> None:
 
 def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | None,
                     outside_source: str, dmax: float | None, prev_rooms: dict,
-                    gated: bool, gate_reason: str) -> dict:
+                    gated: bool, gate_reason: str, warm_ahead: bool = False) -> dict:
     """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
     binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken."""
     prev = read_prev_dashboard()
@@ -458,7 +476,8 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             hist = _append_trim(prev_hist, {"t": now.isoformat(), "temp": round(inside, 1)})
 
         slope  = room_trend(hist, now)
-        advice = decide(inside, outside, prev_rooms.get(room, "dicht"))
+        advice = decide(inside, outside, prev_rooms.get(room, "dicht"),
+                        bank_cooling=warm_ahead)
         intervals, proj = predict_open_intervals(fc, inside, slope, now)
 
         open_now = (inside is not None and outside is not None
@@ -501,6 +520,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "bias":           bias,
         "day_max":        round(dmax, 1) if dmax is not None else None,
         "warm_day":       warm_day,
+        "warm_ahead":     warm_ahead,
         "params": {
             "COMFORT_HIGH": COMFORT_HIGH, "OPEN_MARGIN": OPEN_MARGIN,
             "CLOSE_MARGIN": CLOSE_MARGIN, "WARM_DAY_MAX": WARM_DAY_MAX,
@@ -548,6 +568,10 @@ def main():
 
     today  = now.date()
     dmax   = day_max_temp(om["hourly"], today)
+    # Komt er een warme dag aan (komende 24u)? Zo ja, dan tanken we 's nachts koelte:
+    # ramen blijven open ook als de kamer onder comfort zakt, zolang het buiten kouder is.
+    upcoming_max = upcoming_max_temp(om["hourly"], now)
+    warm_ahead   = upcoming_max is not None and upcoming_max >= WARM_DAY_MAX
     state  = load_state()
     prev_rooms = state.get("rooms", {})
 
@@ -563,7 +587,8 @@ def main():
     # Dashboard altijd verversen (ook op onderdrukte dagen, zodat de historie en de
     # "vandaag dicht houden"-status zichtbaar blijven). Telegram blijft ongewijzigd.
     write_dashboard(build_dashboard(
-        now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason))
+        now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
+        warm_ahead))
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")
@@ -576,11 +601,12 @@ def main():
         d = rooms_data.get(room)
         inside = d["inside"] if d else None
         prev   = prev_rooms.get(room, "dicht")
-        new    = decide(inside, outside, prev)
+        new    = decide(inside, outside, prev, bank_cooling=warm_ahead)
         new_rooms[room] = new
         ins = f"{inside:.1f}" if inside is not None else "?"
         out = f"{outside:.1f}" if outside is not None else "?"
-        print(f"[kamer] {room}: binnen {ins}° buiten {out}° | {prev} → {new}")
+        bank = " [koelte tanken]" if warm_ahead else ""
+        print(f"[kamer] {room}: binnen {ins}° buiten {out}° | {prev} → {new}{bank}")
         if new != prev:
             changes.append((room, new))
 
@@ -600,7 +626,13 @@ def main():
         if advice == "open":
             lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°)")
         else:
-            hint = reopen_hour(om["hourly"], ins, now) if ins is not None else None
+            # De "buiten zakt rond HH weer onder binnen"-hint slaat alleen ergens op als
+            # buiten nú boven de heropen-drempel zit (warmte-instroom). Zit het al onder
+            # die drempel, dan is er niets om op te wachten en zou de hint misleiden.
+            hint = None
+            if (ins is not None and outside is not None
+                    and outside > ins - OPEN_MARGIN):
+                hint = reopen_hour(om["hourly"], ins, now)
             suffix = f" — buiten zakt rond {hint} weer onder binnen" if hint else ""
             lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°, buiten {out_s}°){suffix}")
     message = "\n".join(lines)

@@ -38,11 +38,28 @@ import requests
 ROOMS = ["Living room", "Ted", "hotties", "office"]
 
 # ── Beslis-parameters (hysterese om flapping te voorkomen) ─────────────────────
-COMFORT_HIGH = 23.5   # °C — bóven deze binnentemperatuur willen we koelen
+COMFORT_HIGH = 23.5   # °C — standaard-comfortgrens (fallback voor kamers buiten ROOM_COMFORT)
 OPEN_MARGIN  = 1.5    # °C — open als buiten ≥ deze marge kouder is dan binnen
 CLOSE_MARGIN = 0.5    # °C — sluit als buiten tot binnen ± deze marge stijgt
 WARM_DAY_MAX = 22.0   # °C — onder deze verwachte dag-max: geen koeladvies
 LOOKAHEAD_H  = 12     # uur — vooruitblik voor "open weer rond HH:00"
+
+# ── Per-kamer comfortband (low, high) in °C ────────────────────────────────────
+# Bóven `high` is de kamer te warm → koelen (raam open als buiten kouder is). Ónder
+# `low` is de kamer koel genoeg → sluiten om niet door te koelen. Daartussen een dode
+# band: het advies blijft staan (geen flapping). Kamers die hier niet in staan vallen
+# terug op (COMFORT_HIGH, COMFORT_HIGH) → het oude gedrag met één drempel.
+ROOM_COMFORT = {
+    "Living room": (19.5, 22.0),
+    "Ted":         (17.0, 18.0),
+    "hotties":     (16.0, 18.0),
+    "office":      (20.0, 22.0),
+}
+
+
+def comfort_band(room: str) -> tuple[float, float]:
+    """(low, high) comfortgrenzen voor een kamer; fallback op de globale COMFORT_HIGH."""
+    return ROOM_COMFORT.get(room, (COMFORT_HIGH, COMFORT_HIGH))
 
 # ── Dashboard-voorspelling (heuristiek, geen thermisch huismodel) ──────────────
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
@@ -331,11 +348,12 @@ def project_inside(inside_now: float, slope: float | None, hours_ahead: float) -
 
 
 def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
-                            slope: float | None, now: datetime) -> tuple[list[dict], list]:
+                            slope: float | None, now: datetime,
+                            high: float) -> tuple[list[dict], list]:
     """Loop de geijkte forecast af (tot PREDICT_HORIZON_H) en vind de uren waarop het
-    raam-open zinvol is: geprojecteerde binnentemp > COMFORT_HIGH én buiten-geijkt
-    ≤ binnen − OPEN_MARGIN. Geeft (open_intervals, proj) waarbij proj de geprojecteerde
-    binnentemp per forecast-uur is (uitgelijnd op forecast_corr)."""
+    raam-open zinvol is: geprojecteerde binnentemp > `high` (kamer-comfortgrens) én
+    buiten-geijkt ≤ binnen − OPEN_MARGIN. Geeft (open_intervals, proj) waarbij proj de
+    geprojecteerde binnentemp per forecast-uur is (uitgelijnd op forecast_corr)."""
     proj: list = []
     intervals: list[dict] = []
     cur_start: datetime | None = None
@@ -361,7 +379,7 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
             continue
         ip = project_inside(inside_now, slope, max(0.0, h_ahead))
         proj.append(round(ip, 1))
-        is_open = oc is not None and ip > COMFORT_HIGH and oc <= ip - OPEN_MARGIN
+        is_open = oc is not None and ip > high and oc <= ip - OPEN_MARGIN
         if is_open and cur_start is None:
             cur_start = dt
         elif not is_open and cur_start is not None:
@@ -376,19 +394,19 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
 
 def decide(inside: float | None, outside: float | None, prev: str,
-           bank_cooling: bool = False) -> str:
+           low: float, high: float, bank_cooling: bool = False) -> str:
     if inside is None or outside is None:
         return prev  # geen meting → advies niet wijzigen
-    if inside > COMFORT_HIGH and outside <= inside - OPEN_MARGIN:
+    if inside > high and outside <= inside - OPEN_MARGIN:
         return "open"
     if outside >= inside - CLOSE_MARGIN:
         return "dicht"  # warmte-instroom: buiten heeft de kamer ingehaald → sluiten
-    # Kamer is comfortabel (≤ COMFORT_HIGH). Normaal sluiten we dan, maar staat er een
-    # warme dag aan te komen, dan blijven we 's nachts koelte "tanken" zolang het buiten
-    # kouder blijft — niet sluiten puur omdat de kamer onder comfort zakt.
-    if inside <= COMFORT_HIGH and not bank_cooling:
+    # Kamer is koel genoeg (≤ `low`, de onderkant van de comfortband). Normaal sluiten we
+    # dan om niet door te koelen, maar staat er een warme dag aan te komen, dan blijven we
+    # 's nachts koelte "tanken" zolang het buiten kouder blijft.
+    if inside <= low and not bank_cooling:
         return "dicht"
-    return prev  # tussengebied (of koelte tanken) → huidig advies vasthouden
+    return prev  # dode band (low < binnen ≤ high) of koelte tanken → huidig advies vasthouden
 
 
 # ── State I/O (in dezelfde secret Gist) ────────────────────────────────────────────
@@ -475,13 +493,14 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         if inside is not None:
             hist = _append_trim(prev_hist, {"t": now.isoformat(), "temp": round(inside, 1)})
 
+        low, high = comfort_band(room)
         slope  = room_trend(hist, now)
         advice = decide(inside, outside, prev_rooms.get(room, "dicht"),
-                        bank_cooling=warm_ahead)
-        intervals, proj = predict_open_intervals(fc, inside, slope, now)
+                        low, high, bank_cooling=warm_ahead)
+        intervals, proj = predict_open_intervals(fc, inside, slope, now, high)
 
         open_now = (inside is not None and outside is not None
-                    and inside > COMFORT_HIGH and outside <= inside - OPEN_MARGIN)
+                    and inside > high and outside <= inside - OPEN_MARGIN)
         predicted_open = intervals[0]["start"] if intervals else None
 
         if inside is None:
@@ -498,6 +517,8 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             "inside":         round(inside, 1) if inside is not None else None,
             "humidity":       round(humidity) if humidity is not None else None,
             "advice":         advice,
+            "comfort_low":    low,
+            "comfort_high":   high,
             "trend":          round(slope, 2) if slope is not None else None,
             "open_now":       open_now,
             "predicted_open": predicted_open,
@@ -525,6 +546,8 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             "COMFORT_HIGH": COMFORT_HIGH, "OPEN_MARGIN": OPEN_MARGIN,
             "CLOSE_MARGIN": CLOSE_MARGIN, "WARM_DAY_MAX": WARM_DAY_MAX,
             "LOOKAHEAD_H": LOOKAHEAD_H,
+            "ROOM_COMFORT": {r: {"low": lo, "high": hi}
+                             for r, (lo, hi) in ROOM_COMFORT.items()},
         },
         "outside_history": out_hist,
         "forecast":        forecast,
@@ -578,8 +601,8 @@ def main():
     # Koeladvies is alleen zinvol op warme dagen. Onder de drempel én geen warme
     # kamer → niets doen (change-only voorkomt verder ruis).
     warm_room = any(
-        (d["inside"] is not None and d["inside"] > COMFORT_HIGH)
-        for d in rooms_data.values()
+        (d["inside"] is not None and d["inside"] > comfort_band(room)[1])
+        for room, d in rooms_data.items()
     )
     gated = (dmax is None or dmax < WARM_DAY_MAX) and not warm_room
     gate_reason = "koele dag — advies onderdrukt" if gated else "warme dag"
@@ -601,7 +624,8 @@ def main():
         d = rooms_data.get(room)
         inside = d["inside"] if d else None
         prev   = prev_rooms.get(room, "dicht")
-        new    = decide(inside, outside, prev, bank_cooling=warm_ahead)
+        low, high = comfort_band(room)
+        new    = decide(inside, outside, prev, low, high, bank_cooling=warm_ahead)
         new_rooms[room] = new
         ins = f"{inside:.1f}" if inside is not None else "?"
         out = f"{outside:.1f}" if outside is not None else "?"

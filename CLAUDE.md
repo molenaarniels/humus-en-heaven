@@ -241,11 +241,13 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "gated": false, "gate_reason": "warme dag | koele dag — advies onderdrukt",
   "outside_now": 26.5, "outside_source": "wu | open-meteo", "om_now": 25.0,
   "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
-  "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12},
+  "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12,
+             "ROOM_COMFORT": {"Living room": {"low": 19.5, "high": 22.0}}},
   "outside_history": [{"t": "ISO", "temp": 24.0}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],
   "rooms": {"Living room": {
     "inside": 26.2, "humidity": 48, "advice": "open | dicht", "trend": -0.05,
+    "comfort_low": 19.5, "comfort_high": 22.0,
     "open_now": false, "predicted_open": "20:00",
     "open_intervals": [{"start": "20:00", "end": "08:00", "start_h": 5.0, "end_h": 17.0}],
     "status_text": "Open rond 20:00", "history": [{"t": "ISO", "temp": 26.0}], "proj": [26.2]
@@ -254,11 +256,12 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 ```
 
 ### Decision logic (tunable constants at top of script)
-- `COMFORT_HIGH 23.5`, `OPEN_MARGIN 1.5`, `CLOSE_MARGIN 0.5`, `WARM_DAY_MAX 22.0`.
-- **OPEN** when `inside > COMFORT_HIGH` and `outside ≤ inside − OPEN_MARGIN`.
-- **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` (heat-in), or `inside ≤ COMFORT_HIGH` **unless banking cooling** (see below).
-- In-between → keep current advice (dead-band → no flapping).
-- **Banking cooling (`warm_ahead`):** if the max temp in the next 24h ≥ `WARM_DAY_MAX`, a room is **not** closed just because it dipped below `COMFORT_HIGH` — windows stay open through the night to keep banking coolness for the warm day ahead, as long as outside stays cooler. Heat-in still closes. On a cool day ahead the old "comfortable → close" behaviour applies. `warm_ahead` is a forward-looking 24h check (not calendar-day) so it's correct deep at night.
+- `OPEN_MARGIN 1.5`, `CLOSE_MARGIN 0.5`, `WARM_DAY_MAX 22.0`.
+- **Per-room comfort band** `ROOM_COMFORT = {room: (low, high)}` — Living room `19.5–22.0`, Ted `17.0–18.0`, hotties `16.0–18.0`, office `20.0–22.0`. `high` is the cool/open trigger, `low` the stop-overcooling/close trigger. `COMFORT_HIGH 23.5` is only the fallback (`low = high = COMFORT_HIGH`) for any room **not** in `ROOM_COMFORT` → reduces to the old single-threshold behaviour.
+- **OPEN** when `inside > high` and `outside ≤ inside − OPEN_MARGIN`.
+- **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` (heat-in), or `inside ≤ low` (cool enough — don't overcool) **unless banking cooling** (see below).
+- In-between (`low < inside ≤ high`) → keep current advice (dead-band → no flapping).
+- **Banking cooling (`warm_ahead`):** if the max temp in the next 24h ≥ `WARM_DAY_MAX`, a room is **not** closed just because it dipped below its `low` — windows stay open through the night to keep banking coolness for the warm day ahead, as long as outside stays cooler. Heat-in still closes. On a cool day ahead the old "cool enough → close" behaviour applies. `warm_ahead` is a forward-looking 24h check (not calendar-day) so it's correct deep at night.
 - **Cooling-only gate:** cool forecast day (max `< WARM_DAY_MAX`) and no warm room → no advice.
 - **Reopen hint** (`— buiten zakt rond HH weer onder binnen`) on a "Sluit" message only shows when outside is currently *above* the reopen threshold (`outside > inside − OPEN_MARGIN`), i.e. a genuine heat-in close. If outside is already below it, the hint would be meaningless and is suppressed.
 

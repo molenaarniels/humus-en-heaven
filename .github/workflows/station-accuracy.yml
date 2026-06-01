@@ -1,0 +1,59 @@
+name: Weerstation-nauwkeurigheid
+
+# Diagnostiek op aanvraag (geen cron): vergelijkt het WU-station met
+# Open-Meteo ERA5 en publiceert docs/accuracy_data.json voor het dashboard.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Aantal dagen historie"
+        type: string
+        default: "30"
+      notify:
+        description: "Stuur Telegram-samenvatting"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: station-accuracy
+  cancel-in-progress: false
+
+jobs:
+  analyse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run station accuracy analysis
+        env:
+          WU_STATION_ID:      ${{ secrets.WU_STATION_ID }}
+          WU_API_KEY:         ${{ secrets.WU_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          ACCURACY_DAYS:      ${{ inputs.days }}
+          SEND_TELEGRAM:      ${{ inputs.notify && '1' || '' }}
+        run: python station_accuracy.py
+
+      - name: Commit dashboard data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/accuracy_data.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "data: station accuracy refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

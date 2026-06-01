@@ -24,22 +24,21 @@ pyranometer (lokaal, co-located → vangt directe-zon/halfbewolkte pieken die he
 grid-model uitsmeert). De co-located WU-driver is doorgaans de strakste en dus
 de voorkeur; station_accuracy.py print de aanbevolen driver + waarde.
 
-⚠️ PROVISORISCH: onderstaande waarde is de Open-Meteo-fit (~+0.37 °C/100 W/m²,
-periode mei 2026, n≈718). Draai de workflow "Weerstation-nauwkeurigheid" één keer
-met de nieuwe WU-solar-fit en vervang deze door de geprinte
-`SOLAR_BIAS_SLOPE = wu_solar_slope_per_100 / 100`.
-
-De drivers leveren dezelfde fysische grootheid (globale horizontale instraling in
-W/m²) en zijn van dezelfde orde, dus deze waarde is een redelijke startwaarde tot
-de WU-fit beschikbaar is.
+GEKALIBREERD (periode 2026-05-02…05-31, n=718 gekoppelde uren):
+  - WU-pyranometer : +0.421 °C/100 W/m², corr(bias) 0.652  → GEKOZEN driver
+  - Open-Meteo grid: +0.365 °C/100 W/m², corr(bias) 0.617
+De co-located WU-driver vangt de bias het strakst (zoals verwacht), dus
+SOLAR_BIAS_SLOPE = 0.421/100 = 0.00421. Driver-veld in soil/window = WU-eigen
+instraling met Open-Meteo als fallback. Recalibreren: draai de workflow
+"Weerstation-nauwkeurigheid" en plak de geprinte `SOLAR_BIAS_SLOPE`.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-# °C per W/m². Zie kalibratie-noot hierboven.
-SOLAR_BIAS_SLOPE = 0.0037
+# °C per W/m². WU-pyranometer-fit, zie kalibratie-noot hierboven.
+SOLAR_BIAS_SLOPE = 0.00421
 
 
 def correct_temp(temp_c: Optional[float],

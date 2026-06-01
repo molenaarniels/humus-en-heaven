@@ -477,7 +477,14 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
 
     out_hist = prev.get("outside_history", [])
     if outside is not None:
-        out_hist = _append_trim(out_hist, {"t": now.isoformat(), "temp": round(outside, 1)})
+        # `temp` = de gebruikte buitentemp (WU-station, of Open-Meteo als fallback). We
+        # bewaren óók de ruwe Open-Meteo-waarde van datzelfde uur (`om`), zodat het
+        # dashboard station vs. model kan terugkijken en de divergentie zichtbaar maakt
+        # (bijv. een zonnige avond waarop het station te warm meet).
+        sample = {"t": now.isoformat(), "temp": round(outside, 1)}
+        if om_now is not None:
+            sample["om"] = round(om_now, 1)
+        out_hist = _append_trim(out_hist, sample)
     outside_slope = room_trend(out_hist, now)
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX

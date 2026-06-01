@@ -232,7 +232,8 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 - **Room-temp trend:** a rolling per-room inside-temp history (and outside-now) is kept in `window_data.json`; each run appends the current sample and trims to `HISTORY_KEEP` (~48). The trend `slope` (°C/h, least-squares over `TREND_WINDOW_H` hours, clamped to ±`TREND_MAX_SLOPE`) is projected forward but **damped** (`min(hours, TREND_CAP_H)` then flat) — a heuristic, **not** a thermal house model.
 - **Crossover:** the first future hour (≤ `PREDICT_HORIZON_H`) where `inside_proj > COMFORT_HIGH` **and** `out_corr ≤ inside_proj − OPEN_MARGIN` is the predicted open time; it closes again when `out_corr ≥ inside_proj − CLOSE_MARGIN` → `open_intervals`. No crossover today → "vandaag dicht houden".
 - Sparklines clamp to a minimum span (~3.5°C) and draw a faint `COMFORT_HIGH` reference line, so a stable room reads flat instead of magnifying measurement noise.
-- Dashboard panels: station-vs-model bias readout + warm/cool gate (with its own outside trend arrow + sparkline, mirroring the rooms), per-room cards (inside temp, open/dicht stamp, trend arrow + sparkline, humidity, status line), a measured→corrected-forecast temperature chart with `COMFORT_HIGH`/`WARM_DAY_MAX` lines and a "nu" marker, and a per-room open-window timeline.
+- `outside_history` also records the raw Open-Meteo value of the same hour (`om`) next to the used `temp`, so the chart can look *backwards* and show **weerstation (gemeten) vs. Open-Meteo (ruw model)** — making station/model divergence (e.g. a station reading too warm on a sunny evening) visible. The `om` field is additive; older samples without it just leave a gap in the model line until history accumulates.
+- Dashboard panels: station-vs-model bias readout + warm/cool gate (with its own outside trend arrow + sparkline, mirroring the rooms), per-room cards (inside temp, open/dicht stamp, trend arrow + sparkline, humidity, status line), a temperature chart with three outside series (station-measured + used/calibrated + raw Open-Meteo model, past and future) plus per-room inside projections, `COMFORT_HIGH`/`WARM_DAY_MAX` lines, a "nu" marker, and a day-aligned x-axis (date labels at midnight, hour labels at 06/12/18u); and a per-room open-window timeline.
 
 #### window_data.json schema (additive only — never break existing fields)
 ```json
@@ -243,7 +244,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12,
              "ROOM_COMFORT": {"Living room": {"low": 19.5, "high": 22.0}}},
-  "outside_history": [{"t": "ISO", "temp": 24.0}],
+  "outside_history": [{"t": "ISO", "temp": 24.0, "om": 23.2}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],
   "rooms": {"Living room": {
     "inside": 26.2, "humidity": 48, "advice": "open | dicht", "trend": -0.05,

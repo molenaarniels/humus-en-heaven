@@ -163,8 +163,6 @@ async function loadData() {
   }
 }
 
-function clockOf(iso) { const d = new Date(iso); return d.toLocaleTimeString("nl-NL", { hour:"2-digit", minute:"2-digit" }); }
-
 function ageLabel(iso) {
   const ageH = (Date.now() - new Date(iso).getTime()) / 3.6e6;
   if (ageH < 1) return "net bijgewerkt";
@@ -190,7 +188,7 @@ function render() {
     <div class="grid grid-2">${ROOMS_ORDER(d).map(r => roomCardHTML(r, d.rooms[r])).join("")}</div>
     <div class="grid">
       <div class="specimen-card">
-        <div class="corner-mark">Binnen vs. buiten · gemeten → geijkte voorspelling</div>
+        <div class="corner-mark">Buiten: weerstation vs. Open-Meteo · gemeten → geijkte voorspelling</div>
         <div class="chart-box"><canvas id="temp-chart"></canvas></div>
         ${legendHTML(d)}
       </div>
@@ -314,8 +312,9 @@ function roomCardHTML(name, r) {
 function legendHTML(d) {
   const rooms = ROOMS_ORDER(d);
   const items = [
-    `<span style="color:${COLORS.rain}">━ buiten geijkt</span>`,
-    `<span style="color:${COLORS.sand}">┄ buiten (ruw model)</span>`,
+    `<span style="color:${COLORS.rain}">━ weerstation (gemeten)</span>`,
+    `<span style="color:${COLORS.moss}">┄ gebruikt (geijkt)</span>`,
+    `<span style="color:${COLORS.sand}">┄ Open-Meteo (ruw model)</span>`,
   ].concat(rooms.map((r,i) => `<span style="color:${ROOM_COLORS[i % ROOM_COLORS.length]}">┄ ${r} (binnen)</span>`));
   return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
 }
@@ -349,13 +348,18 @@ function drawChart() {
   const hist = (d.outside_history || []).filter(p => p.temp != null);
   const fut = (d.forecast || []).map((f, i) => ({ ...f, i })).filter(f => f.is_future);
 
-  const labels = [...hist.map(p => clockOf(p.t)), ...fut.map(f => clockOf(f.dt))];
+  // Echte tijdstippen per punt; de x-as wordt op dagen uitgelijnd via de tick-callback.
+  const times = [...hist.map(p => new Date(p.t)), ...fut.map(f => new Date(f.dt))];
+  const labels = times.map((_, i) => i);   // index-labels; opmaak gebeurt in ticks.callback
   const nPast = hist.length;
 
-  const measured = [...hist.map(p => p.temp), ...fut.map(() => null)];
-  // verbind de gemeten lijn met de geijkte voorspelling op de "nu"-grens
-  const corr = [...hist.map((p, i) => i === nPast - 1 ? p.temp : null), ...fut.map(f => f.out_corr)];
-  const raw  = [...hist.map(() => null), ...fut.map(f => f.out_raw)];
+  // Terugkijkend (verleden): weerstation (gemeten) vs. Open-Meteo (ruw model) — zo zie je
+  // wanneer ze uiteenlopen. Vooruit (toekomst): ruw model vs. geijkt (wat de adviseur gebruikt).
+  // De "gebruikt"-lijn is in het verleden gelijk aan het station (er wordt niet teruggeijkt);
+  // de stationscorrectie raakt alleen de voorspelling.
+  const measured = [...hist.map(p => p.temp),                       ...fut.map(() => null)];
+  const used     = [...hist.map(p => p.temp),                       ...fut.map(f => f.out_corr)];
+  const model    = [...hist.map(p => p.om != null ? p.om : null),   ...fut.map(f => f.out_raw)];
 
   const roomData = rooms.map((name, ri) => {
     const r = d.rooms[name];
@@ -367,18 +371,21 @@ function drawChart() {
     };
   });
 
+  const dayFmt  = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+  const fullFmt = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
   const P = d.params;
   state.chart?.destroy();
   const ctx = document.getElementById("temp-chart").getContext("2d");
   state.chart = new Chart(ctx, {
     type: "line",
     data: { labels, datasets: [
-      { label: "buiten gemeten", data: measured, borderColor: COLORS.rain, backgroundColor: COLORS.rain + "18",
+      { label: "weerstation (gemeten)", data: measured, borderColor: COLORS.rain, backgroundColor: COLORS.rain + "18",
         borderWidth: 2.2, pointRadius: 0, tension: 0.3, fill: false, spanGaps: false },
-      { label: "buiten geijkt", data: corr, borderColor: COLORS.rain,
-        borderWidth: 2, borderDash: [6,4], pointRadius: 0, tension: 0.3, spanGaps: true },
-      { label: "buiten ruw model", data: raw, borderColor: COLORS.sand,
-        borderWidth: 1, borderDash: [2,3], pointRadius: 0, tension: 0.3, spanGaps: true },
+      { label: "gebruikt (geijkt)", data: used, borderColor: COLORS.moss,
+        borderWidth: 1.8, borderDash: [6,4], pointRadius: 0, tension: 0.3, spanGaps: true },
+      { label: "Open-Meteo (ruw model)", data: model, borderColor: COLORS.sand,
+        borderWidth: 1.2, borderDash: [2,3], pointRadius: 0, tension: 0.3, spanGaps: true },
       ...roomData,
     ]},
     options: {
@@ -391,7 +398,10 @@ function drawChart() {
           borderColor: COLORS.ink, borderWidth: 1,
           titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
           bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
-          callbacks: { label: c => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°` },
+          callbacks: {
+            title: items => { const t = times[items[0].dataIndex]; return t ? fullFmt.format(t) : ""; },
+            label: c => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°`,
+          },
         },
         annotation: { annotations: {
           comfort: { type: "line", yMin: P.COMFORT_HIGH, yMax: P.COMFORT_HIGH, borderColor: COLORS.dry, borderWidth: 1.2, borderDash: [4,4],
@@ -403,7 +413,22 @@ function drawChart() {
         }},
       },
       scales: {
-        x: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, maxRotation: 0, autoSkip: true, maxTicksLimit: 14 } },
+        x: {
+          // Verticale lijnen op hele dagen (middernacht, sterk) en op 06/12/18u (zwak).
+          grid: {
+            color: (c) => { const t = times[c.index]; if (!t) return "transparent";
+              if (t.getHours() === 0) return "#2a241b40"; if (t.getHours() % 6 === 0) return "#2a241b12"; return "transparent"; },
+            lineWidth: (c) => { const t = times[c.index]; return t && t.getHours() === 0 ? 1.5 : 1; },
+          },
+          ticks: {
+            autoSkip: false, maxRotation: 0,
+            font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft,
+            // Datum (weekdag) op middernacht, anders alleen het hele uur op 06/12/18u.
+            callback: (value, index) => { const t = times[index]; if (!t) return "";
+              const h = t.getHours(); if (h === 0) return dayFmt.format(t);
+              if (h % 6 === 0) return String(h).padStart(2, "0") + "u"; return ""; },
+          },
+        },
         y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
              title: { display: true, text: "°C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
       },

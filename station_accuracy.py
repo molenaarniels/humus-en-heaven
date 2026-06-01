@@ -144,7 +144,8 @@ def pair_hours(wu: Dict[str, dict], om: Dict[str, dict]) -> List[dict]:
             "wu": w["temp"],
             "om": o["temp"],
             "bias": w["temp"] - o["temp"],
-            "solar": o.get("solar"),
+            "solar": o.get("solar"),         # Open-Meteo (grid-schaal) instraling
+            "wu_solar": w.get("solar"),      # WU eigen pyranometer (lokaal, co-located)
             "cloud": o.get("cloud"),
             "wind": o.get("wind"),
         })
@@ -192,6 +193,35 @@ def _slope(rows: List[dict], xkey: str) -> Optional[float]:
     return sxy / sxx
 
 
+def _bias_corr(rows: List[dict], xkey: str) -> Tuple[Optional[float], int]:
+    """Pearson-correlatie tussen xkey en bias (None-waarden overgeslagen).
+    Returnt (r, n). Hogere |r| = strakker verband → betere correctie-driver."""
+    pts = [(r[xkey], r["bias"]) for r in rows if r.get(xkey) is not None]
+    n = len(pts)
+    if n < 3:
+        return None, n
+    return _pearson([p[0] for p in pts], [p[1] for p in pts]), n
+
+
+def _recommend_slope(om_slope: Optional[float], om_corr: Optional[float],
+                     wu_slope: Optional[float], wu_corr: Optional[float]) -> Optional[dict]:
+    """Kies de correctie-driver: het WU-station (lokaal, co-located) als zijn
+    bias↔instraling-correlatie minstens zo strak is als Open-Meteo, anders OM.
+    Returnt {driver, slope_per_wm2, slope_per_100} om in wu_bias.py te zetten."""
+    have_wu = wu_slope is not None and wu_corr is not None
+    have_om = om_slope is not None and om_corr is not None
+    if have_wu and (not have_om or abs(wu_corr) >= abs(om_corr)):
+        driver, slope = "wu", wu_slope
+    elif have_om:
+        driver, slope = "om", om_slope
+    elif have_wu:
+        driver, slope = "wu", wu_slope
+    else:
+        return None
+    return {"driver": driver, "slope_per_wm2": round(slope, 5),
+            "slope_per_100": round(slope * 100, 3)}
+
+
 def analyse(rows: List[dict]) -> dict:
     diurnal = []
     for hr in range(24):
@@ -219,6 +249,14 @@ def analyse(rows: List[dict]) -> dict:
     solar_slope = _slope(rows, "solar")
     wind_slope = _slope(rows, "wind")
 
+    # Twee kandidaat-drivers voor de temperatuur-correctie: Open-Meteo (grid)
+    # vs. het WU-station zelf (lokale, co-located pyranometer). De helling is
+    # alleen geldig t.o.v. de as waarop ze gefit is, dus we fitten beide en
+    # vergelijken de correlatie — de strakste driver wint (zie wu_bias.py).
+    wu_solar_slope = _slope(rows, "wu_solar")
+    solar_corr, solar_corr_n = _bias_corr(rows, "solar")
+    wu_solar_corr, wu_solar_corr_n = _bias_corr(rows, "wu_solar")
+
     # scatter (gedownsampled) voor het dashboard
     step = max(1, len(rows) // SCATTER_CAP)
     scatter = [{"t": r["t"], "h": r["hour"], "bias": round(r["bias"], 2),
@@ -236,6 +274,14 @@ def analyse(rows: List[dict]) -> dict:
         "rest": _agg(rest),
         "solar_slope_per_100": round(solar_slope * 100, 3) if solar_slope is not None else None,
         "wind_slope": round(wind_slope, 3) if wind_slope is not None else None,
+        "wu_solar_slope_per_100": round(wu_solar_slope * 100, 3) if wu_solar_slope is not None else None,
+        "solar_bias_corr": round(solar_corr, 3) if solar_corr is not None else None,
+        "wu_solar_bias_corr": round(wu_solar_corr, 3) if wu_solar_corr is not None else None,
+        "wu_solar_n": wu_solar_corr_n,
+        # Aanbevolen coëfficiënt voor wu_bias.SOLAR_BIAS_SLOPE (°C per W/m²):
+        # de WU-driver als die minstens zo strak is als Open-Meteo, anders OM.
+        "recommended_slope": _recommend_slope(solar_slope, solar_corr,
+                                              wu_solar_slope, wu_solar_corr),
         "scatter": scatter,
     }
 
@@ -292,6 +338,19 @@ def build_report(stats: dict) -> str:
             L.append(f"   {b['label']:>8s}  {b['mean_bias']:+.2f} °C  (n={b['n']})")
     if stats["wind_slope"] is not None:
         L.append(f"   → helling: {stats['wind_slope']:+.3f} °C per km/h")
+    L.append("")
+    L.append("  CORRECTIE-DRIVER  (welke instraling stuurt de bias het strakst?)")
+    om_c, wu_c = stats.get("solar_bias_corr"), stats.get("wu_solar_bias_corr")
+    om_s, wu_s = stats.get("solar_slope_per_100"), stats.get("wu_solar_slope_per_100")
+    L.append(f"   Open-Meteo : helling {om_s if om_s is not None else '—'} °C/100W/m²"
+             f"   corr(bias) {om_c if om_c is not None else '—'}")
+    L.append(f"   WU-station : helling {wu_s if wu_s is not None else '—'} °C/100W/m²"
+             f"   corr(bias) {wu_c if wu_c is not None else '—'}  (n={stats.get('wu_solar_n', 0)})")
+    rec = stats.get("recommended_slope")
+    if rec:
+        L.append(f"   → aanbevolen driver: {rec['driver'].upper()}  "
+                 f"({rec['slope_per_100']:+.3f} °C/100W/m²)")
+        L.append(f"   → zet  SOLAR_BIAS_SLOPE = {rec['slope_per_wm2']}  in wu_bias.py")
     L.append("═" * 56)
     return "\n".join(L)
 

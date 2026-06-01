@@ -2,7 +2,12 @@ name: Tado Window Advisor
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    # GitHub drops/delays scheduled triggers under load, worst at the top of the
+    # hour. We fire 3x/hour at odd minutes so even when half the ticks are dropped
+    # we still land ~hourly. The script is idempotent (state in the Gist, Telegram
+    # only on a flip), so the extra runs are harmless — and public repos get
+    # unlimited Actions minutes. See the concurrency guard below.
+    - cron: "7,27,47 * * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
@@ -13,6 +18,13 @@ on:
 
 permissions:
   contents: write
+
+# Serialize runs: a delayed/late-starting run must finish (tado refresh-token
+# rotation + commit) before the next begins. Two overlapping runs would read the
+# same refresh token and the second rotation would break the token chain.
+concurrency:
+  group: window-advisor
+  cancel-in-progress: false
 
 jobs:
   advise:

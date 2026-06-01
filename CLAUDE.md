@@ -46,6 +46,7 @@ This repo contains three independent automation pipelines, all running on GitHub
 - Zones: lawn (Zr 0.20m), shrubs (Zr 0.42m) — each with own Kcb curve
 - Irrigation rates: sprinkler 20mm/hr (lawn), drip 2mm/hr (shrubs)
 - Wind: anemometers (Open-Meteo + WU PWS) zijn op 10m; FAO-56 Eq. 47 log-law correctie naar 2m wordt toegepast (u2 = u10 × ~0.748)
+- **WU stralingsbiascorrectie (`wu_bias.py`):** het WU-station heeft een radiatieve warm-bias die lineair met de instraling meeschaalt (gediagnosticeerd in Project 7). Op WU-gemeten, niet-forecast dagen wordt `Tmax` gecorrigeerd met `T − SOLAR_BIAS_SLOPE · max(0, instraling_W/m²)` vóór ET0; driver = de eigen WU-pyranometer (`solarRadiationHigh`, dagpiek — valt op Tmax-piek), met de Open-Meteo dagpiek als fallback. `Tmean` wordt gecorrigeerd met de Open-Meteo 24u-mean (laag-risico: enkel de koude `temp_factor`); `Tmin` (nacht) blijft ongemoeid. Rauwe `Tmax/Tmin/Tmean` blijven behouden; correcties zijn additief (`Tmax_corr`, `Tmean_corr`, `bias_corr`, `bias_solar_src`). Forecast/pre-WU/archief-dagen blijven ongecorrigeerd. `SOLAR_BIAS_SLOPE` wordt gekalibreerd door Project 7 (zie daar).
 - **State carry-over:** `theta_end` per zone wordt elke run weggeschreven in data.json. De volgende run leest dit als `seed_theta` zodat het 35-daagse warmup-venster niet elke run vanaf 30%-uitputting hoeft te starten — convergeert naar consistente initiële conditie.
 
 ### data.json schema (additive only — never break existing fields)
@@ -65,6 +66,8 @@ This repo contains three independent automation pipelines, all running on GitHub
     "hasWU": true,
     "Tmax": null, "Tmin": null, "Tmean": null, "RHmean": null,
     "u2": null, "Rs": null, "precip": null,
+    "Rs_peak_wm2": null, "wu_solar_peak": null,
+    "Tmax_corr": null, "Tmean_corr": null, "bias_corr": null, "bias_solar_src": "wu | om",
     "ET0": null, "ET0_om": null,
     "lawn_theta": null, "lawn_depletion": null, "lawn_ETc": null,
     "lawn_Kc": null, "lawn_Kcb": null, "lawn_Ke": null,
@@ -220,7 +223,7 @@ tado zone names, matched case-insensitively: **Living room, Ted, hotties, office
 ### Hourly flow
 1. Read the rotating tado refresh token from the **secret Gist** (`tado_token.json`), exchange it for an access token, and **immediately write the rotated refresh token back** (tado rotates on every refresh).
 2. tado API: `/me` → home id; `/homes/{id}/zones`; per matching zone `/state` → inside temperature + humidity.
-3. Outside temp **now** from WU PWS current obs (`metric.temp`), fallback Open-Meteo current hour.
+3. Outside temp **now** from WU PWS current obs (`metric.temp`), fallback Open-Meteo current hour. On a WU reading the **stralingsbiascorrectie** (`wu_bias.py`) is applied first — driver = WU `solarRadiation` now, Open-Meteo `shortwave_radiation` as fallback — so `outside_now` (and therefore the microklimaat-bias-blend, `decide()`, and `outside_history.temp`) reflect the corrected temperature. The Open-Meteo fallback path is left uncorrected (already a model value).
 4. Open-Meteo hourly forecast (2 days) → day-max gate + "open again ~HH:00" lookahead. Forecast timestamps are made timezone-aware (Open-Meteo returns naïve local times) so they compare safely with `datetime.now(TZ)`.
 5. Per-room decision with hysteresis, update per-room state in the Gist (`window_state.json`).
 6. Telegram only the rooms whose advice **flipped** this run → weerbriefing-groep.
@@ -292,9 +295,21 @@ Independent. **Commits `docs/window_data.json` each run** (workflow is now `cont
 - Pulls WU **hourly** history (`v2/pws/history/hourly`, per-day calls) — distinct from the soil project's daily endpoint.
 - Open-Meteo archive hourly: `temperature_2m`, `shortwave_radiation`, `cloud_cover`, `wind_speed_10m` (timezone=UTC for clean hour alignment).
 - Pairs on the common UTC hour, `bias = WU − model`, then aggregates: diurnal curve (per local hour), bias vs cloud bins, bias vs solar bins, bias vs wind bins, the headline "sunny late-afternoon" subset (13–19u local, <25% cloud) vs the rest, and least-squares slopes (°C per 100 W/m², °C per km/h).
+- **Calibration output for `wu_bias.py`:** the bias is also fit against **two** radiation drivers — Open-Meteo grid solar *and* the WU station's own pyranometer (`solarRadiationHigh`, co-located → captures direct-sun/broken-cloud bursts the grid smooths away). The report compares their bias↔solar correlations and prints the recommended driver + `SOLAR_BIAS_SLOPE` (= the chosen `slope_per_100 / 100`). The co-located WU driver wins when its correlation is equal-or-tighter. This is the single source of truth for the constant in `wu_bias.py` — re-run to recalibrate and paste the printed value. (`accuracy_data.json` gains additive `wu_solar_slope_per_100`, `solar_bias_corr`, `wu_solar_bias_corr`, `recommended_slope`.)
 
 ### Relation to other projects
-Fully independent and **read-only** — imports nothing, never touches `data.json` / `window_data.json` / the Gist / any FAO-56 logic. Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.
+Read-only with **one deliberate output**: it never imports or writes other projects' artefacts, but it is the **calibration source** for `wu_bias.py`'s `SOLAR_BIAS_SLOPE` (a hand-copied constant, no runtime coupling). Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.
+
+---
+
+## Shared module: `wu_bias.py`
+
+The only cross-project Python module (everything else is self-contained). Provides the WU
+station's radiative temperature-bias correction — `correct_temp(temp_c, solar_wm2)` and
+`bias_estimate(solar_wm2)` plus the calibrated `SOLAR_BIAS_SLOPE` (°C per W/m², source-agnostic
+driver). Imported by **soil_model.py** (Tmax/Tmean on WU days) and **window_advisor.py** (outside-now
+on WU readings). Calibrated by Project 7. Zero third-party deps. See the soil "WU stralingsbiascorrectie"
+bullet and Project 7 for the full picture.
 
 ---
 

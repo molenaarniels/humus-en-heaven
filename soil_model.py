@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from wu_bias import bias_estimate, correct_temp
+
 # --- Locatie & bodem ---
 UTRECHT_LAT = 52.0907
 UTRECHT_LON = 5.1214
@@ -324,7 +326,9 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
 
         # Bodemtemperatuur drempel (FAO-56 §3.3): air-Tmean ijlt na in
         # bodem; we gebruiken SOIL_TEMP_WINDOW-daagse loopgemiddelde.
-        tmean_today = d.get("Tmean")
+        # Gecorrigeerde Tmean waar beschikbaar (WU-dagen); valt terug op de
+        # rauwe Tmean (forecast/pre-WU/archief) — zie apply_et0_and_balance.
+        tmean_today = d.get("Tmean_corr", d.get("Tmean"))
         if tmean_today is None:
             tmean_today = (d.get("Tmax", 10) + d.get("Tmin", 0)) / 2
         tmean_window.append(tmean_today)
@@ -494,6 +498,28 @@ def _hourly_daily_means(hourly: Optional[Dict], var_keys: List[str]) -> Dict[str
             for k, days in out.items()}
 
 
+def _hourly_daily_peak(hourly: Optional[Dict], key: str) -> Dict[str, float]:
+    """Per-dag PIEK (max) van een uurlijkse Open-Meteo variabele.
+
+    Returns: {"YYYY-MM-DD": max}. Gebruikt als fallback-driver voor de
+    Tmax-biascorrectie (instraling W/m²) als de WU-pyranometer ontbreekt —
+    Tmax valt rond de zon-piek, dus de dagpiek is de juiste schaal."""
+    if not hourly or "time" not in hourly:
+        return {}
+    out: Dict[str, float] = {}
+    arr = hourly.get(key) or []
+    for i, t in enumerate(hourly["time"]):
+        if i >= len(arr):
+            break
+        v = arr[i]
+        if v is None:
+            continue
+        day = t[:10]
+        if day not in out or v > out[day]:
+            out[day] = v
+    return out
+
+
 def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
                  layer_bounds, day: str) -> Dict[str, Optional[float]]:
     """Bouwt {zone_key: weighted_sm} voor één dag uit per-laag-per-dag means."""
@@ -534,6 +560,9 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     # Amsterdam is dit typisch < 0.1, dus today's verdamping = bijna nul.
     today_solar_fraction = _today_solar_fraction(j.get("hourly"), today)
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
+    # Per-dag piek-instraling (W/m²) — fallback-driver voor de Tmax-biascorrectie
+    # wanneer de WU-pyranometer een gat heeft (zie apply_et0_and_balance).
+    solar_peak = _hourly_daily_peak(j.get("hourly"), "shortwave_radiation")
     precip_prob = d.get("precipitation_probability_max", [None] * len(d["time"]))
     et0_om = d.get("et0_fao_evapotranspiration", [None] * len(d["time"]))
     out = []
@@ -547,6 +576,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "RHmean": d["relative_humidity_2m_mean"][i],
             "u2": (d["wind_speed_10m_mean"][i] or 0) / 3.6 * WIND_2M_FACTOR,
             "Rs": d["shortwave_radiation_sum"][i],
+            "Rs_peak_wm2": solar_peak.get(t),
             "precip": rain_today_so_far if t == today else (d["precipitation_sum"][i] or 0),
             "ET0_om": et0_om[i],
             "precip_prob": precip_prob[i] if i < len(precip_prob) else None,
@@ -630,6 +660,9 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "RHmean": obs.get("humidityAvg"),
                     "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
+                    # WU eigen pyranometer (dagpiek, W/m²) — driver voor de
+                    # Tmax-stralingsbiascorrectie. Top-level, niet in `metric`.
+                    "wu_solar_peak": obs.get("solarRadiationHigh"),
                 })
             history_ok = bool(results)
     except Exception as e:
@@ -661,6 +694,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "RHmean": obs.get("humidityAvg"),
                     "u2": (obs.get("windspeedAvg") or 0) / 3.6 * WIND_2M_FACTOR,
                     "precip": m.get("precipTotal"),
+                    "wu_solar_peak": obs.get("solarRadiationHigh"),
                 })
             except Exception as e:
                 print(f"[WU] {d} failed: {e}")
@@ -691,9 +725,31 @@ def apply_et0_and_balance(series: List[Dict],
     lat_rad = math.radians(UTRECHT_LAT)
     for d in series:
         doy = datetime.fromisoformat(d["date"]).timetuple().tm_yday
+
+        # --- WU stralingsbiascorrectie (zie wu_bias.py) ---------------------
+        # Alleen op WU-gemeten, niet-forecast dagen: forecast-temperaturen
+        # komen van Open-Meteo (model) en hebben deze fout niet. Driver = de
+        # eigen WU-pyranometer (dagpiek), met Open-Meteo-piek als fallback.
+        # Velden zijn additief; rauwe Tmax/Tmin/Tmean blijven ongemoeid.
+        if d.get("hasWU") and not d.get("forecast"):
+            solar_peak = d.get("wu_solar_peak")
+            d["bias_solar_src"] = "wu" if solar_peak is not None else "om"
+            if solar_peak is None:
+                solar_peak = d.get("Rs_peak_wm2")
+            if d.get("Tmax") is not None:
+                d["Tmax_corr"] = round(correct_temp(d["Tmax"], solar_peak), 2)
+            # Tmean is laag-risico (alleen de koude temp_factor): WU levert geen
+            # schone 24u-gemiddelde instraling, dus benaderen met de Open-Meteo
+            # 24u-mean (Rs MJ/m²/dag → W/m²). Kleine unit-mix op een term die
+            # ~0 effect heeft zodra de instraling hoog is.
+            rs_mean = d["Rs"] * 1e6 / 86400 if d.get("Rs") is not None else None
+            if d.get("Tmean") is not None:
+                d["Tmean_corr"] = round(correct_temp(d["Tmean"], rs_mean), 2)
+            d["bias_corr"] = round(bias_estimate(solar_peak), 2)
+
         try:
             d["ET0"] = round(penman_monteith_et0(
-                Tmax=d["Tmax"], Tmin=d["Tmin"], RHmean=d["RHmean"],
+                Tmax=d.get("Tmax_corr", d["Tmax"]), Tmin=d["Tmin"], RHmean=d["RHmean"],
                 u2=d["u2"], Rs=d["Rs"], elev=UTRECHT_ELEV,
                 lat_rad=lat_rad, doy=doy,
             ), 2)
@@ -760,7 +816,8 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
                 w = wu_by_date.get(d["date"])
                 if not w:
                     continue
-                for f in ("Tmax", "Tmin", "Tmean", "RHmean", "u2", "precip"):
+                for f in ("Tmax", "Tmin", "Tmean", "RHmean", "u2", "precip",
+                          "wu_solar_peak"):
                     if w.get(f) is not None:
                         d[f] = w[f]
                 d["hasWU"] = True

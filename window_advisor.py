@@ -34,6 +34,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from wu_bias import correct_temp
+
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
 ROOMS = ["Living room", "Ted", "hotties", "office"]
 
@@ -203,12 +205,15 @@ def fetch_room_temps(access_token: str) -> dict[str, dict]:
 
 # ── Buitentemperatuur: WU nú, Open-Meteo als fallback + vooruitblik ───────────────
 
-def fetch_wu_current_temp() -> float | None:
-    """Huidige buitentemperatuur van het eigen WU-station (metric.temp)."""
+def fetch_wu_current_temp() -> tuple[float | None, float | None]:
+    """Huidige buitentemperatuur (metric.temp) + instraling (solarRadiation,
+    W/m², top-level) van het eigen WU-station. De instraling drijft de
+    stralingsbiascorrectie (zie wu_bias.py). Returnt (temp, solar); elk None
+    als onbeschikbaar."""
     station_id = os.environ.get("WU_STATION_ID")
     api_key    = os.environ.get("WU_API_KEY")
     if not (station_id and api_key):
-        return None
+        return None, None
     url = (
         "https://api.weather.com/v2/pws/observations/current"
         f"?stationId={station_id}&format=json&units=m"
@@ -217,14 +222,15 @@ def fetch_wu_current_temp() -> float | None:
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
-            return None
+            return None, None
         obs_list = r.json().get("observations", [])
         if not obs_list:
-            return None
-        return (obs_list[0].get("metric", {}) or {}).get("temp")
+            return None, None
+        obs = obs_list[0]
+        return (obs.get("metric", {}) or {}).get("temp"), obs.get("solarRadiation")
     except Exception as e:
         print(f"[WU] current call failed: {e}")
-        return None
+        return None, None
 
 
 def _parse_local(t: str) -> datetime:
@@ -241,7 +247,7 @@ def fetch_open_meteo() -> dict:
         params={
             "latitude":     LATITUDE,
             "longitude":    LONGITUDE,
-            "current":      "temperature_2m",
+            "current":      "temperature_2m,shortwave_radiation",
             "hourly":       "temperature_2m",
             "timezone":     "Europe/Amsterdam",
             "forecast_days": 2,
@@ -250,13 +256,15 @@ def fetch_open_meteo() -> dict:
     )
     r.raise_for_status()
     data = r.json()
-    current = (data.get("current") or {}).get("temperature_2m")
+    cur = data.get("current") or {}
+    current = cur.get("temperature_2m")
     h = data.get("hourly", {})
     rows = [
         {"dt": _parse_local(t), "temp": temp}
         for t, temp in zip(h.get("time", []), h.get("temperature_2m", []))
     ]
-    return {"current": current, "hourly": rows}
+    # `current_solar` = fallback-driver voor de biascorrectie als de WU-pyranometer ontbreekt.
+    return {"current": current, "current_solar": cur.get("shortwave_radiation"), "hourly": rows}
 
 
 def day_max_temp(hourly: list[dict], today) -> float | None:
@@ -586,15 +594,23 @@ def main():
     access_token = get_access_token()
     rooms_data   = fetch_room_temps(access_token)
 
-    om       = fetch_open_meteo()
-    outside  = fetch_wu_current_temp()
+    om              = fetch_open_meteo()
+    outside, wu_solar = fetch_wu_current_temp()
     if outside is None:
         outside = om["current"]
         outside_source = "open-meteo"
         print(f"[buiten] WU niet beschikbaar → Open-Meteo: {outside}°C")
     else:
         outside_source = "wu"
-        print(f"[buiten] WU: {outside}°C")
+        # Stralingsbiascorrectie (zie wu_bias.py): het WU-station leest in de zon
+        # te warm. Driver = eigen pyranometer, met Open-Meteo als fallback. Dit
+        # schoont meteen de microklimaat-bias-blend, decide() en outside_history op.
+        raw = outside
+        solar_now = wu_solar if wu_solar is not None else om.get("current_solar")
+        src = "wu" if wu_solar is not None else "om"
+        outside = round(correct_temp(outside, solar_now), 1)
+        print(f"[buiten] WU: {raw}°C → gecorrigeerd {outside}°C "
+              f"(zon {solar_now} W/m², bron {src})")
 
     today  = now.date()
     dmax   = day_max_temp(om["hourly"], today)

@@ -281,7 +281,9 @@ function roomCardHTML(name, r) {
   const open = r.advice === "open";
   const stamp = `<span class="stamp ${open ? "stamp-open" : "stamp-dicht"}">${open ? "Open" : "Dicht"}</span>`;
   const statusColor = r.open_now ? "var(--moss)" : (r.predicted_open ? "var(--ink)" : "var(--ink-soft)");
-  const overComfort = r.inside != null && r.inside > state.data.params.COMFORT_HIGH;
+  const comfortHigh = r.comfort_high != null ? r.comfort_high : state.data.params.COMFORT_HIGH;
+  const comfortLow = r.comfort_low != null ? r.comfort_low : comfortHigh;
+  const overComfort = r.inside != null && r.inside > comfortHigh;
   return `
     <div class="specimen-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
@@ -292,11 +294,11 @@ function roomCardHTML(name, r) {
         <div class="big-num" style="color:${overComfort ? "var(--dry)" : "var(--ink)"};">${r.inside == null ? "–" : r.inside.toFixed(1)}<span>°C</span></div>
         <div style="padding-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">${trendArrow(r.trend)}</div>
       </div>
-      ${sparkSVG(r.history, state.data.params.COMFORT_HIGH)}
+      ${sparkSVG(r.history, comfortHigh)}
       <div class="status-line" style="color:${statusColor};">${r.status_text}</div>
       <div style="margin-top:14px;border-top:1px dashed #2a241b33;padding-top:10px;">
         <div class="stat-row"><span class="lbl">Luchtvochtigheid</span><span>${r.humidity == null ? "–" : r.humidity + "%"}${humidityNote(r.humidity)}</span></div>
-        <div class="stat-row" style="border:none;"><span class="lbl">Comfortgrens</span><span>${state.data.params.COMFORT_HIGH.toFixed(1)}°</span></div>
+        <div class="stat-row" style="border:none;"><span class="lbl">Comfortband</span><span>${comfortLow.toFixed(1)}–${comfortHigh.toFixed(1)}°</span></div>
       </div>
     </div>`;
 }

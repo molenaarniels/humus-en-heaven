@@ -4,14 +4,14 @@ on:
   schedule:
     # GitHub's scheduler is best-effort and drops/delays most ticks under load
     # (observed: whole days with only ~3 of 24 hourly runs firing). We therefore
-    # do NOT rely on the schedule for the hourly cadence — instead each run is a
-    # self-contained ~5h loop that does the advice once per hour internally (see
-    # the "hourly loop" step). The schedule here is only a *restart kick*: thanks
-    # to the concurrency guard below, a tick that fires while a loop is running is
-    # held pending and starts the next loop the instant the current one ends, so
-    # coverage barely blinks. Firing several times/hour just means a fresh loop
-    # restarts promptly even when GitHub drops most ticks; the extra kicks are
-    # superseded harmlessly by concurrency. One tick every ~5h is enough.
+    # do NOT rely on the schedule for cadence — instead each run is a self-contained
+    # ~5h loop that does the advice once per 15 minutes internally (see the
+    # "quarter-hourly loop" step). The schedule here is only a *restart kick*:
+    # thanks to the concurrency guard below, a tick that fires while a loop is
+    # running is held pending and starts the next loop the instant the current
+    # one ends, so coverage barely blinks. Firing several times/hour just means
+    # a fresh loop restarts promptly even when GitHub drops most ticks; the
+    # extra kicks are superseded harmlessly by concurrency.
     - cron: "7,27,47 * * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
@@ -36,9 +36,9 @@ concurrency:
 jobs:
   advise:
     runs-on: ubuntu-latest
-    # The hourly loop runs ~6 iterations spaced to the top of each hour, i.e. up
-    # to ~5h wall time. Cap below the 6h hard limit so the job ends cleanly and a
-    # pending restart kick can take over.
+    # The quarter-hourly loop runs ~20 iterations spaced to the next 15-min mark,
+    # i.e. up to ~5h wall time. Cap below the 6h hard limit so the job ends cleanly
+    # and a pending restart kick can take over.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run window advisor (hourly loop)
+      - name: Run window advisor (quarter-hourly loop)
         env:
           TADO_GIST_ID:           ${{ secrets.TADO_GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
@@ -86,17 +86,18 @@ jobs:
             exit 0
           fi
 
-          # GitHub's scheduler can't be trusted to fire hourly, so we drive the
-          # cadence ourselves: run now, then once at the top of each following
-          # hour, for up to ITERS hours. The concurrency guard keeps this the only
-          # loop running, so the tado token rotation stays serialized.
-          ITERS=6
+          # GitHub's scheduler can't be trusted to fire on time, so we drive the
+          # cadence ourselves: run now, then once at the next :00/:15/:30/:45 mark,
+          # for up to ITERS iterations (~5h wall time at 15-min spacing). The
+          # concurrency guard keeps this the only loop running, so the tado token
+          # rotation stays serialized.
+          ITERS=20
           for i in $(seq 1 "${ITERS}"); do
             echo "=== iteration ${i}/${ITERS} at $(date -u +%H:%M:%SZ) ==="
             run_once
             if [ "${i}" -lt "${ITERS}" ]; then
               now=$(date -u +%s)
-              next=$(( (now / 3600 + 1) * 3600 ))   # top of the next UTC hour
+              next=$(( (now / 900 + 1) * 900 ))   # next 15-min mark UTC (900s = 15 min)
               sleep $(( next - now ))
             fi
           done

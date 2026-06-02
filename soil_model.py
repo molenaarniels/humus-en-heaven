@@ -209,13 +209,18 @@ def effective_forecast_rain(days: List[Dict], zone_key: str,
     """Verwacht netto regen voor de komende `horizon` voorspeldagen.
 
     Per dag:
-      1. raw = d["precip"]
-      2. expected = raw × probability/100 (default 100% als ontbreekt)
-      3. intercepted via canopy-saturation curve (zie run_water_balance)
-      4. net = max(0, expected − intercepted)
+      1. raw = d["precip"]  (= Open-Meteo `precipitation_sum`, al de
+         verwachte dag-accumulatie)
+      2. intercepted via canopy-saturation curve (zie run_water_balance)
+      3. net = max(0, raw − intercepted)
 
-    Returns dict met som en per-dag componenten zodat de beslissings-
-    logica en het dashboard dezelfde feiten zien."""
+    Geen probability-weging: `precipitation_sum` is al de *verwachte*
+    accumulatie, dus extra vermenigvuldigen met `precipitation_probability`
+    zou dubbel-discounten. Dit houdt de cijfers consistent met de
+    waterbalans-simulatie, die óók de ruwe regen (minus interceptie)
+    gebruikt — zo zien beslissingslogica en dashboard dezelfde feiten.
+    `expected_mm` blijft als veld bestaan (== raw) voor achterwaartse
+    compatibiliteit."""
     interception_mm = INTERCEPTION.get(zone_key, 0.0)
     forecast_days = [d for d in days if d.get("forecast")][:horizon]
     raw_sum = 0.0
@@ -224,9 +229,7 @@ def effective_forecast_rain(days: List[Dict], zone_key: str,
     intercepted_sum = 0.0
     for d in forecast_days:
         p_raw = d.get("precip") or 0.0
-        prob_pct = d.get("precip_prob")
-        prob = (prob_pct / 100.0) if prob_pct is not None else 1.0
-        expected = p_raw * prob
+        expected = p_raw
         if expected > 0 and interception_mm > 0:
             intercepted = interception_mm * (1 - math.exp(-expected / interception_mm))
         else:
@@ -968,10 +971,15 @@ def mm_to_minutes(zone: str, mm: float) -> int:
 def assess_status(data: Dict, zone: str = "lawn") -> Dict:
     """Bepaalt of water geven nodig is, inclusief irrigatievoorstel in mm en minuten.
 
-    Voor de skip-watering beslissing gebruiken we *effectieve* regen
-    (probability-gewogen × na canopy-interceptie), niet de ruwe daily
-    precipitation_sum — een 7d voorspelling van 8 mm verdeeld als
-    1 mm/dag bij 50% kans levert netto bijna geen water in de wortelzone."""
+    Skip-watering beslissing: we vertrouwen de *gesimuleerde* depletie-
+    trajectorie (`run_water_balance` verwerkt de ruwe voorspelregen al,
+    inclusief canopy-interceptie en ET). Blijft de bodem volgens die
+    simulatie de komende dagen onder de stress-grens, dan dekt de verwachte
+    regen het tekort en is irrigatie niet nodig — ook als de bodem *nu* nog
+    in de threshold-band zit. Zo spreekt de notificatie nooit het dashboard
+    tegen (dat dezelfde simulatie toont). De effectieve-regen cijfers blijven
+    ter informatie in de boodschap/het dashboard, maar gaten niet langer de
+    beslissing."""
     days = data["days"]
     soil = data["soil"]
     zone_info = data["zones"][zone]
@@ -1015,14 +1023,32 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         recommendation = "URGENT: water vandaag — bodem in stress."
         priority = "high"
     elif state == "threshold":
-        # Skip-rule deficit-relatief: alleen overslaan als 3d eff regen
-        # >= 60% van deficit én 7d eff regen >= 90% van deficit. Kleine
-        # buien op droge bodem triggeren dus toch een irrigatie.
-        skip = (eff_3d >= 0.6 * deficit_mm) and (eff_7d >= 0.9 * deficit_mm)
-        if skip:
+        # Vertrouw de gesimuleerde trajectorie i.p.v. een parallelle
+        # regen-heuristiek: `days_to_stress` is de eerste voorspeldag waarop
+        # de (met ruwe regen gesimuleerde) depletie weer > 50% komt. Blijft
+        # dat punt voorbij de skip-horizon — of komt het helemaal niet —
+        # dan houdt de verwachte regen de bodem afdoende vochtig en is
+        # irrigatie nu niet nodig.
+        SKIP_HORIZON_D = 3
+        # Dry-soil guard: boven deze *gemeten* uitputting vertrouwen we niet
+        # langer op voorspelde regen. De forecast (raw, niet probability-
+        # gewogen) kan watergeven één dag tegelijk uitstellen; mocht een
+        # voorspelde bui structureel uitblijven, dan voorkomt deze grens dat
+        # de bodem op steeds-verschuivende "morgen regen" tot echte stress
+        # uitdroogt. Onder de grens is er genoeg marge om de (meest
+        # betrouwbare) nabije regen te vertrouwen; erboven weegt het risico
+        # van een gemiste forecast zwaarder dan te vroeg water geven.
+        DRY_GUARD_PCT = 65
+        rain_covers = (dep < DRY_GUARD_PCT
+                       and (days_to_stress is None
+                            or days_to_stress > SKIP_HORIZON_D))
+        if rain_covers:
+            horizon_txt = (f"~{days_to_stress} dagen" if days_to_stress
+                           else "de komende dagen")
             recommendation = (
-                f"Nog niet water geven — {eff_7d:.1f} mm effectieve regen "
-                f"verwacht (7d, dekt deficit {deficit_mm:.1f} mm)."
+                f"Nog niet water geven — verwachte regen houdt de bodem "
+                f"volgens de prognose {horizon_txt} onder de stress-grens "
+                f"({eff_7d:.1f} mm effectieve regen, 7d)."
             )
             priority = "low"
             proposal_mm = 0

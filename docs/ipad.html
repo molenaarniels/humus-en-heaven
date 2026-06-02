@@ -198,20 +198,10 @@ html, body {
 /* ─── BODY ────────────────────────────────────────────────── */
 .body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  grid-template-areas:
-    "rooms rooms"
-    "col-left col-right"
-    "chips chips";
-  gap: 16px 22px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 22px;
   min-height: 0;
 }
-.rooms-panel { grid-area: rooms; }
-.col-left  { grid-area: col-left;  display: flex; flex-direction: column; gap: 14px; min-height: 0; }
-.col-right { grid-area: col-right; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
-.col-right .panel:last-child { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.col-right .blocks-list { flex: 1; min-height: 0; overflow: hidden; }
 .panel-title {
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
@@ -222,13 +212,21 @@ html, body {
   font-weight: 500;
 }
 
-/* rooms — compact single panel */
-.rooms-panel { padding: 14px 22px 14px; background: var(--bg-2); border: 1px solid var(--hair-soft); border-radius: 4px; }
+/* rooms — scatter plot panel */
+.rooms-panel {
+  padding: 14px 18px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--hair-soft);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .rooms-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 .rooms-head .panel-title { margin-bottom: 0; }
 .rooms-out {
@@ -247,46 +245,7 @@ html, body {
   letter-spacing: 0;
   margin: 0 6px;
 }
-.rooms-out em {
-  font-style: italic;
-  text-transform: none;
-  letter-spacing: 0.08em;
-  color: var(--ink-faint);
-}
-.rooms-list { display: flex; flex-direction: column; }
-.r-row {
-  display: grid;
-  grid-template-columns: 1.1fr auto auto 0.7fr auto;
-  align-items: baseline;
-  gap: 16px;
-  padding: 8px 0;
-  border-bottom: 1px dashed var(--hair);
-}
-.r-row:last-child { border-bottom: none; }
-.r-name {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-.r-temp {
-  font-family: "Cormorant Garamond", serif;
-  font-size: 28px;
-  font-weight: 500;
-  color: var(--ink);
-  line-height: 1;
-  font-feature-settings: "tnum";
-}
-.r-temp .deg { font-size: 16px; color: var(--ink-soft); }
-.r-trend { font-size: 16px; color: var(--ink-soft); width: 14px; text-align: center; }
-.r-delta {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  color: var(--ink-faint);
-  letter-spacing: 0.05em;
-}
-.r-stamp-cell { justify-self: end; }
+.rooms-scatter { flex: 1; width: 100%; height: 100%; display: block; min-height: 0; }
 .stamp {
   display: inline-block;
   padding: 3px 9px;
@@ -301,6 +260,25 @@ html, body {
 .stamp-open { color: var(--moss); }
 .stamp-dicht { color: var(--clay); }
 
+/* aside stack — Tuin, Maaien, Vandaag, Chips. Vandaag absorbs slack so
+   Chips always stays visible at the bottom of the column. */
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+.aside .panel-vandaag {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.aside .panel-vandaag .blocks-list {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 .panel {
   padding: 14px 18px 16px;
   background: var(--bg-2);
@@ -538,12 +516,12 @@ html, body {
   <section class="body">
     <div class="rooms-panel">
       <div class="rooms-head">
-        <span class="panel-title">binnen</span>
-        <span class="rooms-out">buiten <strong id="rooms-out">—°</strong></span>
+        <span class="panel-title">binnen · buiten</span>
+        <span class="rooms-out">temp ↔ vocht — vector = trend</span>
       </div>
-      <div class="rooms-list" id="rooms-list"></div>
+      <svg id="rooms-scatter" class="rooms-scatter" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <div class="col-left">
+    <div class="aside">
       <div class="panel">
         <div class="panel-title">tuin</div>
         <div class="soil-row" id="soil-row"></div>
@@ -557,14 +535,12 @@ html, body {
         </div>
         <div class="mow-reason" id="mow-reason"></div>
       </div>
-    </div>
-    <div class="col-right">
-      <div class="panel">
+      <div class="panel panel-vandaag">
         <div class="panel-title">vandaag</div>
         <div class="blocks-list" id="blocks-list"></div>
       </div>
+      <div class="chips" id="chips"></div>
     </div>
-    <div class="chips" id="chips"></div>
   </section>
 
 </main>
@@ -686,8 +662,8 @@ async function loadAll() {
     fetchJSON("mowing_data.json" + bust()),
     fetchJSON("window_data.json" + bust()),
     fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
-      `&current=temperature_2m,apparent_temperature,weathercode` +
-      `&hourly=temperature_2m,precipitation,precipitation_probability,uv_index,weathercode` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weathercode` +
+      `&hourly=temperature_2m,relative_humidity_2m,precipitation,precipitation_probability,uv_index,weathercode` +
       `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weathercode,uv_index_max,precipitation_probability_max` +
       `&timezone=Europe%2FAmsterdam&forecast_days=1`),
     fetchJSON("sandbox_state.json" + bust()),
@@ -712,7 +688,9 @@ async function loadAll() {
   }
   if (soil.status       === "fulfilled") safe("soil",  () => renderSoil(soil.value));
   if (mowing.status     === "fulfilled") safe("mow",   () => renderMow(mowing.value));
-  if (windowData.status === "fulfilled") safe("rooms", () => renderRooms(windowData.value));
+  const omv = om.status === "fulfilled" ? om.value : null;
+  if (windowData.status === "fulfilled") safe("rooms", () => renderRooms(windowData.value, omv));
+  else safe("rooms", () => renderRooms(null, omv));
   safe("blocks", () => renderBlocks());
   safe("chips",  () => renderChips({
     windowData: windowData.status === "fulfilled" ? windowData.value : null,
@@ -777,9 +755,14 @@ function colors() {
     rain: get("--rain",     "#7a8fa3"),
     ink:  get("--ink",      "#2a2520"),
     soft: get("--ink-soft", "#6b5d4a"),
+    faint:get("--ink-faint","#b5a690"),
     hair: get("--ink",      "#2a2520"),
+    moss: get("--moss",     "#5a6b3e"),
+    clay: get("--clay",     "#b86b4a"),
+    bg2:  get("--bg-2",     "#ebe2d2"),
   };
 }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 function renderTimeline(hourly) {
   if (!hourly || !Array.isArray(hourly.time)) return;
@@ -873,41 +856,137 @@ const ROOM_LABELS = {
   "office": "Werkkamer",
 };
 const ROOM_ORDER = ["Living room", "Ted", "hotties", "office"];
-function trendArrow(slope) {
-  if (slope == null || !isFinite(slope)) return "→";
-  if (slope >  0.15) return "↗";
-  if (slope < -0.15) return "↘";
-  return "→";
+const ROOM_SHORT = {
+  "Living room": "WOON",
+  "Ted":         "TED",
+  "hotties":     "HOT",
+  "office":      "WERK",
+};
+
+// Outside temperature trend (°C/h), derived from Open-Meteo hourly.
+// Two-hour forward slope of the local hourly forecast — simple, robust,
+// and uses the same data source the timeline already loads.
+function computeOutsideTrend(om) {
+  if (!om?.hourly?.time || !om?.hourly?.temperature_2m) return 0;
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const curStr   = `${todayStr}T${pad(now.getHours())}:00`;
+  const idx = om.hourly.time.indexOf(curStr);
+  if (idx < 0) return 0;
+  const last = om.hourly.temperature_2m.length - 1;
+  const future = Math.min(idx + 2, last);
+  if (future <= idx) return 0;
+  const t0 = om.hourly.temperature_2m[idx];
+  const t1 = om.hourly.temperature_2m[future];
+  if (typeof t0 !== "number" || typeof t1 !== "number") return 0;
+  return (t1 - t0) / (future - idx);  // °C per hour
 }
-function renderRooms(wd) {
-  const out = wd?.outside_now;
-  if (out != null) {
-    $("rooms-out").textContent = (Math.round(out * 10) / 10).toFixed(1) + "°";
+
+// Scatter plot: temp (x) vs humidity (y). One dot per room + outside.
+// Vector = trend direction & magnitude (horizontal, since we only have
+// temperature trend; humidity trend isn't tracked yet). Stable = no vector.
+function renderRooms(wd, om) {
+  const C = colors();
+  const W = 600, H = 400;
+  const m = { l: 46, r: 30, t: 22, b: 38 };
+  const innerW = W - m.l - m.r;
+  const innerH = H - m.t - m.b;
+
+  // Gather data points
+  const dots = [];
+  const outTemp = wd?.outside_now ?? om?.current?.temperature_2m;
+  const outHum  = om?.current?.relative_humidity_2m;
+  const outTrend = computeOutsideTrend(om);
+  if (outTemp != null && outHum != null) {
+    dots.push({ key: "buiten", label: "BUITEN", temp: outTemp, hum: outHum, trend: outTrend, kind: "outside" });
   }
-  const rows = ROOM_ORDER.map((key) => {
+  for (const key of ROOM_ORDER) {
     const r = wd?.rooms?.[key];
-    const name = ROOM_LABELS[key];
-    if (!r) return `<div class="r-row"><span class="r-name">${name}</span><span class="dim">—</span><span></span><span></span><span></span></div>`;
-    const inside = r.inside;
-    const insideTxt = inside != null ? (Math.round(inside * 10) / 10).toFixed(1) : "—";
-    const delta = (inside != null && out != null)
-      ? `${inside - out >= 0 ? "+" : ""}${Math.round((inside - out) * 10) / 10}°`
-      : "";
-    const stamp = r.advice === "open"
-        ? `<span class="stamp stamp-open">open</span>`
-      : r.advice === "dicht"
-        ? `<span class="stamp stamp-dicht">dicht</span>`
-        : `<span class="stamp" style="color:var(--ink-soft)">—</span>`;
-    return `
-      <div class="r-row">
-        <span class="r-name">${name}</span>
-        <span class="r-temp">${insideTxt}<span class="deg">°</span></span>
-        <span class="r-trend">${trendArrow(r.trend)}</span>
-        <span class="r-delta">${delta}</span>
-        <span class="r-stamp-cell">${stamp}</span>
-      </div>`;
+    if (!r || r.inside == null || r.humidity == null) continue;
+    dots.push({
+      key, label: ROOM_SHORT[key] || key.toUpperCase(),
+      temp: r.inside, hum: r.humidity,
+      trend: typeof r.trend === "number" ? r.trend : 0,
+      advice: r.advice, kind: "room",
+    });
+  }
+  if (dots.length === 0) return;
+
+  // Auto-scale with breathing room. Snap to whole numbers / 10% steps.
+  const temps = dots.map(d => d.temp);
+  const hums  = dots.map(d => d.hum);
+  let tMin = Math.floor(Math.min(...temps) - 1);
+  let tMax = Math.ceil (Math.max(...temps) + 1);
+  if (tMax - tMin < 10) { const mid = (tMin + tMax) / 2; tMin = Math.floor(mid - 5); tMax = Math.ceil(mid + 5); }
+  let hMin = Math.max(0,   Math.floor((Math.min(...hums) - 5) / 10) * 10);
+  let hMax = Math.min(100, Math.ceil ((Math.max(...hums) + 5) / 10) * 10);
+  if (hMax - hMin < 30) { const mid = (hMin + hMax) / 2; hMin = Math.max(0, Math.floor(mid - 15)); hMax = Math.min(100, Math.ceil(mid + 15)); }
+
+  const X = (t) => m.l + ((t - tMin) / (tMax - tMin)) * innerW;
+  const Y = (h) => m.t + (1 - (h - hMin) / (hMax - hMin)) * innerH;
+
+  // Gridlines + tick labels (every 2 °C and every 10%).
+  const xTicks = [], yTicks = [];
+  for (let t = Math.ceil(tMin / 2) * 2; t <= tMax; t += 2) xTicks.push(t);
+  for (let h = Math.ceil(hMin / 10) * 10; h <= hMax; h += 10) yTicks.push(h);
+  const grid = [
+    ...xTicks.map(t => `<line x1="${X(t).toFixed(1)}" y1="${m.t}" x2="${X(t).toFixed(1)}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
+    ...yTicks.map(h => `<line x1="${m.l}" y1="${Y(h).toFixed(1)}" x2="${W - m.r}" y2="${Y(h).toFixed(1)}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
+  ].join("");
+  const xLabels = xTicks.map(t => `<text x="${X(t).toFixed(1)}" y="${H - m.b + 14}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="middle">${t}°</text>`).join("");
+  const yLabels = yTicks.map(h => `<text x="${m.l - 6}" y="${(Y(h) + 3).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="end">${h}%</text>`).join("");
+
+  const axes = `
+    <line x1="${m.l}" y1="${m.t}" x2="${m.l}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.28" stroke-width="0.8"/>
+    <line x1="${m.l}" y1="${H - m.b}" x2="${W - m.r}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.28" stroke-width="0.8"/>
+  `;
+  const titles = `
+    <text x="${W - m.r}" y="${H - 4}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="end">TEMPERATUUR →</text>
+    <text x="${m.l}" y="${m.t - 8}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="start">↑ VOCHT</text>
+  `;
+
+  // Dots + vectors
+  const STABLE = 0.15;           // °C/h threshold below which we draw no vector
+  const PX_PER_DEG_H = 70;       // horizontal pixels per (°C/h) of trend
+  const VEC_MIN = 14, VEC_MAX = 70;
+
+  // Pre-compute coordinates so we can pick label positions that don't
+  // overlap their dot or each other badly.
+  const placed = dots.map(d => ({ ...d, px: X(d.temp), py: Y(d.hum) }));
+
+  const dotsSVG = placed.map((d, i) => {
+    const color = d.kind === "outside"
+      ? C.sun
+      : (d.advice === "dicht" ? C.clay : C.moss);
+
+    let vector = "";
+    if (Math.abs(d.trend) > STABLE) {
+      const dir = d.trend > 0 ? 1 : -1;
+      const len = clamp(Math.abs(d.trend) * PX_PER_DEG_H, VEC_MIN, VEC_MAX);
+      const x2 = d.px + dir * len;
+      vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${d.py.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`;
+    }
+
+    const dot = d.kind === "outside"
+      ? `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="2"/>`
+      : `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="6" fill="${color}" stroke="${C.bg2}" stroke-width="1.5"/>`;
+
+    // Place label opposite the vector when possible, else to the right.
+    const labelLeft = d.trend > STABLE;  // vector points right → label left
+    const lx = labelLeft ? d.px - 12 : d.px + 12;
+    const ly = d.py + 4;
+    const anchor = labelLeft ? "end" : "start";
+    const label = `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-family="JetBrains Mono" font-size="10" letter-spacing="2" fill="${C.ink}" text-anchor="${anchor}">${d.label}</text>`;
+
+    return `${vector}${dot}${label}`;
   }).join("");
-  $("rooms-list").innerHTML = rows;
+
+  const innerSVG = `${grid}${axes}${xLabels}${yLabels}${titles}${dotsSVG}`;
+  const oldEl = $("rooms-scatter");
+  if (!oldEl) return;
+  const cls = oldEl.getAttribute("class") || "";
+  const par = oldEl.getAttribute("preserveAspectRatio") || "xMidYMid meet";
+  oldEl.outerHTML = `<svg xmlns="http://www.w3.org/2000/svg" id="rooms-scatter" class="${cls}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="${par}">${innerSVG}</svg>`;
 }
 
 // ─── Soil ────────────────────────────────────────────────────

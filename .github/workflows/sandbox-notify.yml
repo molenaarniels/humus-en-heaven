@@ -26,9 +26,6 @@ on:
           - dicht
           - afgedekt
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   notify:
     runs-on: ubuntu-latest
@@ -37,12 +34,12 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python setup
-        uses: actions/setup-python@v5.4.0
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 

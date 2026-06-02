@@ -1030,7 +1030,18 @@ def assess_status(data: Dict, zone: str = "lawn") -> Dict:
         # dan houdt de verwachte regen de bodem afdoende vochtig en is
         # irrigatie nu niet nodig.
         SKIP_HORIZON_D = 3
-        rain_covers = days_to_stress is None or days_to_stress > SKIP_HORIZON_D
+        # Dry-soil guard: boven deze *gemeten* uitputting vertrouwen we niet
+        # langer op voorspelde regen. De forecast (raw, niet probability-
+        # gewogen) kan watergeven één dag tegelijk uitstellen; mocht een
+        # voorspelde bui structureel uitblijven, dan voorkomt deze grens dat
+        # de bodem op steeds-verschuivende "morgen regen" tot echte stress
+        # uitdroogt. Onder de grens is er genoeg marge om de (meest
+        # betrouwbare) nabije regen te vertrouwen; erboven weegt het risico
+        # van een gemiste forecast zwaarder dan te vroeg water geven.
+        DRY_GUARD_PCT = 65
+        rain_covers = (dep < DRY_GUARD_PCT
+                       and (days_to_stress is None
+                            or days_to_stress > SKIP_HORIZON_D))
         if rain_covers:
             horizon_txt = (f"~{days_to_stress} dagen" if days_to_stress
                            else "de komende dagen")

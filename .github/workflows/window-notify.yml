@@ -75,8 +75,21 @@ jobs:
             else
               git commit -m "data: window advisor refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
               # Andere workflows kunnen in hetzelfde venster gepusht hebben — rebase eerst.
-              git pull --rebase origin "${GITHUB_REF_NAME}" || true
-              git push || echo "::warning::push failed this iteration, continuing"
+              # window_data.json wordt elke run volledig opnieuw gegenereerd, dus een
+              # content-conflict op main is onvermijdelijk. Ruim een eventueel vastgelopen
+              # rebase van een vorige iteratie eerst op (anders blijft .git/rebase-merge
+              # staan en raakt de HEAD detached → alle latere pushes falen), en los het
+              # conflict op door altijd onze vers gegenereerde versie te houden
+              # (-X theirs houdt tijdens een rebase de commit die opnieuw wordt afgespeeld).
+              git rebase --abort 2>/dev/null || true
+              if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+                git push || echo "::warning::push failed this iteration, continuing"
+              else
+                # Rebase kon niet schoon afronden — afbreken zodat we op een branch
+                # blijven (geen detached HEAD) en de volgende iteratie het opnieuw probeert.
+                git rebase --abort 2>/dev/null || true
+                echo "::warning::rebase failed this iteration, skipping push, continuing"
+              fi
             fi
           }
 

@@ -18,6 +18,8 @@ import requests
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
+from notify import send_telegram
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -436,19 +438,6 @@ def build_message(location, forecast, today, pollen=None):
     return "\n".join(parts)
 
 
-def send_telegram(message):
-    token   = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_GROUP_ID"]
-    url = "https://api.telegram.org/bot" + token + "/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }, timeout=20)
-    r.raise_for_status()
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -468,7 +457,8 @@ def main():
         print("DRY_RUN=1, niet verzonden.")
         return
 
-    send_telegram(message)
+    send_telegram(message, chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+                  parse_mode="Markdown")
     print("Verzonden naar Telegram.")
 
 

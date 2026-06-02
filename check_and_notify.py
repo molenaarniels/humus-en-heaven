@@ -25,6 +25,7 @@ from pathlib import Path
 
 import requests
 
+from notify import send_telegram
 from soil_model import (apply_et0_and_balance, assess_status, build_full_dataset,
                         build_monthly_totals_from_days, fetch_open_meteo_archive)
 
@@ -107,27 +108,6 @@ def load_irrigations_from_gist() -> dict:
     except Exception as e:
         print(f"[irrigations] kon niet laden: {e}")
         return {}
-
-
-def send_telegram(text: str) -> bool:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat:
-        print("[telegram] geen creds, overslaan")
-        return False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True},
-            timeout=10,
-        )
-        r.raise_for_status()
-        print("[telegram] ✓ verzonden")
-        return True
-    except Exception as e:
-        print(f"[telegram] fout: {e}")
-        return False
 
 
 def send_email(subject: str, body_html: str) -> bool:

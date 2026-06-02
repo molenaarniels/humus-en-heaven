@@ -27,9 +27,9 @@ import sys
 import requests
 from datetime import datetime, timezone
 
+from notify import send_telegram
+
 # ── Configuratie ──────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
 
 LATITUDE  = 52.0907
@@ -101,20 +101,6 @@ def first_dry_day(forecast: list[dict], from_index: int = 1) -> str | None:
         if not is_rain_expected(day):
             return day["date"]
     return None
-
-
-# ── Telegram ─────────────────────────────────────────────────────────────────
-
-def send_telegram(message: str) -> bool:
-    url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    resp = requests.post(url, data=data, timeout=10)
-    if resp.ok:
-        print(f"[telegram] Verzonden: {message[:80]}...")
-        return True
-    else:
-        print(f"[telegram] Fout: {resp.status_code} {resp.text}", file=sys.stderr)
-        return False
 
 
 # ── Ochtendlogica (07:00) ─────────────────────────────────────────────────────

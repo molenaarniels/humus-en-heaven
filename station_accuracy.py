@@ -36,6 +36,8 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from notify import send_telegram
+
 UTRECHT_LAT = 52.0907
 UTRECHT_LON = 5.1214
 TZ = ZoneInfo("Europe/Amsterdam")
@@ -355,23 +357,6 @@ def build_report(stats: dict) -> str:
     return "\n".join(L)
 
 
-def send_telegram(text: str) -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat:
-        print("[TG] geen credentials — overgeslagen")
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": text, "parse_mode": "Markdown"},
-            timeout=15,
-        ).raise_for_status()
-        print("[TG] verstuurd")
-    except Exception as e:
-        print(f"[TG] mislukt: {e}")
-
-
 def telegram_summary(stats: dict) -> str:
     o, pm = stats["overall"], stats["sunny_afternoon"]
     lines = ["🌡️ *Weerstation-check* (WU − ERA5)",
@@ -423,7 +408,7 @@ def main() -> None:
     print(f"[OUT] {OUT_PATH} geschreven ({len(rows)} paren)")
 
     if os.environ.get("SEND_TELEGRAM") == "1" and os.environ.get("DRY_RUN") != "1":
-        send_telegram(telegram_summary(stats))
+        send_telegram(telegram_summary(stats), parse_mode="Markdown")
 
 
 if __name__ == "__main__":

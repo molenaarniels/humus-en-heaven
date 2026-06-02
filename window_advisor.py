@@ -33,6 +33,8 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from notify import send_telegram
+
 import requests
 
 from wu_bias import correct_temp
@@ -584,21 +586,6 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     }
 
 
-# ── Telegram (weerbriefing-groep) ─────────────────────────────────────────────────
-
-def send_telegram(message: str) -> None:
-    token   = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_GROUP_ID"]
-    url = "https://api.telegram.org/bot" + token + "/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }, timeout=20)
-    r.raise_for_status()
-
-
 # ── Entrypoint ──────────────────────────────────────────────────────────────────
 
 def main():
@@ -702,7 +689,8 @@ def main():
     if os.environ.get("DRY_RUN") == "1":
         print("DRY_RUN=1, niet verzonden.")
     else:
-        send_telegram(message)
+        send_telegram(message, chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+                      parse_mode="Markdown")
         state["last_notification"] = now.isoformat()
         print("Verzonden naar Telegram.")
 

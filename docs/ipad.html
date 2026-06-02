@@ -125,20 +125,30 @@ html, body {
 .wx-temps {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 14px;
   font-family: "Cormorant Garamond", serif;
 }
-.wx-max {
+.wx-temp { display: flex; flex-direction: column; align-items: flex-end; line-height: 0.9; }
+.wx-perceived {
   font-size: 64px;
   font-weight: 500;
-  line-height: 0.85;
   color: var(--ink);
+  font-feature-settings: "tnum";
 }
-.wx-max .deg { font-size: 32px; color: var(--ink-soft); }
-.wx-min {
+.wx-perceived .deg { font-size: 32px; color: var(--ink-soft); }
+.wx-measured {
   font-size: 28px;
   color: var(--ink-soft);
   font-style: italic;
+  font-feature-settings: "tnum";
+}
+.wx-micro {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-top: 2px;
 }
 .wx-meta {
   grid-column: 1 / -1;
@@ -188,10 +198,20 @@ html, body {
 /* ─── BODY ────────────────────────────────────────────────── */
 .body {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "rooms rooms"
+    "col-left col-right"
+    "chips chips";
+  gap: 16px 22px;
   min-height: 0;
 }
+.rooms-panel { grid-area: rooms; }
+.col-left  { grid-area: col-left;  display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.col-right { grid-area: col-right; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.col-right .panel:last-child { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.col-right .blocks-list { flex: 1; min-height: 0; overflow: hidden; }
 .panel-title {
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
@@ -202,63 +222,71 @@ html, body {
   font-weight: 500;
 }
 
-/* rooms */
-.rooms {
+/* rooms — compact single panel */
+.rooms-panel { padding: 14px 22px 14px; background: var(--bg-2); border: 1px solid var(--hair-soft); border-radius: 4px; }
+.rooms-head {
   display: flex;
-  flex-direction: column;
-  min-height: 0;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
 }
-.rooms-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 14px;
-  min-height: 0;
-}
-.room {
-  padding: 18px 20px;
-  background: var(--bg-2);
-  border: 1px solid var(--hair-soft);
-  border-radius: 4px;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  position: relative;
-  overflow: hidden;
-}
-.room-name {
+.rooms-head .panel-title { margin-bottom: 0; }
+.rooms-out {
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--ink-soft);
 }
-.room-temp-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-top: 4px;
-}
-.room-temp {
+.rooms-out strong {
   font-family: "Cormorant Garamond", serif;
-  font-size: 56px;
+  font-style: italic;
   font-weight: 500;
-  line-height: 0.9;
+  font-size: 18px;
   color: var(--ink);
-  font-feature-settings: "tnum";
+  letter-spacing: 0;
+  margin: 0 6px;
 }
-.room-temp .deg { font-size: 26px; color: var(--ink-soft); }
-.room-trend { font-size: 18px; color: var(--ink-soft); margin-left: 6px; }
-.room-foot {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 6px;
+.rooms-out em {
+  font-style: italic;
+  text-transform: none;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+.rooms-list { display: flex; flex-direction: column; }
+.r-row {
+  display: grid;
+  grid-template-columns: 1.1fr auto auto 0.7fr auto;
+  align-items: baseline;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--hair);
+}
+.r-row:last-child { border-bottom: none; }
+.r-name {
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
   color: var(--ink-soft);
 }
-.room-out { letter-spacing: 0.05em; }
+.r-temp {
+  font-family: "Cormorant Garamond", serif;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1;
+  font-feature-settings: "tnum";
+}
+.r-temp .deg { font-size: 16px; color: var(--ink-soft); }
+.r-trend { font-size: 16px; color: var(--ink-soft); width: 14px; text-align: center; }
+.r-delta {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+}
+.r-stamp-cell { justify-self: end; }
 .stamp {
   display: inline-block;
   padding: 3px 9px;
@@ -273,14 +301,6 @@ html, body {
 .stamp-open { color: var(--moss); }
 .stamp-dicht { color: var(--clay); }
 
-/* aside stack */
-.aside {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 0;
-  overflow: hidden;
-}
 .panel {
   padding: 14px 18px 16px;
   background: var(--bg-2);
@@ -491,8 +511,14 @@ html, body {
     <div class="hero-right">
       <div class="wx-icon" id="wx-icon">·</div>
       <div class="wx-temps">
-        <span class="wx-max mono"><span id="wx-max">—</span><span class="deg">°</span></span>
-        <span class="wx-min mono" id="wx-min">—°</span>
+        <div class="wx-temp">
+          <span class="wx-perceived mono"><span id="wx-perceived">—</span><span class="deg">°</span></span>
+          <span class="wx-micro">voelt als</span>
+        </div>
+        <div class="wx-temp">
+          <span class="wx-measured mono" id="wx-measured">—°</span>
+          <span class="wx-micro">gemeten</span>
+        </div>
       </div>
       <div class="wx-meta" id="wx-meta">—</div>
     </div>
@@ -510,11 +536,14 @@ html, body {
   </section>
 
   <section class="body">
-    <div class="rooms">
-      <div class="panel-title">binnen · buiten</div>
-      <div class="rooms-grid" id="rooms-grid"></div>
+    <div class="rooms-panel">
+      <div class="rooms-head">
+        <span class="panel-title">binnen</span>
+        <span class="rooms-out">buiten <strong id="rooms-out">—°</strong></span>
+      </div>
+      <div class="rooms-list" id="rooms-list"></div>
     </div>
-    <div class="aside">
+    <div class="col-left">
       <div class="panel">
         <div class="panel-title">tuin</div>
         <div class="soil-row" id="soil-row"></div>
@@ -528,12 +557,14 @@ html, body {
         </div>
         <div class="mow-reason" id="mow-reason"></div>
       </div>
+    </div>
+    <div class="col-right">
       <div class="panel">
         <div class="panel-title">vandaag</div>
         <div class="blocks-list" id="blocks-list"></div>
       </div>
-      <div class="chips" id="chips"></div>
     </div>
+    <div class="chips" id="chips"></div>
   </section>
 
 </main>
@@ -655,6 +686,7 @@ async function loadAll() {
     fetchJSON("mowing_data.json" + bust()),
     fetchJSON("window_data.json" + bust()),
     fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
+      `&current=temperature_2m,apparent_temperature,weathercode` +
       `&hourly=temperature_2m,precipitation,precipitation_probability,uv_index,weathercode` +
       `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weathercode,uv_index_max,precipitation_probability_max` +
       `&timezone=Europe%2FAmsterdam&forecast_days=1`),
@@ -666,14 +698,17 @@ async function loadAll() {
 
   logDiag(`fetch: soil=${soil.status} mow=${mowing.status} win=${windowData.status} om=${om.status} sb=${sandbox.status} pln=${pollen.status}`);
 
+  const wd = windowData.status === "fulfilled" ? windowData.value : null;
   if (om.status === "fulfilled") {
     safe("sun-times", () => {
       const d = om.value.daily;
       sunrise = new Date(d.sunrise[0]);
       sunset  = new Date(d.sunset[0]);
     });
-    safe("hero",     () => renderHero(om.value.daily));
+    safe("hero",     () => renderHero(om.value, wd));
     safe("timeline", () => renderTimeline(om.value.hourly));
+  } else {
+    safe("hero", () => renderHero(null, wd));
   }
   if (soil.status       === "fulfilled") safe("soil",  () => renderSoil(soil.value));
   if (mowing.status     === "fulfilled") safe("mow",   () => renderMow(mowing.value));
@@ -694,17 +729,38 @@ async function loadAll() {
 }
 
 // ─── Hero ────────────────────────────────────────────────────
-function renderHero(daily) {
-  const code = daily.weathercode[0];
+function renderHero(om, windowData) {
+  const daily   = om?.daily;
+  const current = om?.current;
+  const code    = current?.weathercode ?? daily?.weathercode?.[0];
   const [glyph, label] = wxFor(code);
+
+  // Big = perceived/feels-like (Open-Meteo current apparent_temperature).
+  // Small italic = "geijkt" — the WU station value, bias-corrected by the
+  // window advisor in window_data.outside_now. Fallback to Open-Meteo
+  // current temperature_2m if the window advisor hasn't refreshed.
+  const perceived = current?.apparent_temperature;
+  const measured  = windowData?.outside_now ?? current?.temperature_2m;
+  const measuredSrc = windowData?.outside_now != null ? windowData.outside_source : "om";
+
   $("wx-icon").textContent = glyph;
-  $("wx-max").textContent  = Math.round(daily.temperature_2m_max[0]);
-  $("wx-min").textContent  = Math.round(daily.temperature_2m_min[0]) + "°";
-  const pop = daily.precipitation_probability_max?.[0];
-  const uv  = daily.uv_index_max?.[0];
+  $("wx-perceived").textContent = perceived != null ? Math.round(perceived) : "—";
+  $("wx-measured").textContent  = measured  != null ? (Math.round(measured * 10) / 10).toFixed(1) + "°" : "—°";
+
+  // Update the "gemeten" micro-label to show source (wu = station)
+  const microEls = document.querySelectorAll(".wx-temp .wx-micro");
+  if (microEls.length >= 2 && measuredSrc) {
+    microEls[1].textContent = measuredSrc === "wu" ? "gemeten · station" : "gemeten";
+  }
+
+  const dMax = daily?.temperature_2m_max?.[0];
+  const dMin = daily?.temperature_2m_min?.[0];
+  const pop  = daily?.precipitation_probability_max?.[0];
+  const uv   = daily?.uv_index_max?.[0];
   const bits = [label];
-  if (pop != null) bits.push(`regen ${pop}%`);
-  if (uv  != null) bits.push(`uv ${Math.round(uv)}`);
+  if (dMax != null && dMin != null) bits.push(`↑${Math.round(dMax)}° ↓${Math.round(dMin)}°`);
+  if (pop  != null) bits.push(`regen ${pop}%`);
+  if (uv   != null) bits.push(`uv ${Math.round(uv)}`);
   $("wx-meta").textContent = bits.join(" · ");
 }
 
@@ -824,40 +880,42 @@ function trendArrow(slope) {
   return "→";
 }
 function renderRooms(wd) {
-  const out  = wd.outside_now != null ? Math.round(wd.outside_now * 10) / 10 : null;
+  const out = wd?.outside_now;
+  if (out != null) {
+    $("rooms-out").textContent = (Math.round(out * 10) / 10).toFixed(1) + "°";
+  }
   const rows = ROOM_ORDER.map((key) => {
-    const r = wd.rooms?.[key];
-    if (!r) return `<div class="room"><div class="room-name">${ROOM_LABELS[key]}</div><div class="dim">geen data</div></div>`;
-    const inside = r.inside != null ? Math.round(r.inside * 10) / 10 : null;
-    const advice = r.advice || "—";
-    const stamp  = advice === "open"
+    const r = wd?.rooms?.[key];
+    const name = ROOM_LABELS[key];
+    if (!r) return `<div class="r-row"><span class="r-name">${name}</span><span class="dim">—</span><span></span><span></span><span></span></div>`;
+    const inside = r.inside;
+    const insideTxt = inside != null ? (Math.round(inside * 10) / 10).toFixed(1) : "—";
+    const delta = (inside != null && out != null)
+      ? `${inside - out >= 0 ? "+" : ""}${Math.round((inside - out) * 10) / 10}°`
+      : "";
+    const stamp = r.advice === "open"
         ? `<span class="stamp stamp-open">open</span>`
-      : advice === "dicht"
+      : r.advice === "dicht"
         ? `<span class="stamp stamp-dicht">dicht</span>`
         : `<span class="stamp" style="color:var(--ink-soft)">—</span>`;
-    const arrow = trendArrow(r.trend);
-    const outTxt = out != null ? `buiten ${out}°` : "";
     return `
-      <div class="room">
-        <div class="room-name">${ROOM_LABELS[key]}</div>
-        <div class="room-temp-row">
-          <span class="room-temp">${inside != null ? inside.toFixed(1) : "—"}<span class="deg">°</span></span>
-          <span class="room-trend">${arrow}</span>
-        </div>
-        <div class="room-foot">
-          <span class="room-out">${outTxt}</span>
-          ${stamp}
-        </div>
+      <div class="r-row">
+        <span class="r-name">${name}</span>
+        <span class="r-temp">${insideTxt}<span class="deg">°</span></span>
+        <span class="r-trend">${trendArrow(r.trend)}</span>
+        <span class="r-delta">${delta}</span>
+        <span class="r-stamp-cell">${stamp}</span>
       </div>`;
   }).join("");
-  $("rooms-grid").innerHTML = rows;
+  $("rooms-list").innerHTML = rows;
 }
 
 // ─── Soil ────────────────────────────────────────────────────
-function gaugeSVG(depletionPct, state) {
+// Gauge fill = beschikbaar water (100 - depletion). Full ring = full bucket.
+function gaugeSVG(availablePct, state) {
   const r = 22, cx = 26, cy = 26;
   const circ = 2 * Math.PI * r;
-  const filled = Math.max(0, Math.min(100, depletionPct));
+  const filled = Math.max(0, Math.min(100, availablePct));
   const dash = (filled / 100) * circ;
   const s = getComputedStyle(document.documentElement);
   const lit = (name, fb) => (s.getPropertyValue(name) || "").trim() || fb;
@@ -884,21 +942,26 @@ function renderSoil(d) {
   ];
   $("soil-row").innerHTML = zones.map(z => {
     const dep = z.status?.depletion_pct ?? 0;
+    const avail = Math.max(0, Math.min(100, 100 - dep));
     const st  = z.status?.state || "moist";
     return `
       <div class="gauge">
-        ${gaugeSVG(dep, st)}
+        ${gaugeSVG(avail, st)}
         <div class="gauge-info">
           <div class="gauge-zone">${z.key}</div>
-          <div class="gauge-pct">${Math.round(dep)}<span style="font-size:14px;color:var(--ink-soft)">%</span></div>
+          <div class="gauge-pct">${Math.round(avail)}<span style="font-size:14px;color:var(--ink-soft)">%</span></div>
           <div class="gauge-state">${STATE_NL[st] || st}</div>
         </div>
       </div>`;
   }).join("");
 
-  // "volgende beurt" — pick the highest-priority advice
-  const advice = soilNextText(ls, ss);
-  $("soil-next-text").textContent = advice;
+  $("soil-next-text").textContent = soilNextText(ls, ss);
+}
+function fmtMm(v) {
+  // proposal_mm == 0 is a legitimate value (no action) — keep it distinct
+  // from missing data, which we still want to show as "?".
+  if (typeof v !== "number") return "?";
+  return Number.isInteger(v) ? `${v}` : v.toFixed(1);
 }
 function soilNextText(ls, ss) {
   const rank = { high: 3, medium: 2, low: 1, none: 0 };
@@ -909,12 +972,18 @@ function soilNextText(ls, ss) {
   const top = candidates[0];
   if (!top || top.priority === "none") {
     const dts = candidates.map(c => c.days_to_stress).filter(d => d != null);
-    if (dts.length) return `over ~${Math.min(...dts)} dagen droogtegrens`;
+    if (dts.length) return `droogtegrens over ~${Math.min(...dts)} dagen`;
     return "geen actie nodig";
   }
-  if (top.priority === "high")   return `nu ${top.proposal_mm || "?"} mm op ${top.zone}`;
-  if (top.priority === "medium") return `binnen 1–2 dagen ${top.proposal_mm || "?"} mm op ${top.zone}`;
-  if (top.priority === "low")    return `${top.zone}: ${top.proposal_mm || "?"} mm binnen 3 dagen`;
+  const mm = typeof top.proposal_mm === "number" ? top.proposal_mm : null;
+  // priority low + 0 mm = light watch-list, no real recommendation
+  if (top.priority === "low" && (mm === 0 || mm == null)) {
+    const dts = candidates.map(c => c.days_to_stress).filter(d => d != null);
+    return dts.length ? `in de gaten houden — grens over ~${Math.min(...dts)} dagen` : "in de gaten houden";
+  }
+  if (top.priority === "high")   return `nu ${fmtMm(mm)} mm op ${top.zone}`;
+  if (top.priority === "medium") return `binnen 1–2 dagen ${fmtMm(mm)} mm op ${top.zone}`;
+  if (top.priority === "low")    return `${top.zone}: ${fmtMm(mm)} mm binnen 3 dagen`;
   return "—";
 }
 
@@ -1004,6 +1073,7 @@ function pollenLevel(v) {
   return "zeer hoog";
 }
 function pollenChipText(pollen) {
+  // Returns { txt, color } or null if data unusable.
   if (!pollen?.hourly?.time) return null;
   const now = new Date();
   const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -1012,16 +1082,20 @@ function pollenChipText(pollen) {
     .filter(i => i >= 0);
   if (!idx.length) return null;
   const active = [];
+  let anyData = false;
   for (const [key, label] of Object.entries(POLLEN_NL)) {
     const series = pollen.hourly[key];
     if (!Array.isArray(series)) continue;
     const vals = idx.map(i => series[i]).filter(v => typeof v === "number");
     if (!vals.length) continue;
+    anyData = true;
     const peak = Math.max(...vals);
     const lvl = pollenLevel(peak);
     if (lvl) active.push(`${label} ${lvl}`);
   }
-  return active.length ? active.join(", ") : null;
+  if (!anyData) return null;
+  if (!active.length) return { txt: "rustig", color: "var(--ink-soft)" };
+  return { txt: active.join(", "), color: "var(--warn)" };
 }
 function renderChips({ windowData, om, sandbox, pollen }) {
   const chips = [];
@@ -1033,7 +1107,7 @@ function renderChips({ windowData, om, sandbox, pollen }) {
     chips.push(`<span class="chip" style="color:${meta.color}">zandbak <strong>${meta.txt}</strong></span>`);
   }
   const pln = pollenChipText(pollen);
-  if (pln) chips.push(`<span class="chip" style="color:var(--warn)">pollen <strong>${pln}</strong></span>`);
+  if (pln) chips.push(`<span class="chip" style="color:${pln.color}">pollen <strong>${pln.txt}</strong></span>`);
   if (windowData?.bias != null) {
     const b = Math.round(windowData.bias * 10) / 10;
     const sign = b > 0 ? "+" : "";

@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="nl" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Humus">
+<meta name="theme-color" content="#f5efe6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c0e14" media="(prefers-color-scheme: dark)">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self' https://api.open-meteo.com;
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Humus &amp; Heaven · vandaag</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<style>
+:root {
+  --bg: #f5efe6;
+  --bg-2: #ebe2d2;
+  --ink: #2a2520;
+  --ink-soft: #6b5d4a;
+  --ink-faint: #b5a690;
+  --hair: rgba(42, 37, 32, 0.15);
+  --hair-soft: rgba(42, 37, 32, 0.08);
+  --moss: #5a6b3e;
+  --sage: #8aa376;
+  --sun: #c9956a;
+  --rain: #7a8fa3;
+  --clay: #b86b4a;
+  --good: #5a6b3e;
+  --warn: #c4823f;
+  --dry: #b86b4a;
+}
+[data-theme="dark"] {
+  --bg: #0c0e14;
+  --bg-2: #14181f;
+  --ink: #e8e0d4;
+  --ink-soft: #968b7a;
+  --ink-faint: #4e4a44;
+  --hair: rgba(232, 224, 212, 0.13);
+  --hair-soft: rgba(232, 224, 212, 0.06);
+  --moss: #9bb085;
+  --sage: #b5c8a1;
+  --sun: #d4a47a;
+  --rain: #8aa3b8;
+  --clay: #c97e60;
+  --good: #9bb085;
+  --warn: #d4a47a;
+  --dry: #c97e60;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Cormorant Garamond", Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background 1.2s ease, color 1.2s ease;
+}
+.mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-feature-settings: "tnum"; }
+.caps { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink-soft); }
+
+.dash {
+  height: 100vh;
+  height: 100dvh;
+  padding: 24px 28px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 18px;
+  background: radial-gradient(ellipse at top right, var(--bg-2) 0%, var(--bg) 70%);
+}
+
+/* ─── HERO ────────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 28px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--hair);
+}
+.hero-left { display: flex; align-items: baseline; gap: 22px; }
+.clock {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 300;
+  font-size: 88px;
+  line-height: 0.85;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+.clock-sec { color: var(--ink-faint); font-weight: 300; }
+.date-block { padding-bottom: 6px; }
+.weekday {
+  font-style: italic;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1;
+}
+.daydate {
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+.hero-right {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 18px;
+  align-items: end;
+  padding-bottom: 4px;
+}
+.wx-icon {
+  font-size: 54px;
+  line-height: 1;
+  filter: grayscale(0.1);
+}
+.wx-temps {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: "Cormorant Garamond", serif;
+}
+.wx-max {
+  font-size: 64px;
+  font-weight: 500;
+  line-height: 0.85;
+  color: var(--ink);
+}
+.wx-max .deg { font-size: 32px; color: var(--ink-soft); }
+.wx-min {
+  font-size: 28px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.wx-meta {
+  grid-column: 1 / -1;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+/* ─── TIMELINE ────────────────────────────────────────────── */
+.timeline {
+  padding: 8px 4px 6px;
+  position: relative;
+}
+.timeline-svg {
+  width: 100%;
+  height: 90px;
+  display: block;
+}
+.timeline-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  margin-top: 4px;
+  padding: 0 2px;
+}
+.timeline-axis span { width: 24px; text-align: center; }
+.timeline-axis span:first-child { text-align: left; }
+.timeline-axis span:last-child  { text-align: right; }
+.timeline-legend {
+  position: absolute;
+  top: 8px; right: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  display: flex; gap: 14px;
+}
+.legend-dot { display: inline-block; width: 8px; height: 2px; vertical-align: middle; margin-right: 5px; }
+
+/* ─── BODY ────────────────────────────────────────────────── */
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 22px;
+  min-height: 0;
+}
+.panel-title {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 14px;
+  font-weight: 500;
+}
+
+/* rooms */
+.rooms {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.rooms-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 14px;
+  min-height: 0;
+}
+.room {
+  padding: 18px 20px;
+  background: var(--bg-2);
+  border: 1px solid var(--hair-soft);
+  border-radius: 4px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  position: relative;
+  overflow: hidden;
+}
+.room-name {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.room-temp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+.room-temp {
+  font-family: "Cormorant Garamond", serif;
+  font-size: 56px;
+  font-weight: 500;
+  line-height: 0.9;
+  color: var(--ink);
+  font-feature-settings: "tnum";
+}
+.room-temp .deg { font-size: 26px; color: var(--ink-soft); }
+.room-trend { font-size: 18px; color: var(--ink-soft); margin-left: 6px; }
+.room-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.room-out { letter-spacing: 0.05em; }
+.stamp {
+  display: inline-block;
+  padding: 3px 9px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  border: 1.2px solid currentColor;
+  border-radius: 2px;
+  transform: rotate(-1deg);
+}
+.stamp-open { color: var(--moss); }
+.stamp-dicht { color: var(--clay); }
+
+/* aside stack */
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+.panel {
+  padding: 14px 18px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--hair-soft);
+  border-radius: 4px;
+}
+
+/* soil */
+.soil-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: center;
+}
+.gauge { display: flex; align-items: center; gap: 12px; }
+.gauge svg { flex: none; }
+.gauge-info { display: flex; flex-direction: column; }
+.gauge-zone {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.gauge-pct {
+  font-family: "Cormorant Garamond", serif;
+  font-style: italic;
+  font-size: 22px;
+  line-height: 1.05;
+  margin-top: 2px;
+}
+.gauge-state {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+.soil-next {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--hair);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink);
+}
+.soil-next .lbl {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-style: normal;
+  margin-right: 6px;
+}
+
+/* mow */
+.mow-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mow-when {
+  font-family: "Cormorant Garamond", serif;
+  font-style: italic;
+  font-size: 22px;
+  line-height: 1.1;
+}
+.mow-when .big {
+  font-style: normal;
+  font-family: "Cormorant Garamond", serif;
+  font-weight: 500;
+  font-size: 32px;
+  color: var(--ink);
+}
+.mow-height {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+}
+.mow-height .mm {
+  color: var(--moss);
+  font-size: 18px;
+  font-weight: 500;
+  margin-right: 4px;
+}
+.mow-reason {
+  margin-top: 6px;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+/* time blocks */
+.blocks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.block {
+  display: grid;
+  grid-template-columns: 60px 22px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--hair);
+}
+.block:last-child { border-bottom: none; }
+.block.past { opacity: 0.4; }
+.block.now {
+  margin: 0 -10px;
+  padding: 5px 10px;
+  background: var(--bg);
+  border-radius: 3px;
+  border-bottom: 1px solid var(--hair-soft);
+}
+.block-time {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.04em;
+}
+.block-icon { font-size: 16px; line-height: 1; text-align: center; }
+.block-name { font-size: 16px; font-style: italic; }
+
+/* chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 2px;
+}
+.chip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 5px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chip strong {
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+/* status banner */
+.stale-banner {
+  position: fixed;
+  top: 8px; left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--clay);
+  color: var(--clay);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  display: none;
+  z-index: 10;
+}
+.stale-banner.show { display: block; }
+
+/* loading state */
+.loading { opacity: 0.45; }
+.dim { color: var(--ink-faint); }
+
+/* portrait fallback */
+@media (orientation: portrait) {
+  .dash { grid-template-rows: auto auto auto auto; }
+  .body { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="stale-banner" id="stale-banner">data verouderd</div>
+<main class="dash" id="dash">
+
+  <section class="hero">
+    <div class="hero-left">
+      <div class="clock mono" id="clock">--:--<span class="clock-sec" id="clock-sec"></span></div>
+      <div class="date-block">
+        <div class="weekday" id="weekday">—</div>
+        <div class="daydate caps" id="daydate">—</div>
+      </div>
+    </div>
+    <div class="hero-right">
+      <div class="wx-icon" id="wx-icon">·</div>
+      <div class="wx-temps">
+        <span class="wx-max mono"><span id="wx-max">—</span><span class="deg">°</span></span>
+        <span class="wx-min mono" id="wx-min">—°</span>
+      </div>
+      <div class="wx-meta" id="wx-meta">—</div>
+    </div>
+  </section>
+
+  <section class="timeline">
+    <div class="timeline-legend">
+      <span><span class="legend-dot" style="background:var(--sun)"></span>temp</span>
+      <span><span class="legend-dot" style="background:var(--rain)"></span>regen</span>
+    </div>
+    <svg class="timeline-svg" id="timeline" viewBox="0 0 1000 90" preserveAspectRatio="none"></svg>
+    <div class="timeline-axis">
+      <span>00</span><span>03</span><span>06</span><span>09</span><span>12</span><span>15</span><span>18</span><span>21</span><span>24</span>
+    </div>
+  </section>
+
+  <section class="body">
+    <div class="rooms">
+      <div class="panel-title">binnen · buiten</div>
+      <div class="rooms-grid" id="rooms-grid"></div>
+    </div>
+    <div class="aside">
+      <div class="panel">
+        <div class="panel-title">tuin</div>
+        <div class="soil-row" id="soil-row"></div>
+        <div class="soil-next" id="soil-next"><span class="lbl">volgende beurt</span><span id="soil-next-text">—</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">maaien</div>
+        <div class="mow-line">
+          <div class="mow-when" id="mow-when">—</div>
+          <div class="mow-height" id="mow-height"></div>
+        </div>
+        <div class="mow-reason" id="mow-reason"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">vandaag</div>
+        <div class="blocks-list" id="blocks-list"></div>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ─── Config ──────────────────────────────────────────────────
+const LAT = 52.0907, LON = 5.1214;
+const DATA_REFRESH_MS = 5 * 60 * 1000;   // 5 min
+const THEME_TICK_MS   = 60 * 1000;
+const STALE_HOURS     = 12;
+
+// Same shape as weather_briefing.py
+const WEEKDAY_BLOCKS = [
+  { name: "Fietstocht",    sh: 6,  sm: 0,  eh: 6,  em: 30, days: [1, 3],       icon: "🚲" },
+  { name: "KDV brengen",   sh: 8,  sm: 0,  eh: 9,  em: 0,  days: [0, 1, 3],    icon: "🧒" },
+  { name: "Naar kantoor",  sh: 8,  sm: 0,  eh: 9,  em: 0,  days: [2],          icon: "🏢" },
+  { name: "Naar huis",     sh: 16, sm: 30, eh: 17, em: 30, days: [0, 1, 2, 3], icon: "🏠" },
+  { name: "Sport",         sh: 19, sm: 0,  eh: 20, em: 0,  days: [0, 2],       icon: "🏃" },
+];
+const PEUTER_BLOCKS = [
+  { name: "Na fruit", sh: 9,  sm: 30, eh: 11, em: 30, days: null, icon: "🍓" },
+  { name: "Na dutje", sh: 15, sm: 0,  eh: 17, em: 0,  days: null, icon: "💤" },
+];
+const PEUTER_DAYS = new Set([4, 5, 6]); // Fri, Sat, Sun (Mon=0)
+
+// ─── WMO weather codes → glyph + label ───────────────────────
+const WX = {
+  0:  ["☀", "helder"],
+  1:  ["🌤", "vooral zonnig"],
+  2:  ["⛅", "halfbewolkt"],
+  3:  ["☁", "bewolkt"],
+  45: ["🌫", "mist"],
+  48: ["🌫", "rijp"],
+  51: ["🌦", "lichte motregen"],
+  53: ["🌦", "motregen"],
+  55: ["🌧", "stevige motregen"],
+  61: ["🌦", "lichte regen"],
+  63: ["🌧", "regen"],
+  65: ["🌧", "zware regen"],
+  71: ["🌨", "lichte sneeuw"],
+  73: ["🌨", "sneeuw"],
+  75: ["❄", "zware sneeuw"],
+  80: ["🌦", "buien"],
+  81: ["🌧", "stevige buien"],
+  82: ["⛈", "hevige buien"],
+  95: ["⛈", "onweer"],
+  96: ["⛈", "onweer + hagel"],
+  99: ["⛈", "zwaar onweer"],
+};
+function wxFor(code) { return WX[code] || ["·", "—"]; }
+
+// ─── State ───────────────────────────────────────────────────
+let sunrise = null, sunset = null; // Date or null
+const $ = (id) => document.getElementById(id);
+
+// ─── Clock + date ────────────────────────────────────────────
+function pad(n) { return String(n).padStart(2, "0"); }
+const DOW_NL  = ["zondag","maandag","dinsdag","woensdag","donderdag","vrijdag","zaterdag"];
+const MONTH_NL = ["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
+function tickClock() {
+  const d = new Date();
+  $("clock").innerHTML = `${pad(d.getHours())}:${pad(d.getMinutes())}<span class="clock-sec" id="clock-sec"> ${pad(d.getSeconds())}</span>`;
+  $("weekday").textContent = DOW_NL[d.getDay()];
+  $("daydate").textContent = `${d.getDate()} ${MONTH_NL[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+// ─── Theme auto-switch ───────────────────────────────────────
+function applyTheme() {
+  const now = new Date();
+  let dark;
+  if (sunrise && sunset) {
+    dark = now < sunrise || now > sunset;
+  } else {
+    const h = now.getHours();
+    dark = h < 6 || h >= 21;
+  }
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+
+// ─── Stale check ─────────────────────────────────────────────
+function markStaleIf(...timestamps) {
+  const now = Date.now();
+  const stale = timestamps.some(t => t && (now - new Date(t).getTime()) > STALE_HOURS * 3600 * 1000);
+  $("stale-banner").classList.toggle("show", stale);
+}
+
+// ─── Data fetches ────────────────────────────────────────────
+async function fetchJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
+  return r.json();
+}
+const bust = () => `?t=${Date.now()}`;
+
+async function loadAll() {
+  try {
+    const [soil, mowing, windowData, om] = await Promise.allSettled([
+      fetchJSON("data.json" + bust()),
+      fetchJSON("mowing_data.json" + bust()),
+      fetchJSON("window_data.json" + bust()),
+      fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
+        `&hourly=temperature_2m,precipitation,precipitation_probability,uv_index,weathercode` +
+        `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weathercode,uv_index_max,precipitation_probability_max` +
+        `&timezone=Europe%2FAmsterdam&forecast_days=1`),
+    ]);
+
+    if (om.status === "fulfilled") {
+      const d = om.value.daily;
+      sunrise = new Date(d.sunrise[0]);
+      sunset  = new Date(d.sunset[0]);
+      renderHero(d);
+      renderTimeline(om.value.hourly);
+    }
+    if (soil.status === "fulfilled")       renderSoil(soil.value);
+    if (mowing.status === "fulfilled")     renderMow(mowing.value);
+    if (windowData.status === "fulfilled") renderRooms(windowData.value);
+    renderBlocks(om.status === "fulfilled" ? om.value.hourly : null);
+    renderChips({
+      windowData: windowData.status === "fulfilled" ? windowData.value : null,
+      om:         om.status === "fulfilled" ? om.value : null,
+    });
+    markStaleIf(
+      soil.status       === "fulfilled" ? soil.value.generated_at       : null,
+      mowing.status     === "fulfilled" ? mowing.value.generated_at     : null,
+      windowData.status === "fulfilled" ? windowData.value.generated_at : null,
+    );
+  } catch (e) {
+    console.error(e);
+  }
+  applyTheme();
+}
+
+// ─── Hero ────────────────────────────────────────────────────
+function renderHero(daily) {
+  const code = daily.weathercode[0];
+  const [glyph, label] = wxFor(code);
+  $("wx-icon").textContent = glyph;
+  $("wx-max").textContent  = Math.round(daily.temperature_2m_max[0]);
+  $("wx-min").textContent  = Math.round(daily.temperature_2m_min[0]) + "°";
+  const pop = daily.precipitation_probability_max?.[0];
+  const uv  = daily.uv_index_max?.[0];
+  const bits = [label];
+  if (pop != null) bits.push(`regen ${pop}%`);
+  if (uv  != null) bits.push(`uv ${Math.round(uv)}`);
+  $("wx-meta").textContent = bits.join(" · ");
+}
+
+// ─── Timeline SVG ────────────────────────────────────────────
+function renderTimeline(hourly) {
+  // Open-Meteo (with timezone=Europe/Amsterdam) returns naïve local strings
+  // like "2026-06-02T13:00" — compare as strings to avoid TZ shifts.
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const idx = hourly.time
+    .map((t, i) => (typeof t === "string" && t.slice(0, 10) === todayStr) ? i : -1)
+    .filter(i => i >= 0);
+  if (idx.length === 0) return;
+
+  const temps  = idx.map(i => hourly.temperature_2m[i]);
+  const rains  = idx.map(i => hourly.precipitation[i]);
+  const nowH   = now.getHours() + now.getMinutes() / 60;
+
+  const W = 1000, H = 90;
+  const pad = { l: 22, r: 16, t: 8, b: 14 };
+  const innerW = W - pad.l - pad.r;
+  const innerH = H - pad.t - pad.b;
+
+  // x for hour 0..24
+  const x = (h) => pad.l + (h / 24) * innerW;
+
+  // temp scaling: stretch ±1° around min/max for breathing room
+  let tMin = Math.min(...temps), tMax = Math.max(...temps);
+  if (tMax - tMin < 4) { const mid = (tMin + tMax) / 2; tMin = mid - 2; tMax = mid + 2; }
+  tMin -= 1; tMax += 1;
+  const y = (t) => pad.t + innerH - ((t - tMin) / (tMax - tMin)) * innerH;
+
+  // rain scale: 0–4mm range
+  const rMax = Math.max(2, ...rains);
+  const ry = (r) => (r / rMax) * (innerH * 0.55);
+
+  // Build paths
+  const tempPath = temps.map((t, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(t).toFixed(1)}`).join(" ");
+  const fillPath = tempPath + ` L${x(temps.length - 1).toFixed(1)},${H - pad.b} L${x(0).toFixed(1)},${H - pad.b}Z`;
+
+  // Rain bars
+  const barW = innerW / 24 * 0.7;
+  const rainBars = rains.map((r, i) => {
+    if (r < 0.1) return "";
+    const bx = x(i + 0.5) - barW / 2;
+    const bh = ry(r);
+    return `<rect x="${bx.toFixed(1)}" y="${pad.t}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--rain)" opacity="0.55" rx="1"/>`;
+  }).join("");
+
+  // Grid lines at 6/12/18
+  const grid = [6, 12, 18].map(h => `<line x1="${x(h)}" y1="${pad.t}" x2="${x(h)}" y2="${H - pad.b}" stroke="var(--hair)" stroke-width="0.5" stroke-dasharray="2,3"/>`).join("");
+
+  // Now marker
+  const nowMarker = `
+    <line x1="${x(nowH)}" y1="${pad.t - 2}" x2="${x(nowH)}" y2="${H - pad.b}" stroke="var(--ink)" stroke-width="1.2"/>
+    <circle cx="${x(nowH)}" cy="${y(temps[Math.min(23, Math.floor(nowH))])}" r="3" fill="var(--ink)"/>
+  `;
+
+  // Temp range label at min/max
+  const iMax = temps.indexOf(Math.max(...temps));
+  const iMin = temps.indexOf(Math.min(...temps));
+  const labels = `
+    <text x="${x(iMax)}" y="${(y(temps[iMax]) - 4).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)" text-anchor="middle">${Math.round(temps[iMax])}°</text>
+    <text x="${x(iMin)}" y="${(y(temps[iMin]) + 10).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)" text-anchor="middle">${Math.round(temps[iMin])}°</text>
+  `;
+
+  $("timeline").innerHTML = `
+    <defs>
+      <linearGradient id="tempFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--sun)" stop-opacity="0.28"/>
+        <stop offset="100%" stop-color="var(--sun)" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>
+    ${grid}
+    ${rainBars}
+    <path d="${fillPath}" fill="url(#tempFill)"/>
+    <path d="${tempPath}" fill="none" stroke="var(--sun)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    ${labels}
+    ${nowMarker}
+  `;
+}
+
+// ─── Rooms ───────────────────────────────────────────────────
+const ROOM_LABELS = {
+  "Living room": "Woonkamer",
+  "Ted": "Ted",
+  "hotties": "Hotties",
+  "office": "Werkkamer",
+};
+const ROOM_ORDER = ["Living room", "Ted", "hotties", "office"];
+function trendArrow(slope) {
+  if (slope == null || !isFinite(slope)) return "→";
+  if (slope >  0.15) return "↗";
+  if (slope < -0.15) return "↘";
+  return "→";
+}
+function renderRooms(wd) {
+  const out  = wd.outside_now != null ? Math.round(wd.outside_now * 10) / 10 : null;
+  const rows = ROOM_ORDER.map((key) => {
+    const r = wd.rooms?.[key];
+    if (!r) return `<div class="room"><div class="room-name">${ROOM_LABELS[key]}</div><div class="dim">geen data</div></div>`;
+    const inside = r.inside != null ? Math.round(r.inside * 10) / 10 : null;
+    const advice = r.advice || "—";
+    const stamp  = advice === "open"
+        ? `<span class="stamp stamp-open">open</span>`
+      : advice === "dicht"
+        ? `<span class="stamp stamp-dicht">dicht</span>`
+        : `<span class="stamp" style="color:var(--ink-soft)">—</span>`;
+    const arrow = trendArrow(r.trend);
+    const outTxt = out != null ? `buiten ${out}°` : "";
+    return `
+      <div class="room">
+        <div class="room-name">${ROOM_LABELS[key]}</div>
+        <div class="room-temp-row">
+          <span class="room-temp">${inside != null ? inside.toFixed(1) : "—"}<span class="deg">°</span></span>
+          <span class="room-trend">${arrow}</span>
+        </div>
+        <div class="room-foot">
+          <span class="room-out">${outTxt}</span>
+          ${stamp}
+        </div>
+      </div>`;
+  }).join("");
+  $("rooms-grid").innerHTML = rows;
+}
+
+// ─── Soil ────────────────────────────────────────────────────
+function gaugeSVG(depletionPct, state) {
+  const r = 22, cx = 26, cy = 26;
+  const circ = 2 * Math.PI * r;
+  const filled = Math.max(0, Math.min(100, depletionPct));
+  const dash = (filled / 100) * circ;
+  const colorMap = { dry: "var(--dry)", threshold: "var(--warn)", moist: "var(--moss)", wet: "var(--rain)" };
+  const color = colorMap[state] || "var(--moss)";
+  return `<svg width="52" height="52" viewBox="0 0 52 52" style="transform:rotate(-90deg)">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--hair)" stroke-width="3"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="3"
+            stroke-dasharray="${dash} ${circ - dash}" stroke-linecap="butt"/>
+  </svg>`;
+}
+const STATE_NL = { dry: "droog", threshold: "drempel", moist: "vochtig", wet: "nat" };
+function renderSoil(d) {
+  const ls = d.lawn_status, ss = d.shrubs_status;
+  const zones = [
+    { key: "gras",     status: ls },
+    { key: "struiken", status: ss },
+  ];
+  $("soil-row").innerHTML = zones.map(z => {
+    const dep = z.status?.depletion_pct ?? 0;
+    const st  = z.status?.state || "moist";
+    return `
+      <div class="gauge">
+        ${gaugeSVG(dep, st)}
+        <div class="gauge-info">
+          <div class="gauge-zone">${z.key}</div>
+          <div class="gauge-pct">${Math.round(dep)}<span style="font-size:14px;color:var(--ink-soft)">%</span></div>
+          <div class="gauge-state">${STATE_NL[st] || st}</div>
+        </div>
+      </div>`;
+  }).join("");
+
+  // "volgende beurt" — pick the highest-priority advice
+  const advice = soilNextText(ls, ss);
+  $("soil-next-text").textContent = advice;
+}
+function soilNextText(ls, ss) {
+  const rank = { high: 3, medium: 2, low: 1, none: 0 };
+  const candidates = [];
+  if (ls) candidates.push({ zone: "gras",     ...ls });
+  if (ss) candidates.push({ zone: "struiken", ...ss });
+  candidates.sort((a, b) => (rank[b.priority] || 0) - (rank[a.priority] || 0));
+  const top = candidates[0];
+  if (!top || top.priority === "none") {
+    const dts = candidates.map(c => c.days_to_stress).filter(d => d != null);
+    if (dts.length) return `over ~${Math.min(...dts)} dagen droogtegrens`;
+    return "geen actie nodig";
+  }
+  if (top.priority === "high")   return `nu ${top.proposal_mm || "?"} mm op ${top.zone}`;
+  if (top.priority === "medium") return `binnen 1–2 dagen ${top.proposal_mm || "?"} mm op ${top.zone}`;
+  if (top.priority === "low")    return `${top.zone}: ${top.proposal_mm || "?"} mm binnen 3 dagen`;
+  return "—";
+}
+
+// ─── Mow ─────────────────────────────────────────────────────
+function renderMow(m) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const ready = m.ready;
+  const dormant = m.dormant;
+  const next = m.predicted_next_mow;
+  const opt  = m.optimal_day;
+  const rec  = m.recommended_length;
+  let whenHTML = "—", heightHTML = "";
+
+  if (dormant) {
+    whenHTML = `<span class="big">winterrust</span>`;
+  } else if (ready) {
+    whenHTML = `<span class="big">vandaag</span>`;
+  } else if (next) {
+    const d = new Date(next + "T00:00:00");
+    const days = Math.round((d - today) / 86400000);
+    if (days <= 0)      whenHTML = `<span class="big">vandaag</span>`;
+    else if (days === 1) whenHTML = `<span class="big">morgen</span>`;
+    else                 whenHTML = `nog <span class="big">${days}</span> dagen`;
+  } else {
+    whenHTML = `<span class="big">groeit nog</span>`;
+  }
+  if (rec && rec.length_mm) {
+    heightHTML = `<span class="mm">${rec.length_mm}mm</span>`;
+  }
+  $("mow-when").innerHTML = whenHTML;
+  $("mow-height").innerHTML = heightHTML;
+  let reason = "";
+  if (opt && opt.reason && !ready && !dormant) reason = `optimaal ${shortDate(opt.date)} — ${opt.reason}`;
+  else if (rec && rec.reason) reason = rec.reason;
+  $("mow-reason").textContent = reason;
+}
+function shortDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  return `${d.getDate()} ${MONTH_NL[d.getMonth()].slice(0,3)}`;
+}
+
+// ─── Time blocks ─────────────────────────────────────────────
+function renderBlocks(hourly) {
+  const now = new Date();
+  // weather_briefing uses Mon=0; JS getDay Sun=0
+  const wb = (now.getDay() + 6) % 7;
+  const blocks = PEUTER_DAYS.has(wb) ? PEUTER_BLOCKS : WEEKDAY_BLOCKS;
+  const todays = blocks.filter(b => !b.days || b.days.includes(wb));
+  if (todays.length === 0) {
+    $("blocks-list").innerHTML = `<div class="dim" style="font-style:italic;font-size:14px;">geen blokken vandaag</div>`;
+    return;
+  }
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  $("blocks-list").innerHTML = todays.map(b => {
+    const startMin = b.sh * 60 + b.sm;
+    const endMin   = b.eh * 60 + b.em;
+    const past = endMin < nowMin;
+    const isNow = startMin <= nowMin && nowMin < endMin;
+    return `
+      <div class="block ${past ? "past" : ""} ${isNow ? "now" : ""}">
+        <span class="block-time">${pad(b.sh)}:${pad(b.sm)}–${pad(b.eh)}:${pad(b.em)}</span>
+        <span class="block-icon">${b.icon}</span>
+        <span class="block-name">${b.name}</span>
+      </div>`;
+  }).join("");
+}
+
+// ─── Chips ───────────────────────────────────────────────────
+function renderChips({ windowData, om }) {
+  const chips = [];
+  if (sunset) {
+    const ss = sunset;
+    chips.push(`<span class="chip">zonsondergang <strong>${pad(ss.getHours())}:${pad(ss.getMinutes())}</strong></span>`);
+  }
+  if (windowData?.bias != null) {
+    const b = Math.round(windowData.bias * 10) / 10;
+    const sign = b > 0 ? "+" : "";
+    chips.push(`<span class="chip">station bias <strong>${sign}${b}°</strong></span>`);
+  }
+  if (windowData?.warm_ahead) {
+    chips.push(`<span class="chip" style="color:var(--clay)">warme dag voor de boeg</span>`);
+  }
+  if (om?.daily?.uv_index_max?.[0] >= 5) {
+    chips.push(`<span class="chip" style="color:var(--warn)">uv hoog · zonbescherming</span>`);
+  }
+  $("chips").innerHTML = chips.join("");
+}
+
+// ─── Boot ────────────────────────────────────────────────────
+tickClock();
+setInterval(tickClock, 1000);
+applyTheme();
+setInterval(applyTheme, THEME_TICK_MS);
+loadAll();
+setInterval(loadAll, DATA_REFRESH_MS);
+// Re-render time-blocks each minute so "now" highlight follows the clock
+setInterval(() => { renderBlocks(null); }, 60 * 1000);
+</script>
+</body>
+</html>

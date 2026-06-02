@@ -337,52 +337,53 @@ html, body {
   margin-right: 6px;
 }
 
-/* mow — merged into the Tuin panel, separated by a dashed rule */
-.mow-block {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--hair);
+/* tuin row — gauges + maaien side by side, sharing one horizontal band */
+.tuin-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
 }
-.mow-label {
-  display: block;
-  margin-bottom: 6px;
-}
-.mow-line {
+.mow-compact {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  padding-left: 14px;
+  border-left: 1px dashed var(--hair);
+  min-width: 78px;
 }
-.mow-when {
+.mow-compact .mow-label {
+  margin-bottom: 2px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+}
+.mow-compact .mow-when {
   font-family: "Cormorant Garamond", serif;
   font-style: italic;
   font-size: 22px;
-  line-height: 1.1;
-}
-.mow-when .big {
-  font-style: normal;
-  font-family: "Cormorant Garamond", serif;
-  font-weight: 500;
-  font-size: 32px;
+  line-height: 1.05;
   color: var(--ink);
 }
-.mow-height {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  color: var(--ink-soft);
-}
-.mow-height .mm {
-  color: var(--moss);
-  font-size: 18px;
-  font-weight: 500;
-  margin-right: 4px;
-}
-.mow-reason {
-  margin-top: 6px;
-  font-size: 13px;
+.mow-compact .mow-when .big {
+  font-family: "Cormorant Garamond", serif;
   font-style: italic;
+  font-weight: 500;
+  font-size: 22px;
+  color: var(--ink);
+}
+.mow-compact .mow-height {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
   color: var(--ink-soft);
+  margin-top: 2px;
+}
+.mow-compact .mow-height .mm {
+  color: var(--moss);
+  font-size: 12px;
+  font-weight: 500;
+  margin-right: 2px;
 }
 
 /* time blocks */
@@ -393,7 +394,7 @@ html, body {
 }
 .block {
   display: grid;
-  grid-template-columns: 60px 22px 1fr;
+  grid-template-columns: 60px 22px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 5px 0;
@@ -415,7 +416,26 @@ html, body {
   letter-spacing: 0.04em;
 }
 .block-icon { font-size: 16px; line-height: 1; text-align: center; }
-.block-name { font-size: 16px; font-style: italic; }
+.block-name {
+  font-size: 16px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.block-wx {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.block-wx .wx-g { font-family: "Cormorant Garamond", serif; font-size: 14px; letter-spacing: 0; }
+.block-wx .wx-t { color: var(--ink); }
+.block-wx .wx-p { color: var(--rain); }
 
 /* chips — full-width row across the bottom of the dashboard */
 .chips {
@@ -535,16 +555,15 @@ html, body {
     <div class="aside">
       <div class="panel">
         <div class="panel-title">tuin</div>
-        <div class="soil-row" id="soil-row"></div>
-        <div class="soil-next" id="soil-next"><span class="lbl">volgende beurt</span><span id="soil-next-text">—</span></div>
-        <div class="mow-block">
-          <span class="caps mow-label">maaien</span>
-          <div class="mow-line">
+        <div class="tuin-row">
+          <div class="soil-row" id="soil-row"></div>
+          <div class="mow-compact">
+            <span class="caps mow-label">maaien</span>
             <div class="mow-when" id="mow-when">—</div>
             <div class="mow-height" id="mow-height"></div>
           </div>
-          <div class="mow-reason" id="mow-reason"></div>
         </div>
+        <div class="soil-next" id="soil-next"><span class="lbl">volgende beurt</span><span id="soil-next-text">—</span></div>
       </div>
       <div class="panel panel-vandaag">
         <div class="panel-title">vandaag</div>
@@ -606,6 +625,7 @@ function wxFor(code) { return WX[code] || ["·", "—"]; }
 
 // ─── State ───────────────────────────────────────────────────
 let sunrise = null, sunset = null; // Date or null
+let lastHourly = null;             // most recent Open-Meteo hourly payload
 const $ = (id) => document.getElementById(id);
 
 // ─── Diag (visible only with ?debug or #debug) ───────────────
@@ -693,6 +713,7 @@ async function loadAll() {
       sunrise = new Date(d.sunrise[0]);
       sunset  = new Date(d.sunset[0]);
     });
+    lastHourly = om.value.hourly || null;
     safe("hero",     () => renderHero(om.value, wd));
     safe("timeline", () => renderTimeline(om.value.hourly));
   } else {
@@ -1107,10 +1128,16 @@ function renderMow(m) {
   }
   $("mow-when").innerHTML = whenHTML;
   $("mow-height").innerHTML = heightHTML;
-  let reason = "";
-  if (opt && opt.reason && !ready && !dormant) reason = `optimaal ${shortDate(opt.date)} — ${opt.reason}`;
-  else if (rec && rec.reason) reason = rec.reason;
-  $("mow-reason").textContent = reason;
+  // mow-reason is intentionally not rendered on the iPad dashboard —
+  // the panel is condensed to share a row with the soil gauges. The
+  // full reason text lives on the dedicated mowing dashboard.
+  const reasonEl = $("mow-reason");
+  if (reasonEl) {
+    let reason = "";
+    if (opt && opt.reason && !ready && !dormant) reason = `optimaal ${shortDate(opt.date)} — ${opt.reason}`;
+    else if (rec && rec.reason) reason = rec.reason;
+    reasonEl.textContent = reason;
+  }
 }
 function shortDate(iso) {
   if (!iso) return "";
@@ -1119,6 +1146,40 @@ function shortDate(iso) {
 }
 
 // ─── Time blocks ─────────────────────────────────────────────
+// Summarise weather for the hours the block overlaps: dominant
+// (most-severe) WMO code as glyph, peak temp, peak precip-probability
+// (omitted under 10%). Uses the cached Open-Meteo hourly payload, so
+// renders empty until the first successful fetch.
+function blockWeather(b) {
+  const hourly = lastHourly;
+  if (!hourly?.time) return "";
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  // Include every hourly slot that overlaps [start, end). A block that
+  // ends at HH:00 doesn't need that hour; one that ends at HH:30 does.
+  const lastHour = b.em > 0 ? b.eh : b.eh - 1;
+  const temps = [], pops = [], codes = [];
+  for (let h = b.sh; h <= lastHour; h++) {
+    const idx = hourly.time.indexOf(`${todayStr}T${pad(h)}:00`);
+    if (idx < 0) continue;
+    const t = hourly.temperature_2m?.[idx];
+    const p = hourly.precipitation_probability?.[idx];
+    const c = hourly.weathercode?.[idx];
+    if (typeof t === "number") temps.push(t);
+    if (typeof p === "number") pops.push(p);
+    if (typeof c === "number") codes.push(c);
+  }
+  if (!temps.length) return "";
+  const tMax = Math.max(...temps);
+  const pMax = pops.length ? Math.max(...pops) : null;
+  // Higher WMO codes are roughly more severe — fine as a glyph picker.
+  const code = codes.length ? Math.max(...codes) : null;
+  const [glyph] = code != null ? wxFor(code) : ["·"];
+  const parts = [`<span class="wx-g">${glyph}</span>`, `<span class="wx-t">${Math.round(tMax)}°</span>`];
+  if (pMax != null && pMax >= 10) parts.push(`<span class="wx-p">${pMax}%</span>`);
+  return parts.join("");
+}
+
 function renderBlocks() {
   const now = new Date();
   // weather_briefing uses Mon=0; JS getDay Sun=0
@@ -1135,11 +1196,13 @@ function renderBlocks() {
     const endMin   = b.eh * 60 + b.em;
     const past = endMin < nowMin;
     const isNow = startMin <= nowMin && nowMin < endMin;
+    const wx = blockWeather(b);
     return `
       <div class="block ${past ? "past" : ""} ${isNow ? "now" : ""}">
         <span class="block-time">${pad(b.sh)}:${pad(b.sm)}–${pad(b.eh)}:${pad(b.em)}</span>
         <span class="block-icon">${b.icon}</span>
         <span class="block-name">${b.name}</span>
+        <span class="block-wx">${wx}</span>
       </div>`;
   }).join("");
 }

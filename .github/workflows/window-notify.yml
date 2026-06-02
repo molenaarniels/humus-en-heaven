@@ -2,26 +2,33 @@ name: Tado Window Advisor
 
 on:
   schedule:
-    # GitHub drops/delays scheduled triggers under load, worst at the top of the
-    # hour. We fire 3x/hour at odd minutes so even when half the ticks are dropped
-    # we still land ~hourly. The script is idempotent (state in the Gist, Telegram
-    # only on a flip), so the extra runs are harmless — and public repos get
-    # unlimited Actions minutes. See the concurrency guard below.
+    # GitHub's scheduler is best-effort and drops/delays most ticks under load
+    # (observed: whole days with only ~3 of 24 hourly runs firing). We therefore
+    # do NOT rely on the schedule for the hourly cadence — instead each run is a
+    # self-contained ~5h loop that does the advice once per hour internally (see
+    # the "hourly loop" step). The schedule here is only a *restart kick*: thanks
+    # to the concurrency guard below, a tick that fires while a loop is running is
+    # held pending and starts the next loop the instant the current one ends, so
+    # coverage barely blinks. Firing several times/hour just means a fresh loop
+    # restarts promptly even when GitHub drops most ticks; the extra kicks are
+    # superseded harmlessly by concurrency. One tick every ~5h is enough.
     - cron: "7,27,47 * * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Print advies zonder te versturen"
+        description: "Print advies zonder te versturen (één run, geen loop)"
         type: boolean
         default: false
 
 permissions:
   contents: write
 
-# Serialize runs: a delayed/late-starting run must finish (tado refresh-token
-# rotation + commit) before the next begins. Two overlapping runs would read the
-# same refresh token and the second rotation would break the token chain.
+# Serialize runs: exactly one loop alive at a time. The advisor rotates the tado
+# refresh token on every run (tado revokes the previous one), so two overlapping
+# runs would read the same token and the second rotation would break the chain.
+# cancel-in-progress:false means a restart kick waits for the running loop to
+# finish, then takes over — never overlaps it.
 concurrency:
   group: window-advisor
   cancel-in-progress: false
@@ -29,6 +36,10 @@ concurrency:
 jobs:
   advise:
     runs-on: ubuntu-latest
+    # The hourly loop runs ~6 iterations spaced to the top of each hour, i.e. up
+    # to ~5h wall time. Cap below the 6h hard limit so the job ends cleanly and a
+    # pending restart kick can take over.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -40,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run window advisor
+      - name: Run window advisor (hourly loop)
         env:
           TADO_GIST_ID:           ${{ secrets.TADO_GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
@@ -49,18 +60,43 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
           DRY_RUN:                ${{ inputs.dry_run && '1' || '' }}
-        run: python window_advisor.py
-
-      - name: Commit dashboard data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/window_data.json
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "data: window advisor refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
-            # Andere workflows kunnen in hetzelfde venster gepusht hebben — rebase eerst.
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
+
+          # One advice cycle: run the advisor, then commit/push the dashboard JSON
+          # if it changed. A transient failure (network, tado hiccup) must not kill
+          # the whole loop — log it and let the next hour retry.
+          run_once () {
+            python window_advisor.py || echo "::warning::window_advisor.py failed this iteration, continuing"
+            git add docs/window_data.json
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+            else
+              git commit -m "data: window advisor refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+              # Andere workflows kunnen in hetzelfde venster gepusht hebben — rebase eerst.
+              git pull --rebase origin "${GITHUB_REF_NAME}" || true
+              git push || echo "::warning::push failed this iteration, continuing"
+            fi
+          }
+
+          # Dry run = a single manual test, no hourly loop.
+          if [ "${DRY_RUN}" = "1" ]; then
+            run_once
+            exit 0
           fi
+
+          # GitHub's scheduler can't be trusted to fire hourly, so we drive the
+          # cadence ourselves: run now, then once at the top of each following
+          # hour, for up to ITERS hours. The concurrency guard keeps this the only
+          # loop running, so the tado token rotation stays serialized.
+          ITERS=6
+          for i in $(seq 1 "${ITERS}"); do
+            echo "=== iteration ${i}/${ITERS} at $(date -u +%H:%M:%SZ) ==="
+            run_once
+            if [ "${i}" -lt "${ITERS}" ]; then
+              now=$(date -u +%s)
+              next=$(( (now / 3600 + 1) * 3600 ))   # top of the next UTC hour
+              sleep $(( next - now ))
+            fi
+          done

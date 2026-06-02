@@ -14,7 +14,7 @@
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
   font-src https://fonts.gstatic.com;
   img-src 'self' data:;
-  connect-src 'self' https://api.open-meteo.com;
+  connect-src 'self' https://api.open-meteo.com https://air-quality-api.open-meteo.com;
   frame-ancestors 'none';
   base-uri 'none';
   form-action 'none';
@@ -92,12 +92,11 @@ html, body {
 .clock {
   font-family: "JetBrains Mono", monospace;
   font-weight: 300;
-  font-size: 88px;
+  font-size: 96px;
   line-height: 0.85;
   letter-spacing: -0.04em;
   color: var(--ink);
 }
-.clock-sec { color: var(--ink-faint); font-weight: 300; }
 .date-block { padding-bottom: 6px; }
 .weekday {
   font-style: italic;
@@ -436,6 +435,16 @@ html, body {
   letter-spacing: 0.08em;
 }
 
+/* debug overlay */
+#diag {
+  position: fixed; bottom: 6px; left: 6px; right: 6px;
+  max-height: 30vh; overflow: auto;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  color: var(--ink-soft); background: rgba(0,0,0,0.04);
+  padding: 6px 8px; border: 1px solid var(--hair); border-radius: 2px;
+  white-space: pre-wrap; z-index: 9;
+}
+
 /* status banner */
 .stale-banner {
   position: fixed;
@@ -468,11 +477,12 @@ html, body {
 </head>
 <body>
 <div class="stale-banner" id="stale-banner">data verouderd</div>
+<pre id="diag" hidden></pre>
 <main class="dash" id="dash">
 
   <section class="hero">
     <div class="hero-left">
-      <div class="clock mono" id="clock">--:--<span class="clock-sec" id="clock-sec"></span></div>
+      <div class="clock mono" id="clock">--:--</div>
       <div class="date-block">
         <div class="weekday" id="weekday">—</div>
         <div class="daydate caps" id="daydate">—</div>
@@ -579,13 +589,26 @@ function wxFor(code) { return WX[code] || ["·", "—"]; }
 let sunrise = null, sunset = null; // Date or null
 const $ = (id) => document.getElementById(id);
 
+// ─── Diag (visible only with ?debug or #debug) ───────────────
+const DEBUG = /[?#&]debug/i.test(location.search + location.hash);
+function logDiag(msg) {
+  if (!DEBUG) return;
+  const el = $("diag");
+  if (!el) return;
+  el.hidden = false;
+  const t = new Date().toISOString().slice(11, 19);
+  el.textContent = (el.textContent + `\n${t}  ${msg}`).split("\n").slice(-40).join("\n");
+}
+window.addEventListener("error", e => logDiag(`window.error: ${e.message} @ ${e.filename}:${e.lineno}`));
+window.addEventListener("unhandledrejection", e => logDiag(`unhandled: ${e.reason}`));
+
 // ─── Clock + date ────────────────────────────────────────────
 function pad(n) { return String(n).padStart(2, "0"); }
 const DOW_NL  = ["zondag","maandag","dinsdag","woensdag","donderdag","vrijdag","zaterdag"];
 const MONTH_NL = ["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
 function tickClock() {
   const d = new Date();
-  $("clock").innerHTML = `${pad(d.getHours())}:${pad(d.getMinutes())}<span class="clock-sec" id="clock-sec"> ${pad(d.getSeconds())}</span>`;
+  $("clock").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   $("weekday").textContent = DOW_NL[d.getDay()];
   $("daydate").textContent = `${d.getDate()} ${MONTH_NL[d.getMonth()]} ${d.getFullYear()}`;
 }
@@ -618,41 +641,55 @@ async function fetchJSON(url) {
 }
 const bust = () => `?t=${Date.now()}`;
 
-async function loadAll() {
-  try {
-    const [soil, mowing, windowData, om] = await Promise.allSettled([
-      fetchJSON("data.json" + bust()),
-      fetchJSON("mowing_data.json" + bust()),
-      fetchJSON("window_data.json" + bust()),
-      fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
-        `&hourly=temperature_2m,precipitation,precipitation_probability,uv_index,weathercode` +
-        `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weathercode,uv_index_max,precipitation_probability_max` +
-        `&timezone=Europe%2FAmsterdam&forecast_days=1`),
-    ]);
+function safe(label, fn) {
+  try { fn(); }
+  catch (e) {
+    console.error(`[${label}]`, e);
+    logDiag(`${label}: ${e.message || e}`);
+  }
+}
 
-    if (om.status === "fulfilled") {
+async function loadAll() {
+  const [soil, mowing, windowData, om, sandbox, pollen] = await Promise.allSettled([
+    fetchJSON("data.json" + bust()),
+    fetchJSON("mowing_data.json" + bust()),
+    fetchJSON("window_data.json" + bust()),
+    fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
+      `&hourly=temperature_2m,precipitation,precipitation_probability,uv_index,weathercode` +
+      `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weathercode,uv_index_max,precipitation_probability_max` +
+      `&timezone=Europe%2FAmsterdam&forecast_days=1`),
+    fetchJSON("sandbox_state.json" + bust()),
+    fetchJSON(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${LAT}&longitude=${LON}` +
+      `&hourly=alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen` +
+      `&timezone=Europe%2FAmsterdam&forecast_days=1`),
+  ]);
+
+  logDiag(`fetch: soil=${soil.status} mow=${mowing.status} win=${windowData.status} om=${om.status} sb=${sandbox.status} pln=${pollen.status}`);
+
+  if (om.status === "fulfilled") {
+    safe("sun-times", () => {
       const d = om.value.daily;
       sunrise = new Date(d.sunrise[0]);
       sunset  = new Date(d.sunset[0]);
-      renderHero(d);
-      renderTimeline(om.value.hourly);
-    }
-    if (soil.status === "fulfilled")       renderSoil(soil.value);
-    if (mowing.status === "fulfilled")     renderMow(mowing.value);
-    if (windowData.status === "fulfilled") renderRooms(windowData.value);
-    renderBlocks(om.status === "fulfilled" ? om.value.hourly : null);
-    renderChips({
-      windowData: windowData.status === "fulfilled" ? windowData.value : null,
-      om:         om.status === "fulfilled" ? om.value : null,
     });
-    markStaleIf(
-      soil.status       === "fulfilled" ? soil.value.generated_at       : null,
-      mowing.status     === "fulfilled" ? mowing.value.generated_at     : null,
-      windowData.status === "fulfilled" ? windowData.value.generated_at : null,
-    );
-  } catch (e) {
-    console.error(e);
+    safe("hero",     () => renderHero(om.value.daily));
+    safe("timeline", () => renderTimeline(om.value.hourly));
   }
+  if (soil.status       === "fulfilled") safe("soil",  () => renderSoil(soil.value));
+  if (mowing.status     === "fulfilled") safe("mow",   () => renderMow(mowing.value));
+  if (windowData.status === "fulfilled") safe("rooms", () => renderRooms(windowData.value));
+  safe("blocks", () => renderBlocks());
+  safe("chips",  () => renderChips({
+    windowData: windowData.status === "fulfilled" ? windowData.value : null,
+    om:         om.status         === "fulfilled" ? om.value         : null,
+    sandbox:    sandbox.status    === "fulfilled" ? sandbox.value    : null,
+    pollen:     pollen.status     === "fulfilled" ? pollen.value     : null,
+  }));
+  markStaleIf(
+    soil.status       === "fulfilled" ? soil.value.generated_at       : null,
+    mowing.status     === "fulfilled" ? mowing.value.generated_at     : null,
+    windowData.status === "fulfilled" ? windowData.value.generated_at : null,
+  );
   applyTheme();
 }
 
@@ -672,7 +709,24 @@ function renderHero(daily) {
 }
 
 // ─── Timeline SVG ────────────────────────────────────────────
+// Resolve CSS custom properties to literal colors at render-time.
+// SVG presentation attributes (fill/stroke) don't reliably resolve
+// var(...) across browsers — and Safari is especially flaky inside
+// elements added via innerHTML — so we substitute literals before render.
+function colors() {
+  const s = getComputedStyle(document.documentElement);
+  const get = (name, fallback) => (s.getPropertyValue(name) || "").trim() || fallback;
+  return {
+    sun:  get("--sun",      "#c9956a"),
+    rain: get("--rain",     "#7a8fa3"),
+    ink:  get("--ink",      "#2a2520"),
+    soft: get("--ink-soft", "#6b5d4a"),
+    hair: get("--ink",      "#2a2520"),
+  };
+}
+
 function renderTimeline(hourly) {
+  if (!hourly || !Array.isArray(hourly.time)) return;
   // Open-Meteo (with timezone=Europe/Amsterdam) returns naïve local strings
   // like "2026-06-02T13:00" — compare as strings to avoid TZ shifts.
   const now = new Date();
@@ -682,72 +736,77 @@ function renderTimeline(hourly) {
     .filter(i => i >= 0);
   if (idx.length === 0) return;
 
-  const temps  = idx.map(i => hourly.temperature_2m[i]);
-  const rains  = idx.map(i => hourly.precipitation[i]);
-  const nowH   = now.getHours() + now.getMinutes() / 60;
+  const C = colors();
+  const temps = idx.map(i => hourly.temperature_2m[i]).filter(v => typeof v === "number");
+  const rains = idx.map(i => hourly.precipitation[i] || 0);
+  if (temps.length < 2) return;
+  const nowH = now.getHours() + now.getMinutes() / 60;
 
   const W = 1000, H = 90;
-  const pad = { l: 22, r: 16, t: 8, b: 14 };
-  const innerW = W - pad.l - pad.r;
-  const innerH = H - pad.t - pad.b;
+  const m = { l: 22, r: 16, t: 8, b: 14 };
+  const innerW = W - m.l - m.r;
+  const innerH = H - m.t - m.b;
 
-  // x for hour 0..24
-  const x = (h) => pad.l + (h / 24) * innerW;
+  const x = (h) => m.l + (h / 24) * innerW;
 
-  // temp scaling: stretch ±1° around min/max for breathing room
   let tMin = Math.min(...temps), tMax = Math.max(...temps);
   if (tMax - tMin < 4) { const mid = (tMin + tMax) / 2; tMin = mid - 2; tMax = mid + 2; }
   tMin -= 1; tMax += 1;
-  const y = (t) => pad.t + innerH - ((t - tMin) / (tMax - tMin)) * innerH;
+  const y = (t) => m.t + innerH - ((t - tMin) / (tMax - tMin)) * innerH;
 
-  // rain scale: 0–4mm range
   const rMax = Math.max(2, ...rains);
   const ry = (r) => (r / rMax) * (innerH * 0.55);
 
-  // Build paths
   const tempPath = temps.map((t, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(t).toFixed(1)}`).join(" ");
-  const fillPath = tempPath + ` L${x(temps.length - 1).toFixed(1)},${H - pad.b} L${x(0).toFixed(1)},${H - pad.b}Z`;
+  const fillPath = tempPath + ` L${x(temps.length - 1).toFixed(1)},${H - m.b} L${x(0).toFixed(1)},${H - m.b}Z`;
 
-  // Rain bars
   const barW = innerW / 24 * 0.7;
   const rainBars = rains.map((r, i) => {
     if (r < 0.1) return "";
     const bx = x(i + 0.5) - barW / 2;
-    const bh = ry(r);
-    return `<rect x="${bx.toFixed(1)}" y="${pad.t}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--rain)" opacity="0.55" rx="1"/>`;
+    return `<rect x="${bx.toFixed(1)}" y="${m.t}" width="${barW.toFixed(1)}" height="${ry(r).toFixed(1)}" fill="${C.rain}" opacity="0.55" rx="1"/>`;
   }).join("");
 
-  // Grid lines at 6/12/18
-  const grid = [6, 12, 18].map(h => `<line x1="${x(h)}" y1="${pad.t}" x2="${x(h)}" y2="${H - pad.b}" stroke="var(--hair)" stroke-width="0.5" stroke-dasharray="2,3"/>`).join("");
+  const grid = [6, 12, 18].map(h =>
+    `<line x1="${x(h)}" y1="${m.t}" x2="${x(h)}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.18" stroke-width="0.5" stroke-dasharray="2,3"/>`
+  ).join("");
 
-  // Now marker
   const nowMarker = `
-    <line x1="${x(nowH)}" y1="${pad.t - 2}" x2="${x(nowH)}" y2="${H - pad.b}" stroke="var(--ink)" stroke-width="1.2"/>
-    <circle cx="${x(nowH)}" cy="${y(temps[Math.min(23, Math.floor(nowH))])}" r="3" fill="var(--ink)"/>
+    <line x1="${x(nowH).toFixed(1)}" y1="${m.t - 2}" x2="${x(nowH).toFixed(1)}" y2="${H - m.b}" stroke="${C.ink}" stroke-width="1.2"/>
+    <circle cx="${x(nowH).toFixed(1)}" cy="${y(temps[Math.min(temps.length - 1, Math.floor(nowH))]).toFixed(1)}" r="3" fill="${C.ink}"/>
   `;
 
-  // Temp range label at min/max
   const iMax = temps.indexOf(Math.max(...temps));
   const iMin = temps.indexOf(Math.min(...temps));
   const labels = `
-    <text x="${x(iMax)}" y="${(y(temps[iMax]) - 4).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)" text-anchor="middle">${Math.round(temps[iMax])}°</text>
-    <text x="${x(iMin)}" y="${(y(temps[iMin]) + 10).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)" text-anchor="middle">${Math.round(temps[iMin])}°</text>
+    <text x="${x(iMax).toFixed(1)}" y="${(y(temps[iMax]) - 4).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="middle">${Math.round(temps[iMax])}°</text>
+    <text x="${x(iMin).toFixed(1)}" y="${(y(temps[iMin]) + 10).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="middle">${Math.round(temps[iMin])}°</text>
   `;
 
-  $("timeline").innerHTML = `
+  // Build inner SVG fresh each call. We replace via outerHTML (NOT
+  // innerHTML on <svg>) because iOS Safari sometimes parses children of
+  // svg.innerHTML in HTML namespace — leaving them in the DOM but
+  // invisible. outerHTML re-creates the <svg> from the parent's HTML
+  // parser, which correctly puts children in SVG namespace.
+  const innerSVG = `
     <defs>
       <linearGradient id="tempFill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--sun)" stop-opacity="0.28"/>
-        <stop offset="100%" stop-color="var(--sun)" stop-opacity="0.02"/>
+        <stop offset="0%" stop-color="${C.sun}" stop-opacity="0.28"/>
+        <stop offset="100%" stop-color="${C.sun}" stop-opacity="0.02"/>
       </linearGradient>
     </defs>
     ${grid}
     ${rainBars}
     <path d="${fillPath}" fill="url(#tempFill)"/>
-    <path d="${tempPath}" fill="none" stroke="var(--sun)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${tempPath}" fill="none" stroke="${C.sun}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
     ${labels}
     ${nowMarker}
   `;
+  const oldEl = $("timeline");
+  const cls = oldEl.getAttribute("class") || "";
+  const vb  = oldEl.getAttribute("viewBox") || "0 0 1000 90";
+  const pa  = oldEl.getAttribute("preserveAspectRatio") || "none";
+  oldEl.outerHTML = `<svg xmlns="http://www.w3.org/2000/svg" id="timeline" class="${cls}" viewBox="${vb}" preserveAspectRatio="${pa}">${innerSVG}</svg>`;
 }
 
 // ─── Rooms ───────────────────────────────────────────────────
@@ -800,12 +859,20 @@ function gaugeSVG(depletionPct, state) {
   const circ = 2 * Math.PI * r;
   const filled = Math.max(0, Math.min(100, depletionPct));
   const dash = (filled / 100) * circ;
-  const colorMap = { dry: "var(--dry)", threshold: "var(--warn)", moist: "var(--moss)", wet: "var(--rain)" };
-  const color = colorMap[state] || "var(--moss)";
-  return `<svg width="52" height="52" viewBox="0 0 52 52" style="transform:rotate(-90deg)">
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--hair)" stroke-width="3"/>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="3"
-            stroke-dasharray="${dash} ${circ - dash}" stroke-linecap="butt"/>
+  const s = getComputedStyle(document.documentElement);
+  const lit = (name, fb) => (s.getPropertyValue(name) || "").trim() || fb;
+  const colorMap = {
+    dry:       lit("--dry",  "#b86b4a"),
+    threshold: lit("--warn", "#c4823f"),
+    moist:     lit("--moss", "#5a6b3e"),
+    wet:       lit("--rain", "#7a8fa3"),
+  };
+  const ringColor = colorMap[state] || colorMap.moist;
+  const trackColor = lit("--ink", "#2a2520");
+  return `<svg width="52" height="52" viewBox="0 0 52 52" style="transform:rotate(-90deg)" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${trackColor}" stroke-opacity="0.12" stroke-width="3"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${ringColor}" stroke-width="3"
+            stroke-dasharray="${dash.toFixed(2)} ${(circ - dash).toFixed(2)}" stroke-linecap="butt"/>
   </svg>`;
 }
 const STATE_NL = { dry: "droog", threshold: "drempel", moist: "vochtig", wet: "nat" };
@@ -891,7 +958,7 @@ function shortDate(iso) {
 }
 
 // ─── Time blocks ─────────────────────────────────────────────
-function renderBlocks(hourly) {
+function renderBlocks() {
   const now = new Date();
   // weather_briefing uses Mon=0; JS getDay Sun=0
   const wb = (now.getDay() + 6) % 7;
@@ -917,12 +984,56 @@ function renderBlocks(hourly) {
 }
 
 // ─── Chips ───────────────────────────────────────────────────
-function renderChips({ windowData, om }) {
+const SANDBOX_LABELS = {
+  open:     { txt: "open",     color: "var(--moss)" },
+  dicht:    { txt: "dicht",    color: "var(--ink-soft)" },
+  afgedekt: { txt: "afgedekt", color: "var(--rain)" },
+};
+const POLLEN_NL = {
+  alder_pollen:   "els",
+  birch_pollen:   "berk",
+  grass_pollen:   "gras",
+  mugwort_pollen: "bijvoet",
+  olive_pollen:   "olijf",
+  ragweed_pollen: "ambrosia",
+};
+function pollenLevel(v) {
+  if (v == null || v < 20) return null;
+  if (v < 50)  return "matig";
+  if (v < 100) return "hoog";
+  return "zeer hoog";
+}
+function pollenChipText(pollen) {
+  if (!pollen?.hourly?.time) return null;
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const idx = pollen.hourly.time
+    .map((t, i) => (typeof t === "string" && t.slice(0, 10) === todayStr) ? i : -1)
+    .filter(i => i >= 0);
+  if (!idx.length) return null;
+  const active = [];
+  for (const [key, label] of Object.entries(POLLEN_NL)) {
+    const series = pollen.hourly[key];
+    if (!Array.isArray(series)) continue;
+    const vals = idx.map(i => series[i]).filter(v => typeof v === "number");
+    if (!vals.length) continue;
+    const peak = Math.max(...vals);
+    const lvl = pollenLevel(peak);
+    if (lvl) active.push(`${label} ${lvl}`);
+  }
+  return active.length ? active.join(", ") : null;
+}
+function renderChips({ windowData, om, sandbox, pollen }) {
   const chips = [];
   if (sunset) {
-    const ss = sunset;
-    chips.push(`<span class="chip">zonsondergang <strong>${pad(ss.getHours())}:${pad(ss.getMinutes())}</strong></span>`);
+    chips.push(`<span class="chip">zonsondergang <strong>${pad(sunset.getHours())}:${pad(sunset.getMinutes())}</strong></span>`);
   }
+  if (sandbox?.status) {
+    const meta = SANDBOX_LABELS[sandbox.status] || { txt: sandbox.status, color: "var(--ink-soft)" };
+    chips.push(`<span class="chip" style="color:${meta.color}">zandbak <strong>${meta.txt}</strong></span>`);
+  }
+  const pln = pollenChipText(pollen);
+  if (pln) chips.push(`<span class="chip" style="color:var(--warn)">pollen <strong>${pln}</strong></span>`);
   if (windowData?.bias != null) {
     const b = Math.round(windowData.bias * 10) / 10;
     const sign = b > 0 ? "+" : "";
@@ -939,13 +1050,13 @@ function renderChips({ windowData, om }) {
 
 // ─── Boot ────────────────────────────────────────────────────
 tickClock();
-setInterval(tickClock, 1000);
+setInterval(tickClock, 15 * 1000);
 applyTheme();
 setInterval(applyTheme, THEME_TICK_MS);
 loadAll();
 setInterval(loadAll, DATA_REFRESH_MS);
 // Re-render time-blocks each minute so "now" highlight follows the clock
-setInterval(() => { renderBlocks(null); }, 60 * 1000);
+setInterval(() => safe("blocks-tick", () => renderBlocks()), 60 * 1000);
 </script>
 </body>
 </html>

@@ -74,7 +74,7 @@ html, body {
   height: 100dvh;
   padding: 24px 28px;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto 1fr auto;
   gap: 18px;
   background: radial-gradient(ellipse at top right, var(--bg-2) 0%, var(--bg) 70%);
 }
@@ -260,8 +260,9 @@ html, body {
 .stamp-open { color: var(--moss); }
 .stamp-dicht { color: var(--clay); }
 
-/* aside stack — Tuin, Maaien, Vandaag, Chips. Vandaag absorbs slack so
-   Chips always stays visible at the bottom of the column. */
+/* aside stack — Tuin (+ Maaien), Vandaag. Vandaag absorbs the slack so
+   it always fills the column. Chips live in their own full-width row
+   below the body. */
 .aside {
   display: flex;
   flex-direction: column;
@@ -336,7 +337,16 @@ html, body {
   margin-right: 6px;
 }
 
-/* mow */
+/* mow — merged into the Tuin panel, separated by a dashed rule */
+.mow-block {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--hair);
+}
+.mow-label {
+  display: block;
+  margin-bottom: 6px;
+}
 .mow-line {
   display: flex;
   align-items: baseline;
@@ -407,12 +417,13 @@ html, body {
 .block-icon { font-size: 16px; line-height: 1; text-align: center; }
 .block-name { font-size: 16px; font-style: italic; }
 
-/* chips */
+/* chips — full-width row across the bottom of the dashboard */
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 0 2px;
+  padding: 14px 2px 0;
+  border-top: 1px solid var(--hair);
 }
 .chip {
   font-family: "JetBrains Mono", monospace;
@@ -468,7 +479,7 @@ html, body {
 
 /* portrait fallback */
 @media (orientation: portrait) {
-  .dash { grid-template-rows: auto auto auto auto; }
+  .dash { grid-template-rows: auto auto 1fr auto; }
   .body { grid-template-columns: 1fr; }
 }
 </style>
@@ -526,22 +537,23 @@ html, body {
         <div class="panel-title">tuin</div>
         <div class="soil-row" id="soil-row"></div>
         <div class="soil-next" id="soil-next"><span class="lbl">volgende beurt</span><span id="soil-next-text">—</span></div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">maaien</div>
-        <div class="mow-line">
-          <div class="mow-when" id="mow-when">—</div>
-          <div class="mow-height" id="mow-height"></div>
+        <div class="mow-block">
+          <span class="caps mow-label">maaien</span>
+          <div class="mow-line">
+            <div class="mow-when" id="mow-when">—</div>
+            <div class="mow-height" id="mow-height"></div>
+          </div>
+          <div class="mow-reason" id="mow-reason"></div>
         </div>
-        <div class="mow-reason" id="mow-reason"></div>
       </div>
       <div class="panel panel-vandaag">
         <div class="panel-title">vandaag</div>
         <div class="blocks-list" id="blocks-list"></div>
       </div>
-      <div class="chips" id="chips"></div>
     </div>
   </section>
+
+  <div class="chips" id="chips"></div>
 
 </main>
 
@@ -882,8 +894,8 @@ function computeOutsideTrend(om) {
   return (t1 - t0) / (future - idx);  // °C per hour
 }
 
-// Scatter plot: temp (x) vs humidity (y). One dot per room + outside.
-// Vector = trend direction & magnitude (horizontal, since we only have
+// Scatter plot: vocht (x) vs temp (y). One dot per room + outside.
+// Vector = trend direction & magnitude (vertical, since we only have
 // temperature trend; humidity trend isn't tracked yet). Stable = no vector.
 function renderRooms(wd, om) {
   const C = colors();
@@ -922,37 +934,37 @@ function renderRooms(wd, om) {
   let hMax = Math.min(100, Math.ceil ((Math.max(...hums) + 5) / 10) * 10);
   if (hMax - hMin < 30) { const mid = (hMin + hMax) / 2; hMin = Math.max(0, Math.floor(mid - 15)); hMax = Math.min(100, Math.ceil(mid + 15)); }
 
-  const X = (t) => m.l + ((t - tMin) / (tMax - tMin)) * innerW;
-  const Y = (h) => m.t + (1 - (h - hMin) / (hMax - hMin)) * innerH;
+  const X = (h) => m.l + ((h - hMin) / (hMax - hMin)) * innerW;
+  const Y = (t) => m.t + (1 - (t - tMin) / (tMax - tMin)) * innerH;
 
-  // Gridlines + tick labels (every 2 °C and every 10%).
+  // Gridlines + tick labels (humidity every 10% on x, temp every 2 °C on y).
   const xTicks = [], yTicks = [];
-  for (let t = Math.ceil(tMin / 2) * 2; t <= tMax; t += 2) xTicks.push(t);
-  for (let h = Math.ceil(hMin / 10) * 10; h <= hMax; h += 10) yTicks.push(h);
+  for (let h = Math.ceil(hMin / 10) * 10; h <= hMax; h += 10) xTicks.push(h);
+  for (let t = Math.ceil(tMin / 2) * 2; t <= tMax; t += 2) yTicks.push(t);
   const grid = [
-    ...xTicks.map(t => `<line x1="${X(t).toFixed(1)}" y1="${m.t}" x2="${X(t).toFixed(1)}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
-    ...yTicks.map(h => `<line x1="${m.l}" y1="${Y(h).toFixed(1)}" x2="${W - m.r}" y2="${Y(h).toFixed(1)}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
+    ...xTicks.map(h => `<line x1="${X(h).toFixed(1)}" y1="${m.t}" x2="${X(h).toFixed(1)}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
+    ...yTicks.map(t => `<line x1="${m.l}" y1="${Y(t).toFixed(1)}" x2="${W - m.r}" y2="${Y(t).toFixed(1)}" stroke="${C.hair}" stroke-opacity="0.10" stroke-width="0.5"/>`),
   ].join("");
-  const xLabels = xTicks.map(t => `<text x="${X(t).toFixed(1)}" y="${H - m.b + 14}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="middle">${t}°</text>`).join("");
-  const yLabels = yTicks.map(h => `<text x="${m.l - 6}" y="${(Y(h) + 3).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="end">${h}%</text>`).join("");
+  const xLabels = xTicks.map(h => `<text x="${X(h).toFixed(1)}" y="${H - m.b + 14}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="middle">${h}%</text>`).join("");
+  const yLabels = yTicks.map(t => `<text x="${m.l - 6}" y="${(Y(t) + 3).toFixed(1)}" font-family="JetBrains Mono" font-size="9" fill="${C.soft}" text-anchor="end">${t}°</text>`).join("");
 
   const axes = `
     <line x1="${m.l}" y1="${m.t}" x2="${m.l}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.28" stroke-width="0.8"/>
     <line x1="${m.l}" y1="${H - m.b}" x2="${W - m.r}" y2="${H - m.b}" stroke="${C.hair}" stroke-opacity="0.28" stroke-width="0.8"/>
   `;
   const titles = `
-    <text x="${W - m.r}" y="${H - 4}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="end">TEMPERATUUR →</text>
-    <text x="${m.l}" y="${m.t - 8}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="start">↑ VOCHT</text>
+    <text x="${W - m.r}" y="${H - 4}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="end">VOCHT →</text>
+    <text x="${m.l}" y="${m.t - 8}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="start">↑ TEMPERATUUR</text>
   `;
 
   // Dots + vectors
   const STABLE = 0.15;           // °C/h threshold below which we draw no vector
-  const PX_PER_DEG_H = 70;       // horizontal pixels per (°C/h) of trend
+  const PX_PER_DEG_H = 70;       // vertical pixels per (°C/h) of trend
   const VEC_MIN = 14, VEC_MAX = 70;
 
   // Pre-compute coordinates so we can pick label positions that don't
   // overlap their dot or each other badly.
-  const placed = dots.map(d => ({ ...d, px: X(d.temp), py: Y(d.hum) }));
+  const placed = dots.map(d => ({ ...d, px: X(d.hum), py: Y(d.temp) }));
 
   const dotsSVG = placed.map((d, i) => {
     const color = d.kind === "outside"
@@ -961,19 +973,20 @@ function renderRooms(wd, om) {
 
     let vector = "";
     if (Math.abs(d.trend) > STABLE) {
-      const dir = d.trend > 0 ? 1 : -1;
+      const dir = d.trend > 0 ? -1 : 1;   // warming → temp rises → up (−y)
       const len = clamp(Math.abs(d.trend) * PX_PER_DEG_H, VEC_MIN, VEC_MAX);
-      const x2 = d.px + dir * len;
-      vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${d.py.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`;
+      const y2 = d.py + dir * len;
+      vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${d.px.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`;
     }
 
     const dot = d.kind === "outside"
       ? `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="2"/>`
       : `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="6" fill="${color}" stroke="${C.bg2}" stroke-width="1.5"/>`;
 
-    // Place label opposite the vector when possible, else to the right.
-    const labelLeft = d.trend > STABLE;  // vector points right → label left
-    const lx = labelLeft ? d.px - 12 : d.px + 12;
+    // Vector is vertical now, so place the label to the side — left when
+    // the dot is near the right edge, else right — to avoid clipping.
+    const labelLeft = d.px > W - m.r - 60;
+    const lx = labelLeft ? d.px - 11 : d.px + 11;
     const ly = d.py + 4;
     const anchor = labelLeft ? "end" : "start";
     const label = `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-family="JetBrains Mono" font-size="10" letter-spacing="2" fill="${C.ink}" text-anchor="${anchor}">${d.label}</text>`;

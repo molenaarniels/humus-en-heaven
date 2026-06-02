@@ -19,7 +19,7 @@ roteren (elke refresh herroept de vorige). De roterende token leeft in een
 elke run meteen teruggeschreven. De eenmalige autorisatie doe je met
 `tado_auth_bootstrap.py`.
 
-Cadans: per-kamer toestandsmachine (zoals sandbox_notify). Eén check per uur,
+Cadans: per-kamer toestandsmachine (zoals sandbox_notify). Eén check per kwartier,
 maar alléén een bericht wanneer een kamer van advies wisselt (open ↔ dicht).
 
 DRY_RUN=1 → print het bericht i.p.v. te versturen (token + state worden nog wél
@@ -29,6 +29,7 @@ weggeschreven; de token-rotatie mág niet overgeslagen worden).
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -69,7 +70,7 @@ TREND_WINDOW_H  = 4.0   # uur — historie-venster voor de binnentemp-trend
 TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
 PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
-HISTORY_KEEP    = 48    # samples — rollend venster aan binnen/buiten-metingen (~2 dagen uurlijks)
+HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
 
 # ── Locatie (Utrecht) ──────────────────────────────────────────────────────────
 LATITUDE  = 52.0907
@@ -241,21 +242,34 @@ def _parse_local(t: str) -> datetime:
 
 
 def fetch_open_meteo() -> dict:
-    """Huidige temp + uurlijkse forecast (vandaag + morgen)."""
-    r = requests.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude":     LATITUDE,
-            "longitude":    LONGITUDE,
-            "current":      "temperature_2m,shortwave_radiation",
-            "hourly":       "temperature_2m",
-            "timezone":     "Europe/Amsterdam",
-            "forecast_days": 2,
-        },
-        timeout=20,
-    )
-    r.raise_for_status()
-    data = r.json()
+    """Huidige temp + uurlijkse forecast (vandaag + morgen).
+
+    Drie pogingen met korte backoff: Open-Meteo's free tier heeft incidentele
+    5xx-hiccups (geobserveerd: ~17% kans op een 502 binnen een ~5u-venster). Open-Meteo
+    is een harde dependency — zonder forecast geen dashboard, geen warm-day-gate, geen
+    open-tijd-voorspelling — dus één tikkie mag niet de hele iteratie laten sneuvelen.
+    """
+    params = {
+        "latitude":     LATITUDE,
+        "longitude":    LONGITUDE,
+        "current":      "temperature_2m,shortwave_radiation",
+        "hourly":       "temperature_2m",
+        "timezone":     "Europe/Amsterdam",
+        "forecast_days": 2,
+    }
+    data = None
+    for attempt, delay in [(1, 0), (2, 3), (3, 8)]:
+        if delay:
+            time.sleep(delay)
+        try:
+            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"[open-meteo] poging {attempt}/3 mislukt: {e}")
+            if attempt == 3:
+                raise
     cur = data.get("current") or {}
     current = cur.get("temperature_2m")
     h = data.get("hourly", {})

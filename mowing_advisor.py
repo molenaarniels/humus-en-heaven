@@ -39,6 +39,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
+from notify import send_telegram
+
 # =============================================================================
 # Configuratie — alle tunables staan hier bovenaan.
 # =============================================================================
@@ -419,31 +421,6 @@ def save_state(state: dict) -> None:
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
     print(f"[state] opgeslagen: {state}")
-
-
-# =============================================================================
-# Telegram.
-# =============================================================================
-
-def send_telegram(text: str) -> bool:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat:
-        print("[telegram] geen creds, overslaan")
-        return False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True},
-            timeout=10,
-        )
-        r.raise_for_status()
-        print("[telegram] ✓ verzonden")
-        return True
-    except Exception as e:
-        print(f"[telegram] fout: {e}")
-        return False
 
 
 # =============================================================================

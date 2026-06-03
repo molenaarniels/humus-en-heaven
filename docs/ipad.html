@@ -915,9 +915,31 @@ function computeOutsideTrend(om) {
   return (t1 - t0) / (future - idx);  // °C per hour
 }
 
+// Outside humidity trend (%RH/h), derived from Open-Meteo hourly — the
+// horizontal companion to computeOutsideTrend, so the buiten dot gets an
+// angled vector consistent with its displayed (Open-Meteo) humidity.
+function computeOutsideHumTrend(om) {
+  if (!om?.hourly?.time || !om?.hourly?.relative_humidity_2m) return 0;
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const curStr   = `${todayStr}T${pad(now.getHours())}:00`;
+  const idx = om.hourly.time.indexOf(curStr);
+  if (idx < 0) return 0;
+  const last = om.hourly.relative_humidity_2m.length - 1;
+  const future = Math.min(idx + 2, last);
+  if (future <= idx) return 0;
+  const h0 = om.hourly.relative_humidity_2m[idx];
+  const h1 = om.hourly.relative_humidity_2m[future];
+  if (typeof h0 !== "number" || typeof h1 !== "number") return 0;
+  return (h1 - h0) / (future - idx);  // %RH per hour
+}
+
 // Scatter plot: vocht (x) vs temp (y). One dot per room + outside.
-// Vector = trend direction & magnitude (vertical, since we only have
-// temperature trend; humidity trend isn't tracked yet). Stable = no vector.
+// Vector = trend direction & magnitude: an angled arrow combining the
+// temperature trend (vertical: warming → up) and the humidity trend
+// (horizontal: drying → left, humidifying → right). Stable = no vector.
+// Room humidity trend comes from window_data (hum_trend); buiten's from
+// Open-Meteo. Rooms without hum_trend yet fall back to a vertical vector.
 function renderRooms(wd, om) {
   const C = colors();
   const W = 600, H = 400;
@@ -930,8 +952,9 @@ function renderRooms(wd, om) {
   const outTemp = wd?.outside_now ?? om?.current?.temperature_2m;
   const outHum  = om?.current?.relative_humidity_2m;
   const outTrend = computeOutsideTrend(om);
+  const outHumTrend = computeOutsideHumTrend(om);
   if (outTemp != null && outHum != null) {
-    dots.push({ key: "buiten", label: "BUITEN", temp: outTemp, hum: outHum, trend: outTrend, kind: "outside" });
+    dots.push({ key: "buiten", label: "BUITEN", temp: outTemp, hum: outHum, trend: outTrend, humTrend: outHumTrend, kind: "outside" });
   }
   for (const key of ROOM_ORDER) {
     const r = wd?.rooms?.[key];
@@ -940,6 +963,7 @@ function renderRooms(wd, om) {
       key, label: ROOM_SHORT[key] || key.toUpperCase(),
       temp: r.inside, hum: r.humidity,
       trend: typeof r.trend === "number" ? r.trend : 0,
+      humTrend: typeof r.hum_trend === "number" ? r.hum_trend : 0,
       advice: r.advice, kind: "room",
     });
   }
@@ -979,8 +1003,10 @@ function renderRooms(wd, om) {
   `;
 
   // Dots + vectors
-  const STABLE = 0.15;           // °C/h threshold below which we draw no vector
-  const PX_PER_DEG_H = 70;       // vertical pixels per (°C/h) of trend
+  const STABLE_T = 0.15;         // °C/h — below this temp trend contributes no vertical
+  const STABLE_H = 1.0;          // %RH/h — below this humidity trend contributes no horizontal
+  const PX_PER_DEG_H = 70;       // vertical pixels per (°C/h) of temp trend
+  const PX_PER_PCT_H = 7;        // horizontal pixels per (%RH/h) — 10%/h ≈ 1°C/h visually
   const VEC_MIN = 14, VEC_MAX = 70;
 
   // Pre-compute coordinates so we can pick label positions that don't
@@ -992,21 +1018,38 @@ function renderRooms(wd, om) {
       ? C.sun
       : (d.advice === "dicht" ? C.clay : C.moss);
 
+    // Angled vector: temp trend → vertical (warming = up), humidity trend →
+    // horizontal (humidifying = right, drying = left). Clamp the total length
+    // while preserving direction, and cap the arrow's reach in pixels.
     let vector = "";
-    if (Math.abs(d.trend) > STABLE) {
-      const dir = d.trend > 0 ? -1 : 1;   // warming → temp rises → up (−y)
-      const len = clamp(Math.abs(d.trend) * PX_PER_DEG_H, VEC_MIN, VEC_MAX);
-      const y2 = d.py + dir * len;
-      vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${d.px.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`;
+    const tTrend = (Math.abs(d.trend)    > STABLE_T) ? d.trend    : 0;
+    const hTrend = (Math.abs(d.humTrend) > STABLE_H) ? d.humTrend : 0;
+    if (tTrend !== 0 || hTrend !== 0) {
+      let vx =  hTrend * PX_PER_PCT_H;   // x = humidity → rising humidity moves right
+      let vy = -tTrend * PX_PER_DEG_H;   // y inverted → warming moves up (−y)
+      const raw = Math.hypot(vx, vy);
+      const len = clamp(raw, VEC_MIN, VEC_MAX);
+      if (raw > 0.001) { const s = len / raw; vx *= s; vy *= s; }
+      const x2 = d.px + vx, y2 = d.py + vy;
+      // Small arrowhead so the direction reads at a glance.
+      const ang = Math.atan2(vy, vx), ah = 6, spread = 0.5;
+      const ax1 = x2 - ah * Math.cos(ang - spread), ay1 = y2 - ah * Math.sin(ang - spread);
+      const ax2 = x2 - ah * Math.cos(ang + spread), ay2 = y2 - ah * Math.sin(ang + spread);
+      vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`
+             + `<polyline points="${ax1.toFixed(1)},${ay1.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)} ${ax2.toFixed(1)},${ay2.toFixed(1)}" fill="none" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`;
     }
 
     const dot = d.kind === "outside"
       ? `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="2"/>`
       : `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="6" fill="${color}" stroke="${C.bg2}" stroke-width="1.5"/>`;
 
-    // Vector is vertical now, so place the label to the side — left when
-    // the dot is near the right edge, else right — to avoid clipping.
-    const labelLeft = d.px > W - m.r - 60;
+    // Place the label opposite the arrow's horizontal direction to avoid sitting
+    // on the vector; near an edge, force it inward so it can't clip.
+    const vxSign = hTrend * PX_PER_PCT_H;
+    let labelLeft;
+    if (d.px > W - m.r - 60)      labelLeft = true;
+    else if (d.px < m.l + 60)     labelLeft = false;
+    else                          labelLeft = vxSign > 0;
     const lx = labelLeft ? d.px - 11 : d.px + 11;
     const ly = d.py + 4;
     const anchor = labelLeft ? "end" : "start";

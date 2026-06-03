@@ -449,10 +449,11 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
 def smoothed_outside(history: list[dict], now: datetime,
                      current: float | None) -> float | None:
     """Mediaan van de buitentemp over de laatste SMOOTH_WINDOW_H uur, inclusief de
-    huidige meting. Een mediaan negeert losse uitschieters — bv. een korte zon-burst
-    die via de stralingsbiascorrectie de gecorrigeerde buitentemp even laat duiken —
-    zodat één rare meting het advies niet over de hysterese-band trekt en laat flippen.
-    `current` None → None; te weinig historie → gewoon de huidige meting."""
+    huidige meting. Een mediaan negeert losse uitschieters — bv. een korte, hevige
+    regenbui die de buitentemp door verdampingskoeling even scherp laat duiken en
+    daarna weer herstelt — zodat één voorbijgaande meting het advies niet over de
+    hysterese-band trekt en laat flippen (je wilt sowieso geen raam open tijdens een
+    bui). `current` None → None; te weinig historie → gewoon de huidige meting."""
     if current is None:
         return None
     vals = [current]
@@ -697,11 +698,12 @@ def main():
               f"(zon {solar_now} W/m², bron {src})")
 
     # Anti-flapping: streek de actuele buitentemp glad met de mediaan over de laatste
-    # SMOOTH_WINDOW_H aan metingen vóórdat we erop beslissen. Korte zon-bursts (via de
-    # stralingsbiascorrectie) en microklimaat-ruis schommelen de gecorrigeerde temp soms
-    # >2°C tussen kwartiermetingen — meer dan de hysterese-band — wat het advies liet
-    # flippen. De ruwe `outside` blijft de uitlezing/historie/bias voeden; `outside_decide`
-    # is wat decide() ziet.
+    # SMOOTH_WINDOW_H aan metingen vóórdat we erop beslissen. Korte, hevige regenbuien
+    # laten de buitentemp door verdampingskoeling soms >2°C duiken tussen kwartiermetingen
+    # — meer dan de hysterese-band — om daarna weer te herstellen, wat het advies liet
+    # flippen (en je wilt sowieso geen raam open in een bui). De mediaan negeert zo'n losse
+    # dip. De ruwe `outside` blijft de uitlezing/historie/bias voeden; `outside_decide` is
+    # wat decide() ziet.
     prev_hist = read_prev_dashboard().get("outside_history", [])
     outside_decide = smoothed_outside(prev_hist, now, outside)
     if outside_decide is not None and outside is not None and abs(outside_decide - outside) >= 0.1:

@@ -230,6 +230,7 @@ function biasStripHTML(d) {
         <div style="flex:1;min-width:220px;">
           <div class="stat-row"><span class="lbl">Stationscorrectie</span><span>${biasTxt}</span></div>
           <div class="stat-row"><span class="lbl">Model nu (Open-Meteo)</span><span>${fmtT(d.om_now)}</span></div>
+          <div class="stat-row"><span class="lbl">Luchtvochtigheid buiten</span><span>${d.outside_humidity == null ? "–" : d.outside_humidity + "%"}${humidityNote(d.outside_humidity)}</span></div>
           <div class="stat-row"><span class="lbl">Verwachte dag-max</span><span>${fmtT(d.day_max)}</span></div>
           <div class="stat-row" style="border:none;"><span class="lbl">Drempel koeladvies</span><span>${dayBadge}</span></div>
         </div>
@@ -263,6 +264,23 @@ function ventNote(inside, vent) {
     + "kamer benadert als je ventileert. Lager dan binnen = ventileren droogt de kamer uit "
     + "(minder schimmelrisico).";
   return ` · <span style="color:${color}" title="${tip}">(${vent}% buiten)</span>`;
+}
+
+// Vocht-reden onder de status: waarom luchtvochtigheid het raam-advies kleurt. Sluit aan
+// op ventNote() — klei = ventileren maakt vochtig/muf, mos = ventileren droogt.
+function humidityChip(r, comfortHigh) {
+  if (!r || r.inside == null) return "";
+  const wrap = (color, txt) =>
+    `<div class="status-line" style="color:${color};font-size:12px;margin-top:4px;">${txt}</div>`;
+  if (r.rh_veto)
+    return wrap("var(--clay)", `💧 Buiten te muf om te ventileren${r.vent_rh != null ? ` (≈${r.vent_rh}% binnen)` : ""}`);
+  if (r.dryout)
+    return wrap("var(--moss)", "💧 Open om te ontvochtigen — buiten is droger");
+  // Muffe buitenlucht houdt een warme kamer bewust dicht (straf op de open-drempel).
+  if (r.advice !== "open" && r.rh_offset != null && r.rh_offset > 0.3
+      && r.inside > comfortHigh)
+    return wrap("var(--clay)", "💧 Vochtige buitenlucht — pas openen bij meer warmte");
+  return "";
 }
 
 function sparkSVG(history, refTemp, bandLow = null, bandHigh = null) {
@@ -317,6 +335,7 @@ function roomCardHTML(name, r) {
       </div>
       ${sparkSVG(r.history, comfortHigh, comfortLow, comfortHigh)}
       <div class="status-line" style="color:${statusColor};">${r.status_text}</div>
+      ${humidityChip(r, comfortHigh)}
       <div style="margin-top:14px;border-top:1px dashed #2a241b33;padding-top:10px;">
         <div class="stat-row"><span class="lbl">Luchtvochtigheid</span><span>${r.humidity == null ? "–" : r.humidity + "%"}${humidityNote(r.humidity)}${ventNote(r.humidity, r.vent_rh)}</span></div>
         <div class="stat-row" style="border:none;"><span class="lbl">Comfortband</span><span>${comfortLow.toFixed(1)}–${comfortHigh.toFixed(1)}°</span></div>

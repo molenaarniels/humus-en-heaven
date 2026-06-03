@@ -244,7 +244,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 {
   "generated_at": "ISO UTC", "as_of_local": "ISO+02:00", "source": "window_advisor",
   "gated": false, "gate_reason": "warme dag | koele dag — advies onderdrukt",
-  "outside_now": 26.5, "outside_source": "wu | open-meteo", "om_now": 25.0,
+  "outside_now": 26.5, "outside_smoothed": 26.2, "outside_source": "wu | open-meteo", "om_now": 25.0,
   "outside_humidity": 60,
   "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12,
@@ -267,6 +267,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 - **OPEN** when `inside > high` and `outside ≤ inside − OPEN_MARGIN`.
 - **CLOSE** when `outside ≥ inside − CLOSE_MARGIN` (heat-in), or `inside ≤ low` (cool enough — don't overcool) **unless banking cooling** (see below).
 - In-between (`low < inside ≤ high`) → keep current advice (dead-band → no flapping).
+- **Smoothed decision temp (`SMOOTH_WINDOW_H 0.75`):** before `decide()`/`open_now`, the (already bias-corrected) outside temp is replaced by the **median** over the last `SMOOTH_WINDOW_H` of `outside_history` (incl. the current sample). Quarter-hourly readings can swing >2°C — more than the 1.0°C dead-band — when a short, heavy rain shower briefly drops the outside temp by evaporative cooling and then recovers; the median ignores these lone dips so a passing shower no longer flips the advice (and you don't want a window open during a downpour anyway). The **raw** corrected reading still drives `outside_now`, `bias` and `outside_history.temp` (history is never the smoothed value, so the median can't compound); `outside_smoothed` is the additive readout of the value `decide()` actually saw, and Telegram shows it too so the printed °C justifies the advice.
 - **Banking cooling (`warm_ahead`):** if the max temp in the next 24h ≥ `WARM_DAY_MAX`, a room is **not** closed just because it dipped below its `low` — windows stay open through the night to keep banking coolness for the warm day ahead, as long as outside stays cooler. Heat-in still closes. On a cool day ahead the old "cool enough → close" behaviour applies. `warm_ahead` is a forward-looking 24h check (not calendar-day) so it's correct deep at night.
 - **Cooling-only gate:** cool forecast day (max `< WARM_DAY_MAX`) and no warm room → no advice.
 - **Reopen hint** (`— buiten zakt rond HH weer onder binnen`) on a "Sluit" message only shows when outside is currently *above* the reopen threshold (`outside > inside − OPEN_MARGIN`), i.e. a genuine heat-in close. If outside is already below it, the hint would be meaningless and is suppressed.

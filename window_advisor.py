@@ -63,6 +63,21 @@ ROOM_COMFORT = {
     "office":      (20.0, 22.0),
 }
 
+# ── Vocht-comfort (ventilatie balanceert temperatuur én luchtvochtigheid) ─────────
+# Op een vochtig huis met een hekel aan warmte wringt puur thermisch koelen op muffe
+# zomerdagen: een raam open om te koelen haalt dan klamme lucht binnen. We projecteren
+# met `vent_rh` (convert_rh) wat de kamer-RH wórdt als je ventileert, en laten dat de
+# open-drempel verschuiven (muf = strenger, droog = soepeler), met een hard veto-plafond.
+RH_COMFORT       = 60.0   # % — streef geprojecteerde kamer-RH na ventileren
+RH_HARD_CAP      = 72.0   # % — daarboven nooit openen (te muf), forceert dicht
+RH_TEMP_K        = 0.15   # °C per %RH afwijking van RH_COMFORT (de straf spant zo bijna de
+                          #      hele 0–2°C op over de 60→72%-band, dus streef→veto)
+RH_PENALTY_MAX   = 2.0    # °C — max muf-straf: open-drempel omhoog
+RH_BONUS_MAX     = 0.5    # °C — max droog-bonus: open-drempel omlaag (asymmetrisch & klein,
+                          #      zodat het gedrag op gewone droge dagen vrijwel onveranderd blijft)
+RH_DRYOUT_MIN    = 65.0   # % — binnen-RH waarboven droge buitenlucht mag openen
+RH_DRYOUT_MARGIN = 8.0    # % — buitenlucht moet ≥ deze marge droger (vent_rh ≤ RH − marge)
+
 
 def comfort_band(room: str) -> tuple[float, float]:
     """(low, high) comfortgrenzen voor een kamer; fallback op de globale COMFORT_HIGH."""
@@ -95,6 +110,7 @@ def convert_rh(rh_out: float | None, t_out: float | None,
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
 TREND_WINDOW_H  = 4.0   # uur — historie-venster voor de binnentemp-trend
 TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
+RH_TREND_MAX    = 15.0  # %RH/uur — clamp op de vochttrend (richtingvector op het scatterplot)
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
 PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
 HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
@@ -361,23 +377,25 @@ def correct_forecast(hourly: list[dict], bias: float, now: datetime) -> list[dic
     return out
 
 
-def room_trend(history: list[dict], now: datetime) -> float | None:
-    """Helling (°C/uur) van de binnentemperatuur over de laatste TREND_WINDOW_H uur,
-    via kleinste-kwadraten over de samples. None bij te weinig historie. Geclamped op
-    ±TREND_MAX_SLOPE zodat één rare meting de projectie niet laat ontsporen."""
-    pts = []  # (uren_geleden_negatief, temp)
+def room_trend(history: list[dict], now: datetime,
+               key: str = "temp", clamp: float = TREND_MAX_SLOPE) -> float | None:
+    """Helling (per uur) van een serie over de laatste TREND_WINDOW_H uur, via
+    kleinste-kwadraten over de samples. None bij te weinig historie. Geclamped op
+    ±`clamp` zodat één rare meting de projectie niet laat ontsporen. `key` kiest de
+    grootheid: "temp" (°C/uur, default) of "hum" (%RH/uur, gebruik clamp=RH_TREND_MAX)."""
+    pts = []  # (uren_geleden_negatief, waarde)
     for s in history:
         try:
             t = datetime.fromisoformat(s["t"])
         except (ValueError, TypeError, KeyError):
             continue
-        temp = s.get("temp")
-        if temp is None:
+        val = s.get(key)
+        if val is None:
             continue
         dt_h = (t - now).total_seconds() / 3600.0  # ≤ 0 voor verleden
         if dt_h < -TREND_WINDOW_H or dt_h > 0.01:
             continue
-        pts.append((dt_h, temp))
+        pts.append((dt_h, val))
     if len(pts) < 2:
         return None
     n = len(pts)
@@ -389,7 +407,7 @@ def room_trend(history: list[dict], now: datetime) -> float | None:
     if abs(denom) < 1e-9:
         return None
     slope = (n * sxy - sx * sy) / denom
-    return max(-TREND_MAX_SLOPE, min(TREND_MAX_SLOPE, slope))
+    return max(-clamp, min(clamp, slope))
 
 
 def project_inside(inside_now: float, slope: float | None, hours_ahead: float) -> float:
@@ -477,11 +495,46 @@ def smoothed_outside(history: list[dict], now: datetime,
 
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
 
+def humidity_offset(vent_rh: float | None) -> float:
+    """°C-correctie op de open-drempel op basis van de geprojecteerde kamer-RH na
+    ventileren (`vent_rh`): + = muf (strenger openen), − = droog (soepeler openen),
+    begrensd. Asymmetrisch geclamped — de muf-straf mag groter zijn dan de droog-bonus,
+    zodat het gedrag op gewone droge dagen vrijwel onveranderd blijft."""
+    if vent_rh is None:
+        return 0.0
+    raw = RH_TEMP_K * (vent_rh - RH_COMFORT)
+    return max(-RH_BONUS_MAX, min(RH_PENALTY_MAX, raw))
+
+
+def open_desire(inside: float | None, outside: float | None, low: float, high: float,
+                vent_rh: float | None = None, humidity: float | None = None) -> bool:
+    """Wil de kamer nú open (koelen óf ontvochtigen), vóór hysterese? Eén bron van
+    waarheid voor zowel decide() als het dashboard-`open_now`, zodat advies en dashboard
+    niet uit elkaar lopen."""
+    if inside is None or outside is None:
+        return False
+    if vent_rh is not None and vent_rh >= RH_HARD_CAP:
+        return False  # veto: nooit ventileren naar te muffe lucht
+    if inside > high + humidity_offset(vent_rh) and outside <= inside - OPEN_MARGIN:
+        return True  # koelen — vocht schuift de open-drempel (muf hoger, droog lager)
+    # Ontvochtig-trigger: een muffe (niet per se warme) kamer mag open als de buitenlucht
+    # duidelijk droger is en er geen warmte instroomt — drogen zonder het huis op te warmen.
+    if (humidity is not None and vent_rh is not None
+            and humidity >= RH_DRYOUT_MIN
+            and vent_rh <= humidity - RH_DRYOUT_MARGIN
+            and inside > low and outside <= inside):
+        return True
+    return False
+
+
 def decide(inside: float | None, outside: float | None, prev: str,
-           low: float, high: float, bank_cooling: bool = False) -> str:
+           low: float, high: float, bank_cooling: bool = False,
+           vent_rh: float | None = None, humidity: float | None = None) -> str:
     if inside is None or outside is None:
         return prev  # geen meting → advies niet wijzigen
-    if inside > high and outside <= inside - OPEN_MARGIN:
+    if vent_rh is not None and vent_rh >= RH_HARD_CAP:
+        return "dicht"  # te muf → dicht, ook een open raam (klam/schimmel weegt zwaarder)
+    if open_desire(inside, outside, low, high, vent_rh, humidity):
         return "open"
     if outside >= inside - CLOSE_MARGIN:
         return "dicht"  # warmte-instroom: buiten heeft de kamer ingehaald → sluiten
@@ -580,8 +633,11 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         sample = {"t": now.isoformat(), "temp": round(outside, 1)}
         if om_now is not None:
             sample["om"] = round(om_now, 1)
+        if outside_rh is not None:
+            sample["hum"] = round(outside_rh)  # gemeten buiten-RH → vochttrend op het scatterplot
         out_hist = _append_trim(out_hist, sample)
     outside_slope = room_trend(out_hist, now)
+    outside_hum_slope = room_trend(out_hist, now, "hum", RH_TREND_MAX)
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX
 
@@ -594,17 +650,29 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
         hist = prev_hist
         if inside is not None:
-            hist = _append_trim(prev_hist, {"t": now.isoformat(), "temp": round(inside, 1)})
+            sample = {"t": now.isoformat(), "temp": round(inside, 1)}
+            if humidity is not None:
+                sample["hum"] = round(humidity)  # binnen-RH → vochttrend op het scatterplot
+            hist = _append_trim(prev_hist, sample)
 
         low, high = comfort_band(room)
         slope  = room_trend(hist, now)
+        hum_slope = room_trend(hist, now, "hum", RH_TREND_MAX)
+        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
+        rh_off = humidity_offset(vent_rh)
         advice = decide(inside, od, prev_rooms.get(room, "dicht"),
-                        low, high, bank_cooling=warm_ahead)
-        intervals, proj = predict_open_intervals(fc, inside, slope, now, high)
+                        low, high, bank_cooling=warm_ahead,
+                        vent_rh=vent_rh, humidity=humidity)
+        # De vooruit-voorspeller verschuift de open-drempel mee met de huidige vochtstraf
+        # (per-uur RH-forecast valt buiten scope → huidige offset als statische benadering).
+        intervals, proj = predict_open_intervals(fc, inside, slope, now, high + rh_off)
 
-        open_now = (inside is not None and od is not None
-                    and inside > high and od <= inside - OPEN_MARGIN)
+        open_now = open_desire(inside, od, low, high, vent_rh, humidity)
         predicted_open = intervals[0]["start"] if intervals else None
+
+        rh_veto = vent_rh is not None and vent_rh >= RH_HARD_CAP
+        dryout = bool(open_now and not (inside is not None and od is not None
+                      and inside > high + rh_off and od <= inside - OPEN_MARGIN))
 
         if inside is None:
             status_text = "Geen meting"
@@ -616,16 +684,18 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         else:
             status_text = "Vandaag dicht houden"
 
-        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
-
         rooms_out[room] = {
             "inside":         round(inside, 1) if inside is not None else None,
             "humidity":       round(humidity) if humidity is not None else None,
             "vent_rh":        round(vent_rh) if vent_rh is not None else None,
+            "rh_offset":      round(rh_off, 2),
+            "rh_veto":        rh_veto,
+            "dryout":         dryout,
             "advice":         advice,
             "comfort_low":    low,
             "comfort_high":   high,
             "trend":          round(slope, 2) if slope is not None else None,
+            "hum_trend":      round(hum_slope, 2) if hum_slope is not None else None,
             "open_now":       open_now,
             "predicted_open": predicted_open,
             "open_intervals": intervals,
@@ -646,6 +716,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "outside_humidity": round(outside_rh) if outside_rh is not None else None,
         "om_now":         round(om_now, 1) if om_now is not None else None,
         "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
+        "outside_hum_trend": round(outside_hum_slope, 2) if outside_hum_slope is not None else None,
         "bias":           bias,
         "day_max":        round(dmax, 1) if dmax is not None else None,
         "warm_day":       warm_day,
@@ -654,6 +725,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             "COMFORT_HIGH": COMFORT_HIGH, "OPEN_MARGIN": OPEN_MARGIN,
             "CLOSE_MARGIN": CLOSE_MARGIN, "WARM_DAY_MAX": WARM_DAY_MAX,
             "LOOKAHEAD_H": LOOKAHEAD_H,
+            "RH_COMFORT": RH_COMFORT, "RH_HARD_CAP": RH_HARD_CAP,
             "ROOM_COMFORT": {r: {"low": lo, "high": hi}
                              for r, (lo, hi) in ROOM_COMFORT.items()},
         },
@@ -741,17 +813,33 @@ def main():
 
     changes: list[tuple[str, str]] = []   # (room, new_advice)
     new_rooms = dict(prev_rooms)
+    rh_reason: dict[str, str] = {}        # room → "veto" | "dryout" (waarom vocht meespeelt)
+    rh_vent: dict[str, float] = {}        # room → geprojecteerde vent_rh (voor het bericht)
     for room in ROOMS:
         d = rooms_data.get(room)
         inside = d["inside"] if d else None
+        humidity = d.get("humidity") if d else None
+        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
+        if vent_rh is not None:
+            rh_vent[room] = vent_rh
         prev   = prev_rooms.get(room, "dicht")
         low, high = comfort_band(room)
-        new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead)
+        new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead,
+                        vent_rh=vent_rh, humidity=humidity)
         new_rooms[room] = new
+        # Reden onthouden voor het bericht: veto (te muf → dicht) of ontvochtigen (open
+        # zonder dat de kamer thermisch warm genoeg was).
+        if vent_rh is not None and vent_rh >= RH_HARD_CAP:
+            rh_reason[room] = "veto"
+        elif new == "open" and not (inside is not None and outside_decide is not None
+                and inside > high + humidity_offset(vent_rh)
+                and outside_decide <= inside - OPEN_MARGIN):
+            rh_reason[room] = "dryout"
         ins = f"{inside:.1f}" if inside is not None else "?"
         out = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         bank = " [koelte tanken]" if warm_ahead else ""
-        print(f"[kamer] {room}: binnen {ins}° buiten {out}° | {prev} → {new}{bank}")
+        rh_s = f" vent_rh {vent_rh:.0f}%" if vent_rh is not None else ""
+        print(f"[kamer] {room}: binnen {ins}° buiten {out}°{rh_s} | {prev} → {new}{bank}")
         if new != prev:
             changes.append((room, new))
 
@@ -770,7 +858,13 @@ def main():
         # Toon de gladgestreken beslis-temp: dat is de waarde waarop het advies stoelt.
         out_s = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         if advice == "open":
-            lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°)")
+            dry = " — ontvochtigen (buiten droger)" if rh_reason.get(room) == "dryout" else ""
+            lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°){dry}")
+        elif rh_reason.get(room) == "veto":
+            # Te muffe buitenlucht: dicht ondanks dat koelen thermisch zou kunnen.
+            vr = rh_vent.get(room)
+            vr_s = f" (RH ~{vr:.0f}%)" if vr is not None else ""
+            lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°) — buiten te muf{vr_s}")
         else:
             # De "buiten zakt rond HH weer onder binnen"-hint slaat alleen ergens op als
             # buiten nú boven de heropen-drempel zit (warmte-instroom). Zit het al onder

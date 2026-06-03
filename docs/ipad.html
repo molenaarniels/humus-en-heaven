@@ -1003,10 +1003,13 @@ function renderRooms(wd, om) {
   `;
 
   // Dots + vectors
-  const STABLE_T = 0.15;         // °C/h — below this temp trend contributes no vertical
-  const STABLE_H = 1.0;          // %RH/h — below this humidity trend contributes no horizontal
-  const PX_PER_DEG_H = 70;       // vertical pixels per (°C/h) of temp trend
-  const PX_PER_PCT_H = 7;        // horizontal pixels per (%RH/h) — 10%/h ≈ 1°C/h visually
+  // The vector projects the dot ~PROJ_H hours forward through the SAME axis
+  // mapping as the dots (X/Y), so it points to where the room is actually
+  // heading on this temp×vocht plot — angle and length stay consistent with
+  // the plotted scale (no arbitrary per-axis pixel constants, no per-axis
+  // gates that would swallow the small humidity trends that occur in practice).
+  const PROJ_H = 2;              // hours projected forward
+  const MIN_PX = 6;              // shorter pixel move than this → effectively stable, no arrow
   const VEC_MIN = 14, VEC_MAX = 70;
 
   // Pre-compute coordinates so we can pick label positions that don't
@@ -1018,21 +1021,18 @@ function renderRooms(wd, om) {
       ? C.sun
       : (d.advice === "dicht" ? C.clay : C.moss);
 
-    // Angled vector: temp trend → vertical (warming = up), humidity trend →
-    // horizontal (humidifying = right, drying = left). Clamp the total length
-    // while preserving direction, and cap the arrow's reach in pixels.
+    // Future position via X()/Y(): humidity trend moves it along x, temperature
+    // trend along y (Y is inverted, so warming rises). One angled arrow toward it.
+    let vx = X(d.hum + d.humTrend * PROJ_H) - d.px;
+    let vy = Y(d.temp + d.trend   * PROJ_H) - d.py;
+    const raw = Math.hypot(vx, vy);
+
     let vector = "";
-    const tTrend = (Math.abs(d.trend)    > STABLE_T) ? d.trend    : 0;
-    const hTrend = (Math.abs(d.humTrend) > STABLE_H) ? d.humTrend : 0;
-    if (tTrend !== 0 || hTrend !== 0) {
-      let vx =  hTrend * PX_PER_PCT_H;   // x = humidity → rising humidity moves right
-      let vy = -tTrend * PX_PER_DEG_H;   // y inverted → warming moves up (−y)
-      const raw = Math.hypot(vx, vy);
-      const len = clamp(raw, VEC_MIN, VEC_MAX);
-      if (raw > 0.001) { const s = len / raw; vx *= s; vy *= s; }
-      const x2 = d.px + vx, y2 = d.py + vy;
+    if (raw >= MIN_PX) {
+      const s = clamp(raw, VEC_MIN, VEC_MAX) / raw;   // clamp length, keep direction
+      const x2 = d.px + vx * s, y2 = d.py + vy * s;
       // Small arrowhead so the direction reads at a glance.
-      const ang = Math.atan2(vy, vx), ah = 6, spread = 0.5;
+      const ang = Math.atan2(y2 - d.py, x2 - d.px), ah = 6, spread = 0.5;
       const ax1 = x2 - ah * Math.cos(ang - spread), ay1 = y2 - ah * Math.sin(ang - spread);
       const ax2 = x2 - ah * Math.cos(ang + spread), ay2 = y2 - ah * Math.sin(ang + spread);
       vector = `<line x1="${d.px.toFixed(1)}" y1="${d.py.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round"/>`
@@ -1045,11 +1045,10 @@ function renderRooms(wd, om) {
 
     // Place the label opposite the arrow's horizontal direction to avoid sitting
     // on the vector; near an edge, force it inward so it can't clip.
-    const vxSign = hTrend * PX_PER_PCT_H;
     let labelLeft;
     if (d.px > W - m.r - 60)      labelLeft = true;
     else if (d.px < m.l + 60)     labelLeft = false;
-    else                          labelLeft = vxSign > 0;
+    else                          labelLeft = vx > 0;
     const lx = labelLeft ? d.px - 11 : d.px + 11;
     const ly = d.py + 4;
     const anchor = labelLeft ? "end" : "start";

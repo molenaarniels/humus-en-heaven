@@ -110,6 +110,7 @@ def convert_rh(rh_out: float | None, t_out: float | None,
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
 TREND_WINDOW_H  = 4.0   # uur — historie-venster voor de binnentemp-trend
 TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
+RH_TREND_MAX    = 15.0  # %RH/uur — clamp op de vochttrend (richtingvector op het scatterplot)
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
 PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
 HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
@@ -376,23 +377,25 @@ def correct_forecast(hourly: list[dict], bias: float, now: datetime) -> list[dic
     return out
 
 
-def room_trend(history: list[dict], now: datetime) -> float | None:
-    """Helling (°C/uur) van de binnentemperatuur over de laatste TREND_WINDOW_H uur,
-    via kleinste-kwadraten over de samples. None bij te weinig historie. Geclamped op
-    ±TREND_MAX_SLOPE zodat één rare meting de projectie niet laat ontsporen."""
-    pts = []  # (uren_geleden_negatief, temp)
+def room_trend(history: list[dict], now: datetime,
+               key: str = "temp", clamp: float = TREND_MAX_SLOPE) -> float | None:
+    """Helling (per uur) van een serie over de laatste TREND_WINDOW_H uur, via
+    kleinste-kwadraten over de samples. None bij te weinig historie. Geclamped op
+    ±`clamp` zodat één rare meting de projectie niet laat ontsporen. `key` kiest de
+    grootheid: "temp" (°C/uur, default) of "hum" (%RH/uur, gebruik clamp=RH_TREND_MAX)."""
+    pts = []  # (uren_geleden_negatief, waarde)
     for s in history:
         try:
             t = datetime.fromisoformat(s["t"])
         except (ValueError, TypeError, KeyError):
             continue
-        temp = s.get("temp")
-        if temp is None:
+        val = s.get(key)
+        if val is None:
             continue
         dt_h = (t - now).total_seconds() / 3600.0  # ≤ 0 voor verleden
         if dt_h < -TREND_WINDOW_H or dt_h > 0.01:
             continue
-        pts.append((dt_h, temp))
+        pts.append((dt_h, val))
     if len(pts) < 2:
         return None
     n = len(pts)
@@ -404,7 +407,7 @@ def room_trend(history: list[dict], now: datetime) -> float | None:
     if abs(denom) < 1e-9:
         return None
     slope = (n * sxy - sx * sy) / denom
-    return max(-TREND_MAX_SLOPE, min(TREND_MAX_SLOPE, slope))
+    return max(-clamp, min(clamp, slope))
 
 
 def project_inside(inside_now: float, slope: float | None, hours_ahead: float) -> float:
@@ -630,8 +633,11 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         sample = {"t": now.isoformat(), "temp": round(outside, 1)}
         if om_now is not None:
             sample["om"] = round(om_now, 1)
+        if outside_rh is not None:
+            sample["hum"] = round(outside_rh)  # gemeten buiten-RH → vochttrend op het scatterplot
         out_hist = _append_trim(out_hist, sample)
     outside_slope = room_trend(out_hist, now)
+    outside_hum_slope = room_trend(out_hist, now, "hum", RH_TREND_MAX)
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX
 
@@ -644,10 +650,14 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
         hist = prev_hist
         if inside is not None:
-            hist = _append_trim(prev_hist, {"t": now.isoformat(), "temp": round(inside, 1)})
+            sample = {"t": now.isoformat(), "temp": round(inside, 1)}
+            if humidity is not None:
+                sample["hum"] = round(humidity)  # binnen-RH → vochttrend op het scatterplot
+            hist = _append_trim(prev_hist, sample)
 
         low, high = comfort_band(room)
         slope  = room_trend(hist, now)
+        hum_slope = room_trend(hist, now, "hum", RH_TREND_MAX)
         vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
         rh_off = humidity_offset(vent_rh)
         advice = decide(inside, od, prev_rooms.get(room, "dicht"),
@@ -685,6 +695,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             "comfort_low":    low,
             "comfort_high":   high,
             "trend":          round(slope, 2) if slope is not None else None,
+            "hum_trend":      round(hum_slope, 2) if hum_slope is not None else None,
             "open_now":       open_now,
             "predicted_open": predicted_open,
             "open_intervals": intervals,
@@ -705,6 +716,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "outside_humidity": round(outside_rh) if outside_rh is not None else None,
         "om_now":         round(om_now, 1) if om_now is not None else None,
         "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
+        "outside_hum_trend": round(outside_hum_slope, 2) if outside_hum_slope is not None else None,
         "bias":           bias,
         "day_max":        round(dmax, 1) if dmax is not None else None,
         "warm_day":       warm_day,

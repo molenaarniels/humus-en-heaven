@@ -196,6 +196,13 @@ function render() {
     </div>
     <div class="grid">
       <div class="specimen-card">
+        <div class="corner-mark">Temperatuur × luchtvochtigheid · waar elke kamer staat en heen gaat</div>
+        <div class="chart-box"><canvas id="th-chart"></canvas></div>
+        ${scatterLegendHTML(d)}
+      </div>
+    </div>
+    <div class="grid">
+      <div class="specimen-card">
         <div class="corner-mark">Open-venster vandaag · per kamer</div>
         <div style="margin-top:14px;">${timelineHTML(d)}</div>
       </div>
@@ -203,6 +210,7 @@ function render() {
   `;
 
   drawChart();
+  drawScatter();
 }
 
 function ROOMS_ORDER(d) { return Object.keys(d.rooms); }
@@ -353,6 +361,14 @@ function legendHTML(d) {
   return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
 }
 
+function scatterLegendHTML(d) {
+  const rooms = ROOMS_ORDER(d);
+  const items = rooms.map((r,i) => `<span style="color:${ROOM_COLORS[i % ROOM_COLORS.length]}">● ${r}</span>`)
+    .concat([`<span style="color:${COLORS.rain}">◆ buiten</span>`,
+             `<span style="color:var(--ink-soft)">→ trend (waar het de komende uren heen gaat)</span>`]);
+  return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
+}
+
 // ===================== TIMELINE =====================
 function timelineHTML(d) {
   const H = 18; // toon 18 uur vooruit
@@ -465,6 +481,78 @@ function drawChart() {
         },
         y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
              title: { display: true, text: "°C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+      },
+    },
+  });
+}
+
+// ===================== SCATTER: temperatuur × luchtvochtigheid =====================
+// Elke kamer is één punt op (temperatuur, RH) met één schuine pijl die de richting toont
+// waar het de komende uren heen gaat — dx = temp-trend, dy = vocht-trend. Buiten staat er
+// als ruit bij (gemeten temp/RH), zodat je ziet of de ventilatielucht droger/natter is.
+function drawScatter() {
+  const d = state.data, P = d.params, PROJ_H = 2;   // uur vooruit voor de richtingvector
+  const pts = [];
+  ROOMS_ORDER(d).forEach((name, ri) => {
+    const r = d.rooms[name];
+    if (!r || r.inside == null || r.humidity == null) return;
+    pts.push({ x: r.inside, y: r.humidity, color: ROOM_COLORS[ri % ROOM_COLORS.length],
+               label: name, dx: (r.trend || 0) * PROJ_H, dy: (r.hum_trend || 0) * PROJ_H, outside: false });
+  });
+  if (d.outside_now != null && d.outside_humidity != null)
+    pts.push({ x: d.outside_now, y: d.outside_humidity, color: COLORS.rain, label: "buiten",
+               dx: (d.outside_trend || 0) * PROJ_H, dy: (d.outside_hum_trend || 0) * PROJ_H, outside: true });
+
+  // Eén schuine pijl per punt (chartjs-plugin-annotation line + arrowhead).
+  const ann = {};
+  pts.forEach((p, i) => {
+    const dx = Math.max(-3, Math.min(3, p.dx));     // weergave-clamp zodat pijlen op de grafiek blijven
+    const dy = Math.max(-20, Math.min(20, p.dy));
+    if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.5) return;  // ~stil → alleen het punt, geen pijl
+    ann["v" + i] = { type: "line", xMin: p.x, yMin: p.y, xMax: p.x + dx, yMax: p.y + dy,
+      borderColor: p.color, borderWidth: 2,
+      arrowHeads: { end: { display: true, borderColor: p.color, borderWidth: 2, length: 7, width: 6 } } };
+    ann["l" + i] = { type: "label", xValue: p.x, yValue: p.y, content: [p.label], yAdjust: -12,
+      font: { family: "JetBrains Mono", size: 9, weight: 600 }, color: p.color, backgroundColor: "transparent" };
+  });
+  // Vocht-drempels van de beslislogica: streef (RH_COMFORT) en hard veto (RH_HARD_CAP).
+  ann.rhTarget = { type: "line", yMin: P.RH_COMFORT, yMax: P.RH_COMFORT, borderColor: COLORS.clay, borderWidth: 1, borderDash: [4,4],
+    label: { content: `streef ${P.RH_COMFORT}%`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay, backgroundColor: "transparent" } };
+  ann.rhVeto = { type: "line", yMin: P.RH_HARD_CAP, yMax: P.RH_HARD_CAP, borderColor: COLORS.dry, borderWidth: 1, borderDash: [2,4],
+    label: { content: `veto ${P.RH_HARD_CAP}%`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } };
+
+  state.scatter?.destroy();
+  const ctx = document.getElementById("th-chart").getContext("2d");
+  state.scatter = new Chart(ctx, {
+    type: "scatter",
+    data: { datasets: [{
+      data: pts.map(p => ({ x: p.x, y: p.y })),
+      pointBackgroundColor: pts.map(p => p.color),
+      pointBorderColor: pts.map(p => p.outside ? COLORS.ink : p.color),
+      pointBorderWidth: pts.map(p => p.outside ? 1.5 : 1),
+      pointRadius: pts.map(p => p.outside ? 7 : 6),
+      pointStyle: pts.map(p => p.outside ? "rectRot" : "circle"),
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
+          borderColor: COLORS.ink, borderWidth: 1,
+          titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
+          bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
+          callbacks: { label: c => { const p = pts[c.dataIndex];
+            return `${p.label}: ${p.x.toFixed(1)}° · ${Math.round(p.y)}% RH`; } },
+        },
+        annotation: { annotations: ann },
+      },
+      scales: {
+        x: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+             title: { display: true, text: "temperatuur °C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+        y: { suggestedMin: 30, suggestedMax: 85, grid: { color: "#2a241b11" },
+             ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+             title: { display: true, text: "luchtvochtigheid %", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
       },
     },
   });

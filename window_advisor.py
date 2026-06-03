@@ -49,6 +49,7 @@ OPEN_MARGIN  = 1.5    # °C — open als buiten ≥ deze marge kouder is dan bin
 CLOSE_MARGIN = 0.5    # °C — sluit als buiten tot binnen ± deze marge stijgt
 WARM_DAY_MAX = 22.0   # °C — onder deze verwachte dag-max: geen koeladvies
 LOOKAHEAD_H  = 12     # uur — vooruitblik voor "open weer rond HH:00"
+SMOOTH_WINDOW_H = 0.75  # uur — mediaanvenster op de buitentemp vóór decide() (anti-flapping)
 
 # ── Per-kamer comfortband (low, high) in °C ────────────────────────────────────
 # Bóven `high` is de kamer te warm → koelen (raam open als buiten kouder is). Ónder
@@ -443,6 +444,36 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     return intervals, proj
 
 
+# ── Buitentemp gladstrijken vóór de beslissing (anti-flapping) ────────────────────
+
+def smoothed_outside(history: list[dict], now: datetime,
+                     current: float | None) -> float | None:
+    """Mediaan van de buitentemp over de laatste SMOOTH_WINDOW_H uur, inclusief de
+    huidige meting. Een mediaan negeert losse uitschieters — bv. een korte zon-burst
+    die via de stralingsbiascorrectie de gecorrigeerde buitentemp even laat duiken —
+    zodat één rare meting het advies niet over de hysterese-band trekt en laat flippen.
+    `current` None → None; te weinig historie → gewoon de huidige meting."""
+    if current is None:
+        return None
+    vals = [current]
+    cutoff = SMOOTH_WINDOW_H * 3600
+    for s in (history or []):
+        try:
+            t = datetime.fromisoformat(s["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        temp = s.get("temp")
+        if temp is None:
+            continue
+        age = (now - t).total_seconds()
+        if 0.0 <= age <= cutoff:
+            vals.append(temp)
+    vals.sort()
+    n = len(vals)
+    mid = n // 2
+    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+
+
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
 
 def decide(inside: float | None, outside: float | None, prev: str,
@@ -508,15 +539,22 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
                     outside_source: str, dmax: float | None, prev_rooms: dict,
                     gated: bool, gate_reason: str, warm_ahead: bool = False,
                     outside_rh: float | None = None,
-                    outside_rh_temp: float | None = None) -> dict:
+                    outside_rh_temp: float | None = None,
+                    outside_decide: float | None = None) -> dict:
     """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
     binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken.
 
     `outside_rh`/`outside_rh_temp` zijn een consistent buiten-sensorpaar (rauwe temp +
-    RH); per kamer rekenen we daaruit de RH om naar de kamertemperatuur (`vent_rh`)."""
+    RH); per kamer rekenen we daaruit de RH om naar de kamertemperatuur (`vent_rh`).
+
+    `outside`= de actuele (gecorrigeerde) buitenmeting — voor bias, historie en de
+    `outside_now`-uitlezing. `outside_decide`= diezelfde temp ná het mediaanfilter
+    (anti-flapping); daarmee beslissen we (`decide`/`open_now`). None → val terug op
+    `outside`."""
     prev = read_prev_dashboard()
     prev_room_dash = prev.get("rooms", {})
     om_now = om.get("current")
+    od = outside_decide if outside_decide is not None else outside  # beslis-temp (gladgestreken)
 
     # Stationscorrectie: alleen ijken als de WU-meting beschikbaar is.
     bias = 0.0
@@ -559,12 +597,12 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
 
         low, high = comfort_band(room)
         slope  = room_trend(hist, now)
-        advice = decide(inside, outside, prev_rooms.get(room, "dicht"),
+        advice = decide(inside, od, prev_rooms.get(room, "dicht"),
                         low, high, bank_cooling=warm_ahead)
         intervals, proj = predict_open_intervals(fc, inside, slope, now, high)
 
-        open_now = (inside is not None and outside is not None
-                    and inside > high and outside <= inside - OPEN_MARGIN)
+        open_now = (inside is not None and od is not None
+                    and inside > high and od <= inside - OPEN_MARGIN)
         predicted_open = intervals[0]["start"] if intervals else None
 
         if inside is None:
@@ -602,6 +640,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "gated":          gated,
         "gate_reason":    gate_reason,
         "outside_now":    round(outside, 1) if outside is not None else None,
+        "outside_smoothed": round(od, 1) if od is not None else None,
         "outside_source": outside_source,
         "outside_humidity": round(outside_rh) if outside_rh is not None else None,
         "om_now":         round(om_now, 1) if om_now is not None else None,
@@ -657,6 +696,17 @@ def main():
         print(f"[buiten] WU: {raw}°C → gecorrigeerd {outside}°C "
               f"(zon {solar_now} W/m², bron {src})")
 
+    # Anti-flapping: streek de actuele buitentemp glad met de mediaan over de laatste
+    # SMOOTH_WINDOW_H aan metingen vóórdat we erop beslissen. Korte zon-bursts (via de
+    # stralingsbiascorrectie) en microklimaat-ruis schommelen de gecorrigeerde temp soms
+    # >2°C tussen kwartiermetingen — meer dan de hysterese-band — wat het advies liet
+    # flippen. De ruwe `outside` blijft de uitlezing/historie/bias voeden; `outside_decide`
+    # is wat decide() ziet.
+    prev_hist = read_prev_dashboard().get("outside_history", [])
+    outside_decide = smoothed_outside(prev_hist, now, outside)
+    if outside_decide is not None and outside is not None and abs(outside_decide - outside) >= 0.1:
+        print(f"[buiten] beslis-temp (mediaan {SMOOTH_WINDOW_H}u): {outside_decide:.1f}°C")
+
     today  = now.date()
     dmax   = day_max_temp(om["hourly"], today)
     # Komt er een warme dag aan (komende 24u)? Zo ja, dan tanken we 's nachts koelte:
@@ -679,7 +729,8 @@ def main():
     # "vandaag dicht houden"-status zichtbaar blijven). Telegram blijft ongewijzigd.
     write_dashboard(build_dashboard(
         now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
-        warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp))
+        warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp,
+        outside_decide=outside_decide))
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")
@@ -693,10 +744,10 @@ def main():
         inside = d["inside"] if d else None
         prev   = prev_rooms.get(room, "dicht")
         low, high = comfort_band(room)
-        new    = decide(inside, outside, prev, low, high, bank_cooling=warm_ahead)
+        new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead)
         new_rooms[room] = new
         ins = f"{inside:.1f}" if inside is not None else "?"
-        out = f"{outside:.1f}" if outside is not None else "?"
+        out = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         bank = " [koelte tanken]" if warm_ahead else ""
         print(f"[kamer] {room}: binnen {ins}° buiten {out}° | {prev} → {new}{bank}")
         if new != prev:
@@ -714,7 +765,8 @@ def main():
         d   = rooms_data.get(room) or {}
         ins = d.get("inside")
         ins_s = f"{ins:.1f}" if ins is not None else "?"
-        out_s = f"{outside:.1f}" if outside is not None else "?"
+        # Toon de gladgestreken beslis-temp: dat is de waarde waarop het advies stoelt.
+        out_s = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         if advice == "open":
             lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°)")
         else:
@@ -722,8 +774,8 @@ def main():
             # buiten nú boven de heropen-drempel zit (warmte-instroom). Zit het al onder
             # die drempel, dan is er niets om op te wachten en zou de hint misleiden.
             hint = None
-            if (ins is not None and outside is not None
-                    and outside > ins - OPEN_MARGIN):
+            if (ins is not None and outside_decide is not None
+                    and outside_decide > ins - OPEN_MARGIN):
                 hint = reopen_hour(om["hourly"], ins, now)
             suffix = f" — buiten zakt rond {hint} weer onder binnen" if hint else ""
             lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°, buiten {out_s}°){suffix}")

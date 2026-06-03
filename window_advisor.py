@@ -27,6 +27,7 @@ weggeschreven; de token-rotatie mág niet overgeslagen worden).
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -65,6 +66,29 @@ ROOM_COMFORT = {
 def comfort_band(room: str) -> tuple[float, float]:
     """(low, high) comfortgrenzen voor een kamer; fallback op de globale COMFORT_HIGH."""
     return ROOM_COMFORT.get(room, (COMFORT_HIGH, COMFORT_HIGH))
+
+
+# ── Vocht: buiten-RH omrekenen naar kamertemperatuur (ventilatie/schimmel) ────────
+
+def _es(temp_c: float) -> float:
+    """Saturatiedampdruk (kPa) via Magnus/Tetens (FAO-56 Eq. 11)."""
+    return 0.6108 * math.exp(17.27 * temp_c / (temp_c + 237.3))
+
+
+def convert_rh(rh_out: float | None, t_out: float | None,
+               t_in: float | None) -> float | None:
+    """Zet de buiten-RH (%) bij buitentemp `t_out` om naar de RH (%) die diezelfde
+    lucht zou hebben bij kamertemp `t_in` — de absolute dampdruk blijft behouden
+    (alleen het saturatiepunt schuift met de temperatuur). Dit is de RH die de kamer
+    benadert als je ventileert met buitenlucht: ligt 'm onder de huidige binnen-RH,
+    dan droogt ventileren de kamer (minder schimmelrisico). `rh_out`/`t_out` moeten
+    een consistent sensorpaar zijn (rauwe meting, niet de biascorrectie). None bij
+    ontbrekende invoer."""
+    if rh_out is None or t_out is None or t_in is None:
+        return None
+    e_actual = (rh_out / 100.0) * _es(t_out)   # werkelijke dampdruk buiten (kPa)
+    rh_in = e_actual / _es(t_in) * 100.0
+    return max(0.0, min(100.0, rh_in))
 
 # ── Dashboard-voorspelling (heuristiek, geen thermisch huismodel) ──────────────
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
@@ -208,15 +232,16 @@ def fetch_room_temps(access_token: str) -> dict[str, dict]:
 
 # ── Buitentemperatuur: WU nú, Open-Meteo als fallback + vooruitblik ───────────────
 
-def fetch_wu_current_temp() -> tuple[float | None, float | None]:
+def fetch_wu_current_temp() -> tuple[float | None, float | None, float | None]:
     """Huidige buitentemperatuur (metric.temp) + instraling (solarRadiation,
-    W/m², top-level) van het eigen WU-station. De instraling drijft de
-    stralingsbiascorrectie (zie wu_bias.py). Returnt (temp, solar); elk None
-    als onbeschikbaar."""
+    W/m², top-level) + relatieve luchtvochtigheid (humidity, %, top-level) van het
+    eigen WU-station. De instraling drijft de stralingsbiascorrectie (zie wu_bias.py);
+    de RH wordt (met de rauwe temp) gebruikt om de buiten-RH naar kamertemperatuur om
+    te rekenen. Returnt (temp, solar, humidity); elk None als onbeschikbaar."""
     station_id = os.environ.get("WU_STATION_ID")
     api_key    = os.environ.get("WU_API_KEY")
     if not (station_id and api_key):
-        return None, None
+        return None, None, None
     url = (
         "https://api.weather.com/v2/pws/observations/current"
         f"?stationId={station_id}&format=json&units=m"
@@ -225,15 +250,16 @@ def fetch_wu_current_temp() -> tuple[float | None, float | None]:
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
-            return None, None
+            return None, None, None
         obs_list = r.json().get("observations", [])
         if not obs_list:
-            return None, None
+            return None, None, None
         obs = obs_list[0]
-        return (obs.get("metric", {}) or {}).get("temp"), obs.get("solarRadiation")
+        return ((obs.get("metric", {}) or {}).get("temp"),
+                obs.get("solarRadiation"), obs.get("humidity"))
     except Exception as e:
         print(f"[WU] current call failed: {e}")
-        return None, None
+        return None, None, None
 
 
 def _parse_local(t: str) -> datetime:
@@ -254,7 +280,7 @@ def fetch_open_meteo() -> dict:
     params = {
         "latitude":     LATITUDE,
         "longitude":    LONGITUDE,
-        "current":      "temperature_2m,shortwave_radiation",
+        "current":      "temperature_2m,shortwave_radiation,relative_humidity_2m",
         "hourly":       "temperature_2m",
         "timezone":     "Europe/Amsterdam",
         "forecast_days": 2,
@@ -280,7 +306,9 @@ def fetch_open_meteo() -> dict:
         for t, temp in zip(h.get("time", []), h.get("temperature_2m", []))
     ]
     # `current_solar` = fallback-driver voor de biascorrectie als de WU-pyranometer ontbreekt.
-    return {"current": current, "current_solar": cur.get("shortwave_radiation"), "hourly": rows}
+    # `current_humidity` = fallback voor de RH-omrekening als het WU-station geen RH geeft.
+    return {"current": current, "current_solar": cur.get("shortwave_radiation"),
+            "current_humidity": cur.get("relative_humidity_2m"), "hourly": rows}
 
 
 def day_max_temp(hourly: list[dict], today) -> float | None:
@@ -478,9 +506,14 @@ def write_dashboard(payload: dict) -> None:
 
 def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | None,
                     outside_source: str, dmax: float | None, prev_rooms: dict,
-                    gated: bool, gate_reason: str, warm_ahead: bool = False) -> dict:
+                    gated: bool, gate_reason: str, warm_ahead: bool = False,
+                    outside_rh: float | None = None,
+                    outside_rh_temp: float | None = None) -> dict:
     """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
-    binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken."""
+    binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken.
+
+    `outside_rh`/`outside_rh_temp` zijn een consistent buiten-sensorpaar (rauwe temp +
+    RH); per kamer rekenen we daaruit de RH om naar de kamertemperatuur (`vent_rh`)."""
     prev = read_prev_dashboard()
     prev_room_dash = prev.get("rooms", {})
     om_now = om.get("current")
@@ -544,9 +577,12 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         else:
             status_text = "Vandaag dicht houden"
 
+        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
+
         rooms_out[room] = {
             "inside":         round(inside, 1) if inside is not None else None,
             "humidity":       round(humidity) if humidity is not None else None,
+            "vent_rh":        round(vent_rh) if vent_rh is not None else None,
             "advice":         advice,
             "comfort_low":    low,
             "comfort_high":   high,
@@ -567,6 +603,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "gate_reason":    gate_reason,
         "outside_now":    round(outside, 1) if outside is not None else None,
         "outside_source": outside_source,
+        "outside_humidity": round(outside_rh) if outside_rh is not None else None,
         "om_now":         round(om_now, 1) if om_now is not None else None,
         "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
         "bias":           bias,
@@ -596,7 +633,14 @@ def main():
     rooms_data   = fetch_room_temps(access_token)
 
     om              = fetch_open_meteo()
-    outside, wu_solar = fetch_wu_current_temp()
+    outside, wu_solar, wu_humid = fetch_wu_current_temp()
+    # Consistent buiten-sensorpaar voor de RH→kamer-omrekening: rauwe temp + bijbehorende
+    # RH (géén biascorrectie — RH en temp moeten van dezelfde meting komen). WU-paar bij
+    # voorkeur; valt terug op het Open-Meteo-paar als het station geen RH levert.
+    if outside is not None and wu_humid is not None:
+        outside_rh, outside_rh_temp = wu_humid, outside
+    else:
+        outside_rh, outside_rh_temp = om.get("current_humidity"), om.get("current")
     if outside is None:
         outside = om["current"]
         outside_source = "open-meteo"
@@ -635,7 +679,7 @@ def main():
     # "vandaag dicht houden"-status zichtbaar blijven). Telegram blijft ongewijzigd.
     write_dashboard(build_dashboard(
         now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
-        warm_ahead))
+        warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp))
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")

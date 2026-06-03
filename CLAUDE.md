@@ -234,6 +234,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 - **Station bias correction (smart blend):** `bias = WU_now − Open-Meteo_now` is the local microclimate/calibration offset. It is added to the future forecast and **decays linearly to zero over `BIAS_DECAY_H` (12h)** — near-term hours are anchored to the station, far-term relax to the raw model. WU unavailable → `bias = 0`.
 - **Room-temp trend:** a rolling per-room inside-temp history (and outside-now) is kept in `window_data.json`; each run appends the current sample and trims to `HISTORY_KEEP` (~48). The trend `slope` (°C/h, least-squares over `TREND_WINDOW_H` hours, clamped to ±`TREND_MAX_SLOPE`) is projected forward but **damped** (`min(hours, TREND_CAP_H)` then flat) — a heuristic, **not** a thermal house model.
 - **Crossover:** the first future hour (≤ `PREDICT_HORIZON_H`) where `inside_proj > COMFORT_HIGH` **and** `out_corr ≤ inside_proj − OPEN_MARGIN` is the predicted open time; it closes again when `out_corr ≥ inside_proj − CLOSE_MARGIN` → `open_intervals`. No crossover today → "vandaag dicht houden".
+- **Ventilatie-RH (schimmel):** per room the outside RH is converted to the room's temperature via `convert_rh()` (`vent_rh`) — the RH the room would approach if ventilated with outside air, since absolute vapour pressure is conserved when air changes temperature (Magnus/Tetens `_es`, FAO-56 Eq. 11). Computed from the **raw** WU temp + its own RH reading (a consistent sensor pair, *not* the radiation-bias-corrected temp), Open-Meteo `relative_humidity_2m` + `temperature_2m` as fallback. The dashboard shows it behind the indoor humidity as `(X% buiten)`, tinted green when below indoor RH (ventilating dries → less mould risk) and clay when above (ventilating adds moisture, e.g. a warm humid summer day).
 - Sparklines clamp to a minimum span (~3.5°C) and draw a faint `COMFORT_HIGH` reference line, so a stable room reads flat instead of magnifying measurement noise.
 - `outside_history` also records the raw Open-Meteo value of the same hour (`om`) next to the used `temp`, so the chart can look *backwards* and show **weerstation (gemeten) vs. Open-Meteo (ruw model)** — making station/model divergence (e.g. a station reading too warm on a sunny evening) visible. The `om` field is additive; older samples without it just leave a gap in the model line until history accumulates.
 - Dashboard panels: station-vs-model bias readout + warm/cool gate (with its own outside trend arrow + sparkline, mirroring the rooms), per-room cards (inside temp, open/dicht stamp, trend arrow + sparkline, humidity, status line), a temperature chart with three outside series (station-measured + used/calibrated + raw Open-Meteo model, past and future) plus per-room inside projections, `COMFORT_HIGH`/`WARM_DAY_MAX` lines, a "nu" marker, and a day-aligned x-axis (date labels at midnight, hour labels at 06/12/18u); and a per-room open-window timeline.
@@ -244,13 +245,14 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "generated_at": "ISO UTC", "as_of_local": "ISO+02:00", "source": "window_advisor",
   "gated": false, "gate_reason": "warme dag | koele dag — advies onderdrukt",
   "outside_now": 26.5, "outside_source": "wu | open-meteo", "om_now": 25.0,
+  "outside_humidity": 60,
   "outside_trend": -0.05, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12,
              "ROOM_COMFORT": {"Living room": {"low": 19.5, "high": 22.0}}},
   "outside_history": [{"t": "ISO", "temp": 24.0, "om": 23.2}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],
   "rooms": {"Living room": {
-    "inside": 26.2, "humidity": 48, "advice": "open | dicht", "trend": -0.05,
+    "inside": 26.2, "humidity": 48, "vent_rh": 36, "advice": "open | dicht", "trend": -0.05,
     "comfort_low": 19.5, "comfort_high": 22.0,
     "open_now": false, "predicted_open": "20:00",
     "open_intervals": [{"start": "20:00", "end": "08:00", "start_h": 5.0, "end_h": 17.0}],

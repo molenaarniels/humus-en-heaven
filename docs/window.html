@@ -251,6 +251,20 @@ function humidityNote(h) {
   return " · prettig";
 }
 
+// Buiten-RH omgerekend naar kamertemperatuur: wat de luchtvochtigheid wordt als je met
+// buitenlucht ventileert. Lager dan de huidige binnen-RH → ventileren droogt de kamer
+// (minder schimmelrisico, groen); hoger → ventileren maakt het vochtiger (klei).
+function ventNote(inside, vent) {
+  if (vent == null) return "";
+  let color = "var(--ink-soft)";
+  if (inside != null && vent < inside - 2)      color = "var(--moss)";
+  else if (inside != null && vent > inside + 2) color = "var(--clay)";
+  const tip = "Buitenlucht omgerekend naar kamertemperatuur — de luchtvochtigheid die de "
+    + "kamer benadert als je ventileert. Lager dan binnen = ventileren droogt de kamer uit "
+    + "(minder schimmelrisico).";
+  return ` · <span style="color:${color}" title="${tip}">(${vent}% buiten)</span>`;
+}
+
 function sparkSVG(history, refTemp, bandLow = null, bandHigh = null) {
   const pts = (history || []).filter(p => p.temp != null).slice(-16);
   if (pts.length < 2) return "";
@@ -304,7 +318,7 @@ function roomCardHTML(name, r) {
       ${sparkSVG(r.history, comfortHigh, comfortLow, comfortHigh)}
       <div class="status-line" style="color:${statusColor};">${r.status_text}</div>
       <div style="margin-top:14px;border-top:1px dashed #2a241b33;padding-top:10px;">
-        <div class="stat-row"><span class="lbl">Luchtvochtigheid</span><span>${r.humidity == null ? "–" : r.humidity + "%"}${humidityNote(r.humidity)}</span></div>
+        <div class="stat-row"><span class="lbl">Luchtvochtigheid</span><span>${r.humidity == null ? "–" : r.humidity + "%"}${humidityNote(r.humidity)}${ventNote(r.humidity, r.vent_rh)}</span></div>
         <div class="stat-row" style="border:none;"><span class="lbl">Comfortband</span><span>${comfortLow.toFixed(1)}–${comfortHigh.toFixed(1)}°</span></div>
       </div>
     </div>`;

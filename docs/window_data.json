@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-06-04T07:15:06.568953+00:00",
-  "as_of_local": "2026-06-04T09:15:00.796284+02:00",
+  "generated_at": "2026-06-04T07:30:08.690951+00:00",
+  "as_of_local": "2026-06-04T09:30:00.289739+02:00",
   "source": "window_advisor",
   "gated": false,
   "gate_reason": "warme dag",
-  "outside_now": 16.0,
-  "outside_smoothed": 15.8,
+  "outside_now": 16.1,
+  "outside_smoothed": 15.9,
   "outside_source": "wu",
   "outside_humidity": 78,
-  "om_now": 14.7,
-  "outside_trend": 0.86,
-  "outside_hum_trend": -3.17,
+  "om_now": 14.8,
+  "outside_trend": 0.85,
+  "outside_hum_trend": -3.09,
   "bias": 1.3,
   "day_max": 17.2,
   "warm_day": false,
@@ -781,6 +781,12 @@
       "temp": 16.0,
       "om": 14.7,
       "hum": 78
+    },
+    {
+      "t": "2026-06-04T09:30:00.289739+02:00",
+      "temp": 16.1,
+      "om": 14.8,
+      "hum": 78
     }
   ],
   "forecast": [
@@ -901,19 +907,19 @@
     {
       "dt": "2026-06-04T19:00:00+02:00",
       "out_raw": 16.9,
-      "out_corr": 17.1,
+      "out_corr": 17.2,
       "is_future": true
     },
     {
       "dt": "2026-06-04T20:00:00+02:00",
       "out_raw": 16.2,
-      "out_corr": 16.3,
+      "out_corr": 16.4,
       "is_future": true
     },
     {
       "dt": "2026-06-04T21:00:00+02:00",
       "out_raw": 15.9,
-      "out_corr": 15.9,
+      "out_corr": 16.0,
       "is_future": true
     },
     {
@@ -1077,23 +1083,23 @@
     "Living room": {
       "inside": 21.6,
       "humidity": 59,
-      "vent_rh": 57,
-      "rh_offset": -0.41,
+      "vent_rh": 58,
+      "rh_offset": -0.37,
       "rh_veto": false,
       "dryout": false,
       "advice": "open",
       "comfort_low": 19.5,
       "comfort_high": 22.0,
       "trend": 0.11,
-      "hum_trend": 0.0,
+      "hum_trend": -0.0,
       "open_now": false,
       "predicted_open": "10:00",
       "open_intervals": [
         {
           "start": "10:00",
           "end": "03:00",
-          "start_h": 0.75,
-          "end_h": 17.75
+          "start_h": 0.5,
+          "end_h": 17.5
         }
       ],
       "status_text": "Open rond 10:00",
@@ -1724,6 +1730,11 @@
           "t": "2026-06-04T09:15:00.796284+02:00",
           "temp": 21.6,
           "hum": 59
+        },
+        {
+          "t": "2026-06-04T09:30:00.289739+02:00",
+          "temp": 21.6,
+          "hum": 59
         }
       ],
       "proj": [
@@ -1736,10 +1747,10 @@
         null,
         null,
         null,
+        null,
         21.6,
-        21.6,
-        21.7,
         21.8,
+        21.9,
         22.0,
         22.0,
         22.0,
@@ -1781,22 +1792,22 @@
       "inside": 20.5,
       "humidity": 62,
       "vent_rh": 61,
-      "rh_offset": 0.14,
+      "rh_offset": 0.22,
       "rh_veto": false,
       "dryout": false,
       "advice": "open",
       "comfort_low": 17.0,
       "comfort_high": 18.0,
       "trend": -0.06,
-      "hum_trend": 0.11,
+      "hum_trend": 0.07,
       "open_now": true,
-      "predicted_open": "09:00",
+      "predicted_open": "10:00",
       "open_intervals": [
         {
-          "start": "09:00",
+          "start": "10:00",
           "end": "03:00",
-          "start_h": -0.25,
-          "end_h": 17.75
+          "start_h": 0.5,
+          "end_h": 17.5
         }
       ],
       "status_text": "Nu open tot ~03:00",
@@ -2427,6 +2438,11 @@
           "t": "2026-06-04T09:15:00.796284+02:00",
           "temp": 20.5,
           "hum": 62
+        },
+        {
+          "t": "2026-06-04T09:30:00.289739+02:00",
+          "temp": 20.5,
+          "hum": 62
         }
       ],
       "proj": [
@@ -2439,7 +2455,7 @@
         null,
         null,
         null,
-        20.5,
+        null,
         20.5,
         20.4,
         20.4,
@@ -2481,25 +2497,25 @@
       ]
     },
     "hotties": {
-      "inside": 20.6,
+      "inside": 20.7,
       "humidity": 63,
       "vent_rh": 61,
-      "rh_offset": 0.08,
+      "rh_offset": 0.13,
       "rh_veto": false,
       "dryout": false,
       "advice": "open",
       "comfort_low": 16.0,
       "comfort_high": 18.0,
-      "trend": -0.02,
+      "trend": -0.01,
       "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "09:00",
+      "predicted_open": "10:00",
       "open_intervals": [
         {
-          "start": "09:00",
+          "start": "10:00",
           "end": "03:00",
-          "start_h": -0.25,
-          "end_h": 17.75
+          "start_h": 0.5,
+          "end_h": 17.5
         }
       ],
       "status_text": "Nu open tot ~03:00",
@@ -3130,6 +3146,11 @@
           "t": "2026-06-04T09:15:00.796284+02:00",
           "temp": 20.6,
           "hum": 63
+        },
+        {
+          "t": "2026-06-04T09:30:00.289739+02:00",
+          "temp": 20.7,
+          "hum": 63
         }
       ],
       "proj": [
@@ -3142,9 +3163,9 @@
         null,
         null,
         null,
-        20.6,
-        20.6,
-        20.6,
+        null,
+        20.7,
+        20.7,
         20.6,
         20.6,
         20.6,
@@ -3185,7 +3206,7 @@
     },
     "office": {
       "inside": 22.0,
-      "humidity": 59,
+      "humidity": 58,
       "vent_rh": 56,
       "rh_offset": -0.5,
       "rh_veto": false,
@@ -3193,16 +3214,16 @@
       "advice": "open",
       "comfort_low": 20.0,
       "comfort_high": 22.0,
-      "trend": 0.03,
-      "hum_trend": 0.0,
+      "trend": 0.04,
+      "hum_trend": -0.17,
       "open_now": true,
-      "predicted_open": "09:00",
+      "predicted_open": "10:00",
       "open_intervals": [
         {
-          "start": "09:00",
+          "start": "10:00",
           "end": "03:00",
-          "start_h": -0.25,
-          "end_h": 17.75
+          "start_h": 0.5,
+          "end_h": 17.5
         }
       ],
       "status_text": "Nu open tot ~03:00",
@@ -3833,6 +3854,11 @@
           "t": "2026-06-04T09:15:00.796284+02:00",
           "temp": 22.0,
           "hum": 59
+        },
+        {
+          "t": "2026-06-04T09:30:00.289739+02:00",
+          "temp": 22.0,
+          "hum": 58
         }
       ],
       "proj": [
@@ -3845,10 +3871,10 @@
         null,
         null,
         null,
+        null,
         22.0,
         22.0,
-        22.0,
-        22.0,
+        22.1,
         22.1,
         22.1,
         22.1,

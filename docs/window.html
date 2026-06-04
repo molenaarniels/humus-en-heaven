@@ -487,38 +487,39 @@ function drawChart() {
 }
 
 // ===================== SCATTER: temperatuur × luchtvochtigheid =====================
-// Elke kamer is één punt op (temperatuur, RH) met één schuine pijl die de richting toont
-// waar het de komende uren heen gaat — dx = temp-trend, dy = vocht-trend. Buiten staat er
-// als ruit bij (gemeten temp/RH), zodat je ziet of de ventilatielucht droger/natter is.
+// Elke kamer is één punt op (RH, temperatuur) met één schuine pijl die de richting toont
+// waar het de komende uren heen gaat — dx = vocht-trend, dy = temp-trend. Buiten staat er
+// als ruit bij (gemeten RH/temp), zodat je ziet of de ventilatielucht droger/natter is.
+// Assen volgen het iPad-dashboard: vocht horizontaal, temperatuur verticaal.
 function drawScatter() {
   const d = state.data, P = d.params, PROJ_H = 2;   // uur vooruit voor de richtingvector
   const pts = [];
   ROOMS_ORDER(d).forEach((name, ri) => {
     const r = d.rooms[name];
     if (!r || r.inside == null || r.humidity == null) return;
-    pts.push({ x: r.inside, y: r.humidity, color: ROOM_COLORS[ri % ROOM_COLORS.length],
-               label: name, dx: (r.trend || 0) * PROJ_H, dy: (r.hum_trend || 0) * PROJ_H, outside: false });
+    pts.push({ x: r.humidity, y: r.inside, color: ROOM_COLORS[ri % ROOM_COLORS.length],
+               label: name, dx: (r.hum_trend || 0) * PROJ_H, dy: (r.trend || 0) * PROJ_H, outside: false });
   });
   if (d.outside_now != null && d.outside_humidity != null)
-    pts.push({ x: d.outside_now, y: d.outside_humidity, color: COLORS.rain, label: "buiten",
-               dx: (d.outside_trend || 0) * PROJ_H, dy: (d.outside_hum_trend || 0) * PROJ_H, outside: true });
+    pts.push({ x: d.outside_humidity, y: d.outside_now, color: COLORS.rain, label: "buiten",
+               dx: (d.outside_hum_trend || 0) * PROJ_H, dy: (d.outside_trend || 0) * PROJ_H, outside: true });
 
   // Eén schuine pijl per punt (chartjs-plugin-annotation line + arrowhead).
   const ann = {};
   pts.forEach((p, i) => {
-    const dx = Math.max(-3, Math.min(3, p.dx));     // weergave-clamp zodat pijlen op de grafiek blijven
-    const dy = Math.max(-20, Math.min(20, p.dy));
-    if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.5) return;  // ~stil → alleen het punt, geen pijl
+    const dx = Math.max(-20, Math.min(20, p.dx));   // vocht-trend: weergave-clamp zodat pijlen op de grafiek blijven
+    const dy = Math.max(-3, Math.min(3, p.dy));      // temp-trend
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.05) return;  // ~stil → alleen het punt, geen pijl
     ann["v" + i] = { type: "line", xMin: p.x, yMin: p.y, xMax: p.x + dx, yMax: p.y + dy,
       borderColor: p.color, borderWidth: 2,
       arrowHeads: { end: { display: true, borderColor: p.color, borderWidth: 2, length: 7, width: 6 } } };
     ann["l" + i] = { type: "label", xValue: p.x, yValue: p.y, content: [p.label], yAdjust: -12,
       font: { family: "JetBrains Mono", size: 9, weight: 600 }, color: p.color, backgroundColor: "transparent" };
   });
-  // Vocht-drempels van de beslislogica: streef (RH_COMFORT) en hard veto (RH_HARD_CAP).
-  ann.rhTarget = { type: "line", yMin: P.RH_COMFORT, yMax: P.RH_COMFORT, borderColor: COLORS.clay, borderWidth: 1, borderDash: [4,4],
+  // Vocht-drempels van de beslislogica: streef (RH_COMFORT) en hard veto (RH_HARD_CAP) — nu verticaal op de vocht-as.
+  ann.rhTarget = { type: "line", xMin: P.RH_COMFORT, xMax: P.RH_COMFORT, borderColor: COLORS.clay, borderWidth: 1, borderDash: [4,4],
     label: { content: `streef ${P.RH_COMFORT}%`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.clay, backgroundColor: "transparent" } };
-  ann.rhVeto = { type: "line", yMin: P.RH_HARD_CAP, yMax: P.RH_HARD_CAP, borderColor: COLORS.dry, borderWidth: 1, borderDash: [2,4],
+  ann.rhVeto = { type: "line", xMin: P.RH_HARD_CAP, xMax: P.RH_HARD_CAP, borderColor: COLORS.dry, borderWidth: 1, borderDash: [2,4],
     label: { content: `veto ${P.RH_HARD_CAP}%`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } };
 
   state.scatter?.destroy();
@@ -543,16 +544,16 @@ function drawScatter() {
           titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
           bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
           callbacks: { label: c => { const p = pts[c.dataIndex];
-            return `${p.label}: ${p.x.toFixed(1)}° · ${Math.round(p.y)}% RH`; } },
+            return `${p.label}: ${p.y.toFixed(1)}° · ${Math.round(p.x)}% RH`; } },
         },
         annotation: { annotations: ann },
       },
       scales: {
-        x: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
-             title: { display: true, text: "temperatuur °C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
-        y: { suggestedMin: 30, suggestedMax: 85, grid: { color: "#2a241b11" },
+        x: { suggestedMin: 30, suggestedMax: 85, grid: { color: "#2a241b11" },
              ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
              title: { display: true, text: "luchtvochtigheid %", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+        y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+             title: { display: true, text: "temperatuur °C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
       },
     },
   });

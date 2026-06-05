@@ -320,9 +320,41 @@ function render() {
     ${learnedTable(d)}
   </div></div>`;
 
+  // — Speeltuin: interactief luchtstroommodel —
+  html += `<div class="grid" style="grid-template-columns:1fr;"><div class="specimen-card" id="sandbox-card">
+    <div class="corner-mark">Speeltuin · wat-als</div>
+    <div class="card-title">Experimenteer met de luchtstroom</div>
+    <p style="font-style:italic;color:var(--ink-soft);font-size:14px;margin:0 0 6px;">
+      Zet hier ramen, roosters en deuren open of dicht (en draai aan wind &amp; buitentemperatuur) en
+      zie meteen wat er met de luchtstroom gebeurt — zónder iets te bewaren of het echte model te raken.
+      Hetzelfde luchtstroomnetwerk als hierboven, maar live in je browser. De kamertemperaturen blijven
+      staan op de huidige meting; je ziet het ógenblikkelijke debiet (ventilatievoud &amp; koeling), geen
+      heruitgerekende opwarming.</p>
+    <div class="grid grid-2" style="padding:0;gap:20px;">
+      <div>
+        <div class="grp-title" style="margin-top:4px;">Omstandigheden</div>
+        <div id="sandbox-env"></div>
+        <div id="sandbox-controls" style="margin-top:6px;"></div>
+        <button class="btn btn-secondary" id="sandbox-reset" style="margin-top:14px;">↺ Terug naar huidige stand</button>
+      </div>
+      <div>
+        <div class="grp-title" style="margin-top:4px;">Resultaat</div>
+        <div id="sandbox-out"></div>
+        <div style="overflow-x:auto;margin-top:10px;" id="sandbox-plan"></div>
+        <div class="chips" style="margin-top:8px;">
+          <span style="color:var(--rain)">➜ instroom (koel)</span>
+          <span style="color:var(--clay)">➜ uitstroom (warm)</span>
+          <span style="color:var(--moss-light)">➜ tussen kamers</span>
+          <span>dikte &amp; snelheid ∝ debiet</span>
+        </div>
+      </div>
+    </div>
+  </div></div>`;
+
   document.getElementById("content").innerHTML = html;
   drawTempChart();
   drawRmseChart();
+  renderSandbox();
 }
 
 // ===================== FLOOR PLAN =====================
@@ -398,12 +430,13 @@ function floorPlanSVG(d) {
 
   // Stromen: geanimeerde, luchtige pijlen (dikte ∝ debiet, snelheid ∝ debiet).
   const wins = meta.windows||{};
+  const vnts = meta.vents||{};
   (d.flows||[]).forEach(f => {
     const q=Math.abs(f.flow_m3s); if (q<0.0025) return;     // verwaarloosbaar → niet tekenen
     const wd=Math.max(1.6, Math.min(8, q*15));
     const dur=Math.max(0.5, Math.min(2.6, 0.16/q));
     if (f.b==="outside") {
-      const win=wins[f.id]; const zid = (win&&win.room)||f.a; if(!zones[zid]) return;
+      const win=wins[f.id]||vnts[f.id]; const zid = (win&&win.room)||f.a; if(!zones[zid]) return;
       const rc=rectOf(zid); const into = f.flow_m3s < 0; const col = into?COLORS.rain:COLORS.clay;
       let edgeX, edgeY, outX, outY;
       if (win && win.kind==="skylight") {            // plat dakraam → bovenaan, pijl omhoog
@@ -625,6 +658,249 @@ async function triggerWorkflow() {
       body: JSON.stringify({ ref: "main" }),
     });
   } catch (e) { console.warn("Workflow trigger failed:", e); }
+}
+
+// ===================== SPEELTUIN: INTERACTIEF LUCHTSTROOMMODEL =====================
+// Een client-side port van het luchtstroomnetwerk uit airflow_model.py: identieke
+// orifice-flow + Newton-druksolver, zodat je ramen/roosters/deuren kunt omzetten (en
+// aan wind/buitentemp draaien) en meteen het effect op het debiet ziet — zonder
+// server-rondgang en zonder iets op te slaan of het echte model te raken.
+const SIM = { LEAK_AREA: 0.004, DP_LAM: 0.1, CP_AIR: 1005.0, G: 9.81, P_ATM: 101325.0, R_AIR: 287.05 };
+
+function simConst(d) {
+  const s = (d.house_meta && d.house_meta.sim) || {};
+  if (s.leak_area != null) SIM.LEAK_AREA = s.leak_area;
+  if (s.dp_lam != null) SIM.DP_LAM = s.dp_lam;
+}
+function airDensity(t) { return SIM.P_ATM / (SIM.R_AIR * (t + 273.15)); }
+function cpCoeff(thetaDeg) { const t = thetaDeg * Math.PI / 180; return 0.475*Math.cos(t) + 0.3125*Math.cos(2*t) - 0.0875; }
+function windPressure(facadeAz, height, windSpeed, windDir, shelter, rho) {
+  const theta = Math.abs(((windDir - facadeAz + 180) % 360) - 180);
+  const z = Math.max(1.5, height);
+  const u = (windSpeed || 0) * Math.pow(z / 10, 0.30);
+  return shelter * cpCoeff(theta) * 0.5 * rho * u * u;
+}
+function massflow(dP, Cd, area, rhoFrom, rhoTo) {
+  if (area <= 0) return 0;
+  const rho = dP >= 0 ? rhoFrom : rhoTo;
+  const coef = Cd * area * Math.sqrt(2 * rho), a = Math.abs(dP);
+  const m = a >= SIM.DP_LAM ? coef * Math.sqrt(a) : coef * Math.sqrt(SIM.DP_LAM) * (a / SIM.DP_LAM);
+  return dP >= 0 ? m : -m;
+}
+function solveLinear(A, b) {            // Gauss-eliminatie met partieel pivoteren (== Python)
+  const n = b.length, M = A.map((row, i) => row.concat([b[i]]));
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    if (Math.abs(M[piv][col]) < 1e-12) return null;
+    [M[col], M[piv]] = [M[piv], M[col]];
+    const pv = M[col][col];
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col] / pv;
+      if (f) for (let c = col; c <= n; c++) M[r][c] -= f * M[col][c];
+    }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+function solveNetwork(zones, openings, zoneTemps, outsideTemp) {
+  const idx = {}; zones.forEach((z, i) => idx[z] = i);
+  const n = zones.length, rhoOut = airDensity(outsideTemp);
+  const rhoZ = {}; zones.forEach(z => rhoZ[z] = airDensity(zoneTemps[z] ?? outsideTemp));
+  function residual(P) {
+    const res = new Array(n).fill(0);
+    for (const op of openings) {
+      const ia = idx[op.a], rhoA = rhoZ[op.a], PaEff = P[ia] - rhoA * SIM.G * op.z;
+      let PbEff, rhoB;
+      if (op.b === "outside") { PbEff = op.Pe - rhoOut * SIM.G * op.z; rhoB = rhoOut; }
+      else { rhoB = rhoZ[op.b]; PbEff = P[idx[op.b]] - rhoB * SIM.G * op.z; }
+      const md = massflow(PaEff - PbEff, op.Cd, op.area, rhoA, rhoB);
+      res[ia] += md;
+      if (op.b !== "outside") res[idx[op.b]] -= md;
+    }
+    return res;
+  }
+  const sse = r => r.reduce((s, v) => s + v * v, 0);
+  let P = new Array(n).fill(0), r = residual(P);
+  for (let it = 0; it < 40; it++) {
+    if (Math.max(...r.map(Math.abs)) < 1e-6) break;
+    const J = Array.from({ length: n }, () => new Array(n).fill(0)), eps = 0.02;
+    for (let j = 0; j < n; j++) {
+      P[j] += eps; const rp = residual(P); P[j] -= eps;
+      for (let i = 0; i < n; i++) J[i][j] = (rp[i] - r[i]) / eps;
+    }
+    const delta = solveLinear(J, r.map(v => -v));
+    if (!delta) break;
+    const sse0 = sse(r); let alpha = 1.0, Ptry = P, rtry = r, ok = false;
+    for (let ls = 0; ls < 24; ls++) {
+      Ptry = P.map((p, j) => p + alpha * delta[j]); rtry = residual(Ptry);
+      if (sse(rtry) < sse0) { ok = true; break; }
+      alpha *= 0.5;
+    }
+    if (!ok) break;
+    P = Ptry; r = rtry;
+  }
+  const flows = [], fresh = {}; zones.forEach(z => fresh[z] = 0);
+  for (const op of openings) {
+    const ia = idx[op.a], rhoA = rhoZ[op.a], PaEff = P[ia] - rhoA * SIM.G * op.z;
+    let PbEff, rhoB;
+    if (op.b === "outside") { PbEff = op.Pe - rhoOut * SIM.G * op.z; rhoB = rhoOut; }
+    else { rhoB = rhoZ[op.b]; PbEff = P[idx[op.b]] - rhoB * SIM.G * op.z; }
+    const md = massflow(PaEff - PbEff, op.Cd, op.area, rhoA, rhoB);
+    flows.push(md / (md >= 0 ? rhoA : rhoB));
+    if (op.b === "outside" && md < 0) fresh[op.a] += -md / rhoOut;
+  }
+  return { flows, fresh };
+}
+function openFracJS(value, el) {
+  if (typeof value === "number") return Math.max(0, Math.min(1, value));
+  const s = ("" + value).trim().toLowerCase();
+  if (["open","1","true","ja"].includes(s)) return 1.0;
+  if (["tilt","kier","kiep"].includes(s)) return el.tilt_frac ?? 0.15;
+  return 0.0;   // dicht / closed / 0 / leeg
+}
+function defaultFracJS(el, kind) {
+  if (el.default_state != null) return openFracJS(el.default_state, el);
+  return ({ window: 0.0, vent: 1.0, door: 1.0 })[kind] ?? 0.0;
+}
+function buildOpeningsJS(meta, states, wind, params, outsideTemp) {
+  const shelter = params.cp_shelter ?? 0.5, cd = params.cd ?? 0.62, rhoOut = airDensity(outsideTemp);
+  const ws = wind.wind_speed || 0, wdir = wind.wind_dir || 0, ops = [];
+  const zones = Object.keys(Object.assign({}, meta.rooms || {}, meta.junctions || {}));
+  const ext = (id, el, kind) => {
+    const frac = (id in states) ? openFracJS(states[id], el) : defaultFracJS(el, kind);
+    const area = frac * (el.max_open_area_m2 ?? el.area_m2 ?? 0);
+    if (area <= 0) return;
+    const pe = windPressure(el.facade_azimuth_deg || 0, el.center_height_m ?? 1.5, ws, wdir, shelter, rhoOut);
+    ops.push({ a: el.room, b: "outside", area, Cd: cd, z: el.center_height_m ?? 1.5, Pe: pe, id });
+  };
+  Object.entries(meta.windows || {}).forEach(([wid, w]) => ext(wid, w, "window"));
+  Object.entries(meta.vents || {}).forEach(([vid, v]) => ext(vid, v, "vent"));
+  Object.entries(meta.doors || {}).forEach(([did, dr]) => {
+    const frac = (did in states) ? openFracJS(states[did], dr) : defaultFracJS(dr, "door");
+    const area = frac * (dr.area_m2 ?? 0);
+    if (area <= 0 || !dr.between) return;
+    const [a, b] = dr.between;
+    ops.push({ a, b, area, Cd: cd, z: dr.center_height_m ?? 1.0, Pe: 0, id: did });
+  });
+  zones.forEach(z => ops.push({ a: z, b: "outside", area: SIM.LEAK_AREA, Cd: cd, z: 1.5, Pe: 0, id: `_leak_${z}` }));
+  return ops;
+}
+
+function renderSandbox() {
+  const d = state.data; if (!d || !d.house_meta) return;
+  simConst(d);
+  const ctls = (d.controls || []).filter(c => ["window","vent","door"].includes(c.kind));
+  if (!ctls.length) { document.getElementById("sandbox-card").style.display = "none"; return; }
+  // Begintoestand = de huidige gerapporteerde stand (zelfde normalisatie als de modal).
+  const states0 = {};
+  ctls.forEach(c => states0[c.id] = normState(c.state, c.kind));
+  const w = d.weather || {};
+  state.sandbox = {
+    states: states0,
+    wind_speed: w.wind_speed ?? 3.0,
+    wind_dir: w.wind_dir ?? 240,
+    outside_temp: w.outside_temp ?? 18.0,
+  };
+  // Omgevings-sliders (wind + buitentemp) zodat je óók het weer kunt variëren.
+  const env = document.getElementById("sandbox-env");
+  env.innerHTML =
+    sandboxSlider("wind_speed", "Windsnelheid", 0, 12, 0.1) +
+    sandboxSlider("wind_dir", "Windrichting", 0, 360, 5) +
+    sandboxSlider("outside_temp", "Buitentemperatuur", 8, 35, 0.5);
+  env.querySelectorAll("input[type=range]").forEach(inp => inp.addEventListener("input", e => {
+    const k = e.target.dataset.k;
+    state.sandbox[k] = parseFloat(e.target.value);
+    const lab = document.getElementById("sbval-" + k);
+    if (lab) lab.textContent = sandboxValTxt(k, state.sandbox[k]);
+    sandboxRecompute();
+  }));
+  // Element-toggles, gegroepeerd zoals de modal.
+  const groups = { window: "Ramen", vent: "Roosters", door: "Deuren" };
+  const opts = { window: ["dicht","tilt","open"], vent: ["dicht","open"], door: ["dicht","open"] };
+  let html = "";
+  ["window","vent","door"].forEach(kind => {
+    const items = ctls.filter(c => c.kind === kind);
+    if (!items.length) return;
+    html += `<div class="grp-title">${groups[kind]}</div>`;
+    items.forEach(c => {
+      const cur = states0[c.id];
+      const sub = c.between ? c.between.join(" ↔ ") : (c.room || "");
+      html += `<div class="ctl-row"><div><div class="ctl-label">${c.label}</div><div class="ctl-sub">${sub}</div></div>
+        <div class="seg" data-id="${c.id}">${opts[kind].map(o =>
+          `<button data-v="${o}" class="${cur===o?'active':''}">${o}</button>`).join("")}</div></div>`;
+    });
+  });
+  const cc = document.getElementById("sandbox-controls");
+  cc.innerHTML = html;
+  cc.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", e => {
+    const seg = e.target.closest(".seg"), id = seg.dataset.id;
+    seg.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+    e.target.classList.add("active");
+    state.sandbox.states[id] = e.target.dataset.v;
+    sandboxRecompute();
+  }));
+  const rb = document.getElementById("sandbox-reset");
+  rb.onclick = renderSandbox;
+  sandboxRecompute();
+}
+
+function sandboxValTxt(k, v) {
+  if (k === "wind_dir") return `${Math.round(v)}° ${dirName(v)}`;
+  if (k === "wind_speed") return `${v.toFixed(1)} m/s`;
+  return `${v.toFixed(1)}°C`;
+}
+function sandboxSlider(k, label, min, max, step) {
+  const v = state.sandbox[k];
+  return `<div class="ctl-row"><div><div class="ctl-label">${label}</div>
+      <div class="ctl-sub num" id="sbval-${k}">${sandboxValTxt(k, v)}</div></div>
+    <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v}" style="width:160px;max-width:48vw;accent-color:var(--moss);"></div>`;
+}
+
+function sandboxRecompute() {
+  const d = state.data, meta = d.house_meta, sb = state.sandbox;
+  const params = (d.learned && d.learned.params) || {};
+  const rooms = meta.rooms || {}, junctions = meta.junctions || {};
+  const zones = Object.keys(rooms).concat(Object.keys(junctions));
+  // Zone-temperaturen: huidige model-temp per kamer; junctie/zonder sensor → buiten.
+  const zoneTemps = {};
+  zones.forEach(z => {
+    const rt = (d.rooms || {})[z];
+    zoneTemps[z] = (rt && rt.predicted_temp != null) ? rt.predicted_temp : sb.outside_temp;
+  });
+  const wind = { wind_speed: sb.wind_speed, wind_dir: sb.wind_dir };
+  const ops = buildOpeningsJS(meta, sb.states, wind, params, sb.outside_temp);
+  const net = solveNetwork(zones, ops, zoneTemps, sb.outside_temp);
+  // Flow-objecten in dezelfde vorm als d.flows, zodat floorPlanSVG ze kan tekenen.
+  const flows = [];
+  ops.forEach((op, i) => { if (!op.id.startsWith("_leak_")) flows.push({ id: op.id, a: op.a, b: op.b, flow_m3s: Math.round(net.flows[i]*1e4)/1e4 }); });
+  const simData = { house_meta: meta, rooms: d.rooms, flows,
+    weather: { wind_dir: sb.wind_dir, wind_speed: sb.wind_speed,
+               sun_az: (d.weather||{}).sun_az, sun_el: (d.weather||{}).sun_el } };
+  document.getElementById("sandbox-plan").innerHTML = floorPlanSVG(simData);
+  // Uitlezing: per kamer ventilatievoud (ACH), verse buitenlucht (m³/u) en koeling (W).
+  let totalFresh = 0, totalCool = 0, rows = "";
+  Object.entries(rooms).forEach(([rid, rm]) => {
+    const fresh = net.fresh[rid] || 0;             // m³/s verse buitenlucht in deze kamer
+    const vol = rm.volume_m3 || 40;
+    const ach = fresh * 3600 / vol;
+    const coolW = 1.2 * SIM.CP_AIR * fresh * (zoneTemps[rid] - sb.outside_temp);
+    totalFresh += fresh * 3600;
+    if (coolW > 0) totalCool += coolW;
+    const coolTxt = fresh < 1e-4 ? "—" : (coolW >= 0 ? "+" : "") + Math.round(coolW) + " W";
+    const coolCls = coolW > 5 ? "err-neg" : (coolW < -5 ? "err-pos" : "");
+    rows += `<tr><td>${rm.label || rid}</td><td class="num">${ach.toFixed(2)}</td>
+      <td class="num">${Math.round(fresh*3600)}</td><td class="num ${coolCls}">${coolTxt}</td></tr>`;
+  });
+  const head = totalCool > 30
+    ? `≈ <b class="num">${Math.round(totalCool)} W</b> nuttige koeling · <span class="num">${Math.round(totalFresh)}</span> m³/u verse lucht`
+    : (totalFresh > 5
+        ? `<span class="num">${Math.round(totalFresh)}</span> m³/u verse lucht — nauwelijks koeling bij deze stand`
+        : `vrijwel dicht — <span class="num">${Math.round(totalFresh)}</span> m³/u verse lucht`);
+  document.getElementById("sandbox-out").innerHTML =
+    `<p style="font-style:italic;font-size:15px;margin:0 0 6px;">${head}</p>
+     <table><thead><tr><th>kamer</th><th>ACH</th><th>verse m³/u</th><th>koeling</th></tr></thead>
+     <tbody>${rows}</tbody></table>`;
 }
 
 // ===================== HELPERS =====================

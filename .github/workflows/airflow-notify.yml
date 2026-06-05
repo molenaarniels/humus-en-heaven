@@ -1,0 +1,95 @@
+name: Ventilatie-tweeling
+
+on:
+  schedule:
+    # GitHub's scheduler is best-effort and drops/delays most ticks, so we don't rely
+    # on it for cadence — each run is a self-contained ~5h loop that refreshes the
+    # digital twin once per 15 minutes internally. The cron is only a *restart kick*;
+    # the concurrency guard below holds a tick that fires mid-loop and starts the next
+    # loop the instant the current one ends. Fired a few minutes after the window run
+    # (:09/:29/:49) so docs/window_data.json (the tado source) is fresh.
+    - cron: "9,29,49 * * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Eén run i.p.v. de loop (test)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Serialize runs: exactly one loop alive at a time, so the committed dashboard artefacts
+# never race. A restart kick waits for the running loop to finish, then takes over.
+concurrency:
+  group: airflow-advisor
+  cancel-in-progress: false
+
+jobs:
+  twin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run airflow twin (quarter-hourly loop)
+        env:
+          GIST_ID:       ${{ secrets.GIST_ID }}
+          GIST_TOKEN:    ${{ secrets.GIST_TOKEN }}
+          WU_STATION_ID: ${{ secrets.WU_STATION_ID }}
+          WU_API_KEY:    ${{ secrets.WU_API_KEY }}
+          DRY_RUN:       ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # One twin cycle: run the model, then commit/push the dashboard + learned
+          # params if they changed. A transient failure (network, Open-Meteo hiccup)
+          # must not kill the loop — log it and let the next iteration retry.
+          run_once () {
+            python airflow_model.py || echo "::warning::airflow_model.py failed this iteration, continuing"
+            git add docs/airflow_data.json docs/airflow_learned.json
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+            else
+              git commit -m "data: airflow twin refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+              # Other workflows may have pushed in the same window — the JSON is fully
+              # regenerated each run, so prefer our freshly generated version on conflict.
+              git rebase --abort 2>/dev/null || true
+              if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+                git push || echo "::warning::push failed this iteration, continuing"
+              else
+                git rebase --abort 2>/dev/null || true
+                echo "::warning::rebase failed this iteration, skipping push, continuing"
+              fi
+            fi
+          }
+
+          # Dry run = a single manual test, no loop.
+          if [ "${DRY_RUN}" = "1" ]; then
+            run_once
+            exit 0
+          fi
+
+          # Drive the cadence ourselves: run now, then once at each :00/:15/:30/:45 mark,
+          # for up to ITERS iterations (~5h wall time). The concurrency guard keeps this
+          # the only loop running.
+          ITERS=20
+          for i in $(seq 1 "${ITERS}"); do
+            echo "=== iteration ${i}/${ITERS} at $(date -u +%H:%M:%SZ) ==="
+            run_once
+            if [ "${i}" -lt "${ITERS}" ]; then
+              now=$(date -u +%s)
+              next=$(( (now / 900 + 1) * 900 ))
+              sleep $(( next - now ))
+            fi
+          done

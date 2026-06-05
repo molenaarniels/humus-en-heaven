@@ -25,7 +25,7 @@
 
   "rooms": {
     "living": {
-      "from_window_data": "Living room", "volume_m3": 95, "exterior_wall_m2": 34,
+      "from_window_data": "Living room", "volume_m3": 150, "exterior_wall_m2": 46,
       "floor": 0, "plan_xy": [0, 2], "label": "Woonkamer + keuken",
       "_sensor": "midden in de kamer → goede proxy voor kamergemiddelde"
     },
@@ -90,9 +90,9 @@
       "center_height_m": 1.7, "shading": "deep", "label": "Keuken middenraam (ZO, opent)"
     },
     "kitchen_top_tilt": {
-      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.36, "glass_m2": 0.36,
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.40, "glass_m2": 0.40,
       "max_open_area_m2": 0.08, "open_type": "tilt", "tilt_frac": 1.0,
-      "center_height_m": 2.3, "shading": "deep", "label": "Keuken kiepraam boven deur (SCHATTING grootte)"
+      "center_height_m": 2.3, "shading": "deep", "label": "Keuken kiepraam boven deur (80×50)"
     },
     "kitchen_fix1": {
       "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.585, "glass_m2": 0.585,
@@ -126,26 +126,27 @@
     },
     "stair_skylight": {
       "room": "stair", "facade_azimuth_deg": 180, "tilt_deg": 0, "area_m2": 0.25, "glass_m2": 0.25,
-      "max_open_area_m2": 0.0, "center_height_m": 8.7, "shading": "none",
-      "label": "Trap-skylight 50×50 (plat, veel zon/warmte)"
+      "max_open_area_m2": 0.025, "open_type": "tilt", "tilt_frac": 1.0,
+      "center_height_m": 8.7, "shading": "none",
+      "label": "Trap-skylight 50×50 (plat; kan op kierstand ~5cm — top-afvoer voor de stack)"
     }
   },
 
   "vents": {
-    "living_vent1": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.008,
-                     "max_open_area_m2": 0.008, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 1 (35cm)"},
-    "living_vent2": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.008,
-                     "max_open_area_m2": 0.008, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 2 (35cm)"},
-    "ted_vent": {"room": "ted", "facade_azimuth_deg": 309, "area_m2": 0.028,
-                 "max_open_area_m2": 0.028, "center_height_m": 2.2, "default_state": "open", "label": "Ted rooster (groot, 130cm)"},
-    "hotties_vent1": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.006,
-                      "max_open_area_m2": 0.006, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 1 (25cm)"},
-    "hotties_vent2": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.006,
-                      "max_open_area_m2": 0.006, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 2 (25cm)"},
-    "office_vent1": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.007,
-                     "max_open_area_m2": 0.007, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 1 (30cm)"},
-    "office_vent2": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.007,
-                     "max_open_area_m2": 0.007, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 2 (30cm)"},
+    "living_vent1": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.014,
+                     "max_open_area_m2": 0.014, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 1 (35×4cm)"},
+    "living_vent2": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.014,
+                     "max_open_area_m2": 0.014, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 2 (35×4cm)"},
+    "ted_vent": {"room": "ted", "facade_azimuth_deg": 309, "area_m2": 0.052,
+                 "max_open_area_m2": 0.052, "center_height_m": 2.2, "default_state": "open", "label": "Ted rooster (groot, 130×4cm)"},
+    "hotties_vent1": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.010,
+                      "max_open_area_m2": 0.010, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 1 (25×4cm)"},
+    "hotties_vent2": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.010,
+                      "max_open_area_m2": 0.010, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 2 (25×4cm)"},
+    "office_vent1": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.012,
+                     "max_open_area_m2": 0.012, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 1 (30×4cm)"},
+    "office_vent2": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.012,
+                     "max_open_area_m2": 0.012, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 2 (30×4cm)"},
     "front_door_leak": {"room": "hall", "facade_azimuth_deg": 309, "area_m2": 0.020,
                         "max_open_area_m2": 0.020, "center_height_m": 1.2, "default_state": "open", "label": "Voordeur-kieren (slecht geïsoleerd)"},
     "bath_extract": {"room": "bath", "facade_azimuth_deg": 129, "area_m2": 0.020,

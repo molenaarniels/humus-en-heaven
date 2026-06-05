@@ -170,6 +170,15 @@ const lsToken = localStorage.getItem("gh_token");
 if (lsGist) CONFIG.gistId = lsGist;
 if (lsToken) CONFIG.githubToken = lsToken;
 
+// Toon de rapportage-UI alleen als er in déze browser een Gist-token is ingesteld (zoals
+// op het bodem/gazon-dashboard). Het dashboard is publiek leesbaar, maar wijzigen vereist
+// jouw token — die staat enkel lokaal. Zo ziet een willekeurige bezoeker de bewerk-knop
+// niet eens (minder misbruikgevoelig); schrijven blijft sowieso geblokkeerd zonder token.
+if (!CONFIG.githubToken) {
+  const rb = document.getElementById("report-btn");
+  if (rb) rb.style.display = "none";
+}
+
 document.getElementById("refresh-btn").addEventListener("click", loadData);
 document.getElementById("report-btn").addEventListener("click", openReport);
 document.getElementById("report-cancel").addEventListener("click", () => toggleModal(false));

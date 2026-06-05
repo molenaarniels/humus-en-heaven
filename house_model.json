@@ -1,0 +1,112 @@
+{
+  "_README": [
+    "Project 8 — geometrie van het huis (NIET-GEHEIM, publiek). Vul de echte cijfers in;",
+    "dit is een sjabloon met plausibele placeholders voor een Utrechts rijtjeshuis.",
+    "Het model leert de fysica (warmtecapaciteit, zonwinst, windgedrag) zelf bij; deze",
+    "JSON levert alleen de GEOMETRIE die het niet kan raden.",
+    "",
+    "Velden:",
+    "  rooms.<id>:",
+    "    from_window_data : tado-zonenaam zoals in docs/window_data.json (de echte temp).",
+    "    volume_m3        : kamervolume (l×b×h).",
+    "    exterior_wall_m2 : buitenmuur+raam-oppervlak (voor de schil-UA-prior).",
+    "    floor            : verdieping (0 = begane grond).",
+    "    plan_xy          : [x, y] roosterpositie voor de plattegrond op het dashboard.",
+    "    label            : weergavenaam (optioneel).",
+    "  junctions.<id>    : gang/overloop/trapgat — doet mee in de luchtstroom, geen sensor.",
+    "  windows.<id>:",
+    "    room             : bij welke kamer hoort dit raam.",
+    "    facade_azimuth_deg: kompasrichting waar het raam NAAR KIJKT (0=N,90=O,180=Z,270=W).",
+    "    area_m2          : totaal raamoppervlak; glass_m2 : glasoppervlak (zonwinst).",
+    "    max_open_area_m2 : effectief doorstroomoppervlak als het VOLLEDIG open staat.",
+    "    open_type        : tilt | casement | sliding (informatief).",
+    "    tilt_frac        : effectieve open-fractie in de kiepstand.",
+    "    center_height_m  : hoogte van het midden van de opening (voor schoorsteeneffect).",
+    "    shading          : none | overhang | blind (zonwering-demping).",
+    "    label            : weergavenaam.",
+    "  vents.<id>        : ventilatierooster — kleine, vaak constante opening (trickle).",
+    "  doors.<id>        : binnendeur/trapgat. between:[zoneA,zoneB]; area_m2; default_state.",
+    "",
+    "Elk element mag een 'default_state' krijgen (open|tilt|dicht of 0..1) als basisstand",
+    "vóór jij iets rapporteert. Standaard: ramen dicht, binnendeuren open, roosters open."
+  ],
+
+  "location": {"lat": 52.0907, "lon": 5.1214, "elevation_m": 5},
+  "terrain": "urban",
+
+  "rooms": {
+    "living": {
+      "from_window_data": "Living room", "volume_m3": 75, "exterior_wall_m2": 22,
+      "floor": 0, "plan_xy": [1, 2], "label": "Woonkamer"
+    },
+    "office": {
+      "from_window_data": "office", "volume_m3": 32, "exterior_wall_m2": 12,
+      "floor": 1, "plan_xy": [1, 1], "label": "Kantoor"
+    },
+    "ted": {
+      "from_window_data": "Ted", "volume_m3": 30, "exterior_wall_m2": 11,
+      "floor": 1, "plan_xy": [2, 1], "label": "Ted (slaapkamer)"
+    },
+    "hotties": {
+      "from_window_data": "hotties", "volume_m3": 28, "exterior_wall_m2": 10,
+      "floor": 1, "plan_xy": [3, 1], "label": "Hotties (slaapkamer)"
+    }
+  },
+
+  "junctions": {
+    "hall": {"floor": 0, "volume_m3": 18, "plan_xy": [2, 2], "label": "Gang/hal"},
+    "landing": {"floor": 1, "volume_m3": 14, "plan_xy": [2, 2], "label": "Overloop"}
+  },
+
+  "windows": {
+    "living_front": {
+      "room": "living", "facade_azimuth_deg": 180, "area_m2": 3.0, "glass_m2": 2.4,
+      "max_open_area_m2": 0.8, "open_type": "tilt", "tilt_frac": 0.15,
+      "center_height_m": 1.6, "shading": "none", "label": "Woonkamer voor (Z)"
+    },
+    "living_back": {
+      "room": "living", "facade_azimuth_deg": 0, "area_m2": 2.4, "glass_m2": 1.9,
+      "max_open_area_m2": 1.2, "open_type": "sliding", "tilt_frac": 0.2,
+      "center_height_m": 1.4, "shading": "none", "label": "Woonkamer tuin (N)"
+    },
+    "office_window": {
+      "room": "office", "facade_azimuth_deg": 180, "area_m2": 1.4, "glass_m2": 1.1,
+      "max_open_area_m2": 0.5, "open_type": "tilt", "tilt_frac": 0.15,
+      "center_height_m": 1.5, "shading": "none", "label": "Kantoor (Z)"
+    },
+    "ted_window": {
+      "room": "ted", "facade_azimuth_deg": 0, "area_m2": 1.3, "glass_m2": 1.0,
+      "max_open_area_m2": 0.5, "open_type": "tilt", "tilt_frac": 0.15,
+      "center_height_m": 1.5, "shading": "blind", "label": "Ted (N)"
+    },
+    "hotties_window": {
+      "room": "hotties", "facade_azimuth_deg": 0, "area_m2": 1.2, "glass_m2": 0.9,
+      "max_open_area_m2": 0.45, "open_type": "tilt", "tilt_frac": 0.15,
+      "center_height_m": 1.5, "shading": "blind", "label": "Hotties (N)"
+    }
+  },
+
+  "vents": {
+    "living_rooster": {"room": "living", "facade_azimuth_deg": 180, "area_m2": 0.025,
+                       "max_open_area_m2": 0.025, "center_height_m": 2.3, "label": "Woonkamer rooster"},
+    "office_rooster": {"room": "office", "facade_azimuth_deg": 180, "area_m2": 0.015,
+                       "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Kantoor rooster"},
+    "ted_rooster": {"room": "ted", "facade_azimuth_deg": 0, "area_m2": 0.015,
+                    "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Ted rooster"},
+    "hotties_rooster": {"room": "hotties", "facade_azimuth_deg": 0, "area_m2": 0.015,
+                        "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Hotties rooster"}
+  },
+
+  "doors": {
+    "living_hall": {"between": ["living", "hall"], "area_m2": 1.8, "center_height_m": 1.0,
+                    "default_state": "open", "label": "Woonkamer ↔ gang"},
+    "hall_stairs": {"between": ["hall", "landing"], "area_m2": 2.2, "center_height_m": 2.5,
+                    "vertical": true, "default_state": "open", "label": "Trapgat"},
+    "office_landing": {"between": ["office", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
+                       "default_state": "open", "label": "Kantoor ↔ overloop"},
+    "ted_landing": {"between": ["ted", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
+                    "default_state": "dicht", "label": "Ted ↔ overloop"},
+    "hotties_landing": {"between": ["hotties", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
+                        "default_state": "dicht", "label": "Hotties ↔ overloop"}
+  }
+}

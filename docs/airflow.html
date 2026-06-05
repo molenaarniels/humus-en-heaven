@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self' https://api.github.com;
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Ventilatie-tweeling · Humus &amp; Heaven</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --parchment: #f3ecd9; --parchment-deep: #e8dec3;
+    --ink: #2a241b; --ink-soft: #5c4f3c;
+    --moss: #3d5a3a; --moss-light: #6b8562;
+    --clay: #b8532a; --sand: #c9a978;
+    --rain: #4a6b8a; --sun: #d4a017; --dry: #a0421a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, var(--parchment-deep) 0%, var(--parchment) 60%);
+    color: var(--ink); font-family: "Cormorant Garamond", Georgia, serif;
+    min-height: 100vh; padding-bottom: 40px;
+  }
+  .num { font-family: "JetBrains Mono", monospace; font-feature-settings: "tnum"; }
+  .rule-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft); }
+  .corner-mark { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.15em; color: var(--ink-soft); text-transform: uppercase; }
+  header { padding: 32px 40px 16px; }
+  .title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px; }
+  h1 { font-size: clamp(38px, 5vw, 64px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+  .subtitle { font-size: 13px; font-style: italic; color: var(--ink-soft); max-width: 560px; margin-top: 4px; }
+  .date-big { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
+  .pulse { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .pad { padding: 0 40px; }
+  .grid { display: grid; gap: 24px; padding: 24px 40px 0; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .grid-rooms { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .specimen-card {
+    background: var(--parchment); border: 1px solid #2a241b22;
+    box-shadow: 2px 4px 0 #2a241b11, inset 0 0 40px #e8dec380;
+    position: relative; padding: 24px;
+    background-image: radial-gradient(#2a241b08 1px, transparent 1px), radial-gradient(#2a241b05 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px; background-position: 0 0, 1px 2px;
+  }
+  .specimen-card::before { content: ""; position: absolute; inset: 6px; border: 1px solid #2a241b1a; pointer-events: none; }
+  .card-title { font-size: 22px; font-style: italic; margin: 4px 0 14px; font-weight: 500; }
+  .big-num { font-family: "JetBrains Mono", monospace; font-size: 44px; font-weight: 600; line-height: 1; }
+  .big-num span { font-size: 18px; color: var(--ink-soft); margin-left: 3px; }
+  .badge { display: inline-block; padding: 4px 12px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; border: 1px solid currentColor; }
+  .badge-open { color: var(--moss); }
+  .badge-dicht { color: var(--ink-soft); }
+  .chart-box { position: relative; height: 340px; margin-top: 10px; }
+  .chart-box.short { height: 200px; }
+  table { width: 100%; border-collapse: collapse; font-family: "JetBrains Mono", monospace; font-size: 12px; margin-top: 6px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px dashed #2a241b22; }
+  th { color: var(--ink-soft); font-weight: 600; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .btn { background: var(--ink); color: var(--parchment); padding: 10px 18px; min-height: 44px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; }
+  .btn:hover { background: var(--moss); }
+  .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+  .btn-secondary:hover { background: var(--ink); color: var(--parchment); }
+  a.link { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 2px; }
+  .banner { padding: 12px 16px; margin: 8px 40px; font-style: italic; font-size: 13px; border-left: 3px solid; }
+  .banner-ok { color: var(--moss); background: #3d5a3a11; border-left-color: var(--moss); }
+  .banner-warn { color: var(--clay); background: #b8532a11; border-left-color: var(--clay); }
+  .banner-error { color: var(--dry); background: #a0421a11; border-left-color: var(--dry); }
+  .chips { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--ink-soft); }
+  .chip-strong { color: var(--ink); font-weight: 600; }
+  .err-pos { color: var(--clay); } .err-neg { color: var(--rain); }
+  .room-temp { font-family: "JetBrains Mono", monospace; font-size: 13px; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(42,36,27,.55); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+  .modal { background: var(--parchment); padding: 30px; width: min(540px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow-y: auto; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; }
+  .modal h2 { font-size: 26px; font-style: italic; font-weight: 500; margin-bottom: 4px; }
+  .ctl-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #2a241b22; }
+  .ctl-label { font-family: "Cormorant Garamond", serif; font-size: 16px; }
+  .ctl-sub { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--ink-soft); text-transform: uppercase; }
+  .seg { display: flex; gap: 0; }
+  .seg button { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 8px 12px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; cursor: pointer; color: var(--ink-soft); }
+  .seg button.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+  .seg button:not(:last-child) { border-right: none; }
+  .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
+  footer { padding: 40px; margin-top: 24px; font-size: 12px; color: var(--ink-soft); font-style: italic; }
+  @media (max-width: 680px) {
+    header { padding: 24px 16px 12px; }
+    .pad, .grid { padding-left: 16px; padding-right: 16px; }
+    .banner { margin: 8px 16px; }
+    .modal { padding: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <div class="corner-mark" id="folio-mark"></div>
+      <h1>Ventilatie-tweeling</h1>
+      <div class="subtitle">Een digitale tweeling van het huis. Jíj vertelt welke ramen, roosters en deuren open staan; het model voorspelt per kamer de temperatuur (lucht- &amp; massaknoop), gevoed door een luchtstroomnetwerk (wind + schoorsteen) en zon dóór het glas — en leert van de échte tado-temperaturen om steeds beter te worden.</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="corner-mark">Vandaag</div>
+      <div class="num date-big" id="today-date"></div>
+      <div style="margin-top:8px;display:flex;gap:14px;justify-content:flex-end;flex-wrap:wrap;">
+        <a class="link" href="index.html">Bodem</a><a class="link" href="mowing.html">Gazon</a><a class="link" href="window.html">Ramen</a><a class="link" href="accuracy.html">IJking</a>
+      </div>
+    </div>
+  </div>
+  <div class="hairline-bold"></div>
+</header>
+
+<section style="padding:14px 40px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+  <button class="btn" id="report-btn">🪟 Stel ramen/roosters in</button>
+  <button class="btn btn-secondary" id="refresh-btn">↻ Refresh</button>
+  <span class="rule-label" id="source-label" style="margin-left:auto;"></span>
+</section>
+
+<div id="banner-slot"></div>
+<div id="content" class="pad" style="padding-top:18px;">
+  <div style="text-align:center;padding:60px;color:var(--ink-soft);font-style:italic;" class="pulse">⋯ tweeling laden…</div>
+</div>
+
+<footer>
+  Geen CFD-simulatie maar een grijze-doos-model: de fysica (zonpositie, orifice-stroming, massabehoud) is exact;
+  de invoer (winddruk-coëfficiënten, exacte openingsgeometrie, deurstanden) is benaderd en wordt al lerend bijgesteld.
+  Een relatieve rangschikker — "open déze ramen voor de beste bries" — geen liter-per-seconde-orakel.
+  Alleen-lezen gevoed door <code>window_data.json</code>; niets anders hangt hiervan af.
+</footer>
+
+<!-- ── Rapportage-modal ───────────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="report-modal">
+  <div class="modal">
+    <div class="corner-mark">🪟 Wat staat er open?</div>
+    <h2>Stel ramen, roosters &amp; deuren in</h2>
+    <p style="font-style:italic;color:var(--ink-soft);font-size:13px;margin:6px 0 4px;">
+      Zet elk element op zijn huidige stand. Het model leert hiervan — hoe nauwkeuriger jouw
+      opgave, hoe beter de voorspelling. De stand wordt met een tijdstempel bewaard.</p>
+    <div id="ctl-list"></div>
+    <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">
+      <button class="btn btn-secondary" id="report-cancel">Annuleer</button>
+      <button class="btn" id="report-save">Bewaar &amp; leer</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================== CONFIG =====================
+const CONFIG = { gistId: "__GIST_ID__", githubToken: null };
+const OPENINGS_FILE = "house_openings.json";
+const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", sun:"#d4a017", dry:"#a0421a", rain:"#4a6b8a" };
+const state = { data: null, tempChart: null, rmseChart: null, pending: {} };
+
+document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ventilatie`;
+document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+
+const lsGist = localStorage.getItem("gist_id");
+const lsToken = localStorage.getItem("gh_token");
+if (lsGist) CONFIG.gistId = lsGist;
+if (lsToken) CONFIG.githubToken = lsToken;
+
+document.getElementById("refresh-btn").addEventListener("click", loadData);
+document.getElementById("report-btn").addEventListener("click", openReport);
+document.getElementById("report-cancel").addEventListener("click", () => toggleModal(false));
+document.getElementById("report-save").addEventListener("click", saveReport);
+
+// ===================== DATA =====================
+async function loadData() {
+  document.getElementById("banner-slot").innerHTML = "";
+  document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
+  try {
+    const res = await fetch(`airflow_data.json?t=${Date.now()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.data = await res.json();
+    render();
+  } catch (e) {
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-error">Kon <code>airflow_data.json</code> niet laden (${e.message}). Het model draait elk kwartier via GitHub Actions.</div>`;
+    document.getElementById("source-label").textContent = "";
+    document.getElementById("content").innerHTML = "";
+  }
+}
+
+// ===================== RENDER =====================
+function render() {
+  const d = state.data;
+  const w = d.weather || {};
+  const asOf = d.as_of_local ? new Date(d.as_of_local) : new Date();
+  document.getElementById("source-label").textContent =
+    `Bijgewerkt ${asOf.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})} · bron: model + tado`;
+
+  const rmse = d.learned && d.learned.rmse != null ? d.learned.rmse : null;
+  let html = "";
+
+  // — Strip: weer + zon + wind + leer-RMSE —
+  html += `<div class="grid grid-2" style="padding-top:0;">`;
+  html += `<div class="specimen-card"><div class="corner-mark">Buiten &amp; hemel</div>
+    <div class="card-title">Wind, zon &amp; buitenlucht</div>
+    <div class="chips">
+      <span class="chip-strong num">${fmt(w.outside_temp)}°C</span> buiten
+      <span>·</span> <span class="num">${fmt(w.outside_humidity,0)}%</span> RV
+      <span>·</span> wind <span class="num">${fmt(w.wind_speed,1)} m/s</span> ${windArrow(w.wind_dir)} ${dirName(w.wind_dir)}
+      <span>·</span> zon ${sunGlyph(w.sun_el)} az <span class="num">${fmt(w.sun_az,0)}°</span> h <span class="num">${fmt(w.sun_el,0)}°</span>
+    </div>
+    <div style="margin-top:12px;" class="chips">
+      <span class="ctl-sub">Leerfout (RMSE)</span>
+      <span class="chip-strong num">${rmse!=null?rmse.toFixed(2)+"°C":"—"}</span>
+      <span class="ctl-sub">${learnTrendText(d)}</span>
+    </div>
+  </div>`;
+
+  // — Suggestie —
+  const sg = d.suggestion || {};
+  html += `<div class="specimen-card"><div class="corner-mark">Passief advies (handel niet verplicht)</div>
+    <div class="card-title">Wat zou koeling geven?</div>
+    <p style="font-style:italic;font-size:15px;">${sg.headline || "—"}</p>`;
+  if (sg.ranked && sg.ranked.length) {
+    html += `<table><thead><tr><th>Combinatie</th><th>score</th></tr></thead><tbody>`;
+    sg.ranked.slice(0,4).forEach(r => {
+      const labs = (r.windows||[]).map(wid => winLabel(wid)).join(" + ") || "alles dicht";
+      html += `<tr><td>${labs}</td><td class="num">${r.score}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  html += `</div></div>`;
+
+  // — Plattegrond —
+  html += `<div class="grid" style="grid-template-columns:1fr;"><div class="specimen-card">
+    <div class="corner-mark">Plattegrond · luchtstroom</div>
+    <div class="card-title">Wie waait waarheen</div>
+    <div style="overflow-x:auto;">${floorPlanSVG(d)}</div>
+    <div class="chips" style="margin-top:8px;">
+      <span>🟩 raam/rooster open</span><span>⬜ dicht</span><span>➜ luchtstroom (dikte ∝ debiet)</span>
+    </div>
+  </div></div>`;
+
+  // — Temperatuur: voorspeld vs werkelijk —
+  html += `<div class="grid" style="grid-template-columns:1fr;"><div class="specimen-card">
+    <div class="corner-mark">Afgeleide temperaturen vs. werkelijkheid</div>
+    <div class="card-title">Voorspeld (model) vs. gemeten (tado)</div>
+    <div class="chart-box"><canvas id="temp-chart"></canvas></div>
+    <div class="chips" style="margin-top:8px;"><span>— doorgetrokken: model</span><span>· · gestippeld: tado-meting</span></div>
+  </div></div>`;
+
+  // — Kamerkaarten —
+  html += `<div class="grid grid-rooms">`;
+  Object.entries(d.rooms || {}).forEach(([rid, r]) => {
+    const adv = (r.actual_temp!=null && r.predicted_temp!=null);
+    const errCls = r.error==null ? "" : (r.error>=0 ? "err-pos" : "err-neg");
+    html += `<div class="specimen-card">
+      <div class="corner-mark">${r.label || rid}</div>
+      <div class="big-num">${fmt(r.predicted_temp)}<span>°C model</span></div>
+      <div class="room-temp" style="margin-top:6px;">
+        tado <span class="num">${fmt(r.actual_temp)}°C</span> ·
+        fout <span class="num ${errCls}">${r.error==null?"—":(r.error>0?"+":"")+r.error.toFixed(1)+"°"}</span>
+      </div>
+      <div class="chips" style="margin-top:10px;">
+        <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
+        <span class="ctl-sub">zon</span><span class="num">${fmt(r.solar_w,0)} W</span>
+        <span class="ctl-sub">RV</span><span class="num">${fmt(r.humidity,0)}%</span>
+      </div>
+      ${r.predicted_mass_temp!=null?`<div class="ctl-sub" style="margin-top:8px;">massaknoop (wanden) ${r.predicted_mass_temp.toFixed(1)}°C · comfort ${r.comfort_low??"?"}–${r.comfort_high??"?"}°</div>`:""}
+    </div>`;
+  });
+  html += `</div>`;
+
+  // — Leerpaneel —
+  html += `<div class="grid grid-2"><div class="specimen-card">
+    <div class="corner-mark">Leercurve</div>
+    <div class="card-title">Wordt de tweeling beter?</div>
+    <div class="chart-box short"><canvas id="rmse-chart"></canvas></div>
+  </div>
+  <div class="specimen-card"><div class="corner-mark">Geleerde parameters</div>
+    <div class="card-title">Wat het model leerde</div>
+    ${learnedTable(d)}
+  </div></div>`;
+
+  document.getElementById("content").innerHTML = html;
+  drawTempChart();
+  drawRmseChart();
+}
+
+// ===================== FLOOR PLAN =====================
+function floorPlanSVG(d) {
+  const meta = d.house_meta || {}; const rooms = meta.rooms || {};
+  const ids = Object.keys(rooms);
+  if (!ids.length) return '<div class="ctl-sub">Geen plattegrond — vul plan_xy in house_model.json.</div>';
+  let minx=99,miny=99,maxx=-99,maxy=-99;
+  ids.forEach(id => { const xy=rooms[id].plan_xy||[0,0]; minx=Math.min(minx,xy[0]); maxx=Math.max(maxx,xy[0]); miny=Math.min(miny,xy[1]); maxy=Math.max(maxy,xy[1]); });
+  const cw=150, ch=110, gap=18, pad=40;
+  const cols=maxx-minx+1, rowsN=maxy-miny+1;
+  const W=pad*2+cols*cw+(cols-1)*gap, H=pad*2+rowsN*ch+(rowsN-1)*gap+30;
+  const cx = id => { const xy=rooms[id].plan_xy||[0,0]; return pad+(xy[0]-minx)*(cw+gap); };
+  const cy = id => { const xy=rooms[id].plan_xy||[0,0]; return pad+(xy[1]-miny)*(ch+gap); };
+  const roomCenter = id => [cx(id)+cw/2, cy(id)+ch/2];
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:'JetBrains Mono',monospace;">`;
+
+  // Wind arrow + sun (top-right corner gnomon).
+  const w = d.weather||{};
+  if (w.wind_dir!=null) {
+    const ax=W-pad-30, ay=pad-6, len=26;
+    const toRad=(w.wind_dir+180)%360 * Math.PI/180; // blow-to direction
+    const dx=Math.sin(toRad)*len, dy=-Math.cos(toRad)*len;
+    s += `<line x1="${ax-dx}" y1="${ay-dy}" x2="${ax+dx}" y2="${ay+dy}" stroke="${COLORS.rain}" stroke-width="3"/>`;
+    s += `<circle cx="${ax+dx}" cy="${ay+dy}" r="4" fill="${COLORS.rain}"/>`;
+    s += `<text x="${ax}" y="${ay+34}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle">WIND ${fmt(w.wind_speed,1)} m/s</text>`;
+  }
+  if (w.sun_el!=null && w.sun_el>0) {
+    s += `<text x="${pad}" y="${pad-10}" font-size="13" fill="${COLORS.sun}">☀ zon ${fmt(w.sun_az,0)}° / ${fmt(w.sun_el,0)}°</text>`;
+  }
+
+  // Rooms.
+  ids.forEach(id => {
+    const r = (d.rooms||{})[id] || {};
+    const x=cx(id), y=cy(id);
+    const t = r.predicted_temp;
+    const warm = t!=null && r.comfort_high!=null && t>r.comfort_high;
+    s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="4" fill="${warm?'#b8532a14':'#3d5a3a10'}" stroke="${COLORS.ink}" stroke-width="1.5"/>`;
+    s += `<text x="${x+10}" y="${y+22}" font-size="12" fill="${COLORS.ink}" font-family="'Cormorant Garamond',serif" font-style="italic">${rooms[id].label||id}</text>`;
+    s += `<text x="${x+10}" y="${y+46}" font-size="18" fill="${COLORS.ink}" font-weight="600">${fmt(t)}°</text>`;
+    s += `<text x="${x+10}" y="${y+64}" font-size="10" fill="${COLORS.inkSoft}">tado ${fmt(r.actual_temp)}° · ACH ${fmt(r.ach,1)}</text>`;
+    if (r.solar_w>30) s += `<text x="${x+cw-10}" y="${y+22}" font-size="12" fill="${COLORS.sun}" text-anchor="end">☀${fmt(r.solar_w,0)}W</text>`;
+  });
+
+  // Window/vent marks + flow arrows.
+  const wins = meta.windows || {};
+  (d.flows||[]).forEach(f => {
+    const win = wins[f.id];
+    let aCenter;
+    if (win && win.room && rooms[win.room]) aCenter = roomCenter(win.room);
+    else if (rooms[f.a]) aCenter = roomCenter(f.a);
+    else return;
+    const open = Math.abs(f.flow_m3s) > 0.001;
+    // Exterior opening: draw a mark on the room edge toward its façade.
+    if (f.b === "outside" && win) {
+      const az = (win.facade_azimuth_deg||0)*Math.PI/180;
+      const ex = aCenter[0] + Math.sin(az)*(cw/2-6), ey = aCenter[1] - Math.cos(az)*(ch/2-6);
+      s += `<rect x="${ex-7}" y="${ey-5}" width="14" height="10" rx="2" fill="${open?COLORS.moss:'#ffffff00'}" stroke="${COLORS.ink}" stroke-width="1.2"/>`;
+      if (open) {
+        const into = f.flow_m3s < 0; // negative a->b = inflow to room
+        const ox=ex+Math.sin(az)*16, oy=ey-Math.cos(az)*16;
+        const x1=into?ox:ex, y1=into?oy:ey, x2=into?ex:ox, y2=into?ey:oy;
+        s += arrow(x1,y1,x2,y2, COLORS.rain, 1.5+Math.min(6, Math.abs(f.flow_m3s)*8));
+      }
+    } else if (f.b !== "outside" && rooms[f.a] && rooms[f.b]) {
+      // Interior door flow between two rooms.
+      const c2 = roomCenter(f.b);
+      if (open) {
+        const fwd = f.flow_m3s >= 0;
+        s += arrow(fwd?aCenter[0]:c2[0], fwd?aCenter[1]:c2[1], fwd?c2[0]:aCenter[0], fwd?c2[1]:aCenter[1],
+                   COLORS.mossLight, 1+Math.min(5, Math.abs(f.flow_m3s)*6));
+      }
+    }
+  });
+  s += `</svg>`;
+  return s;
+}
+function arrow(x1,y1,x2,y2,col,wd) {
+  const ang=Math.atan2(y2-y1,x2-x1), ah=6+wd;
+  const a1=ang-Math.PI/7, a2=ang+Math.PI/7;
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${wd}" opacity="0.85"/>`+
+    `<path d="M ${x2} ${y2} L ${x2-Math.cos(a1)*ah} ${y2-Math.sin(a1)*ah} M ${x2} ${y2} L ${x2-Math.cos(a2)*ah} ${y2-Math.sin(a2)*ah}" stroke="${col}" stroke-width="${wd}" fill="none"/>`;
+}
+
+// ===================== CHARTS =====================
+function drawTempChart() {
+  const c = document.getElementById("temp-chart"); if (!c) return;
+  if (state.tempChart) state.tempChart.destroy();
+  const palette = [COLORS.moss, COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight, COLORS.dry];
+  const ds = []; let i=0;
+  Object.entries(state.data.rooms||{}).forEach(([rid,r]) => {
+    const col = palette[i%palette.length]; i++;
+    if (r.predicted_series && r.predicted_series.length)
+      ds.push({ label:`${r.label||rid} (model)`, data:r.predicted_series.map(p=>({x:p.t,y:p.temp})), borderColor:col, backgroundColor:col, borderWidth:2, pointRadius:0, tension:0.25 });
+    if (r.actual_series && r.actual_series.length)
+      ds.push({ label:`${r.label||rid} (tado)`, data:r.actual_series.map(p=>({x:p.t,y:p.temp})), borderColor:col, borderDash:[3,3], borderWidth:1.5, pointRadius:0, tension:0.25 });
+  });
+  state.tempChart = new Chart(c, { type:"line", data:{datasets:ds}, options:{
+    responsive:true, maintainAspectRatio:false, interaction:{mode:"nearest",intersect:false},
+    scales:{ x:{type:"time", time:{unit:"hour", displayFormats:{hour:"HH:mm"}}, grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:10}, color:COLORS.inkSoft}},
+             y:{grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:10}, color:COLORS.inkSoft, callback:v=>v+"°"}} },
+    plugins:{ legend:{labels:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft, boxWidth:18}} }
+  }});
+}
+function drawRmseChart() {
+  const c = document.getElementById("rmse-chart"); if (!c) return;
+  if (state.rmseChart) state.rmseChart.destroy();
+  const hist = (state.data.learned && state.data.learned.rmse_history) || [];
+  state.rmseChart = new Chart(c, { type:"line", data:{ datasets:[{ label:"RMSE (°C)",
+      data:hist.map(p=>({x:p.t,y:p.rmse})), borderColor:COLORS.clay, backgroundColor:COLORS.clay, borderWidth:2, pointRadius:0, tension:0.2 }]}, options:{
+    responsive:true, maintainAspectRatio:false,
+    scales:{ x:{type:"time", time:{unit:"day"}, grid:{display:false}, ticks:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft}},
+             y:{beginAtZero:true, grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft, callback:v=>v+"°"}} },
+    plugins:{ legend:{display:false} }
+  }});
+}
+function learnedTable(d) {
+  const p = (d.learned && d.learned.params) || {};
+  let s = `<table><thead><tr><th>globaal</th><th>waarde</th></tr></thead><tbody>`;
+  ["cp_shelter","cd","vent_eff"].forEach(k => { if (p[k]!=null) s += `<tr><td>${k}</td><td class="num">${(+p[k]).toFixed(3)}</td></tr>`; });
+  s += `</tbody></table><table style="margin-top:10px;"><thead><tr><th>kamer</th><th>C_air</th><th>zon</th><th>UA</th></tr></thead><tbody>`;
+  Object.entries(d.rooms||{}).forEach(([rid,r]) => {
+    const rp = p[rid]||{};
+    s += `<tr><td>${r.label||rid}</td><td class="num">${num(rp.c_air)}</td><td class="num">${num(rp.solar_gain)}</td><td class="num">${num(rp.ua_env)}</td></tr>`;
+  });
+  return s + `</tbody></table>`;
+}
+
+// ===================== REPORTING MODAL =====================
+function openReport() {
+  const ctls = (state.data && state.data.controls) || [];
+  if (!ctls.length) { alert("Nog geen elementen — vul house_model.json en laat het model één keer draaien."); return; }
+  state.pending = {};
+  const groups = { window:"Ramen", vent:"Roosters", door:"Deuren" };
+  const opts = { window:["dicht","tilt","open"], vent:["dicht","open"], door:["dicht","open"] };
+  let html = "";
+  ["window","vent","door"].forEach(kind => {
+    const items = ctls.filter(c => c.kind===kind);
+    if (!items.length) return;
+    html += `<div class="grp-title">${groups[kind]}</div>`;
+    items.forEach(c => {
+      state.pending[c.id] = normState(c.state, kind);
+      const sub = c.between ? c.between.join(" ↔ ") : (c.room||"");
+      html += `<div class="ctl-row"><div><div class="ctl-label">${c.label}</div><div class="ctl-sub">${sub}</div></div>
+        <div class="seg" data-id="${c.id}">${opts[kind].map(o =>
+          `<button data-v="${o}" class="${normState(c.state,kind)===o?'active':''}">${o}</button>`).join("")}</div></div>`;
+    });
+  });
+  document.getElementById("ctl-list").innerHTML = html;
+  document.querySelectorAll("#ctl-list .seg button").forEach(b => b.addEventListener("click", e => {
+    const seg = e.target.closest(".seg"); const id = seg.dataset.id;
+    seg.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+    e.target.classList.add("active");
+    state.pending[id] = e.target.dataset.v;
+  }));
+  toggleModal(true);
+}
+function normState(v, kind) {
+  if (typeof v === "number") return v>0.5 ? "open" : (v>0 ? "tilt" : "dicht");
+  v = (""+v).toLowerCase();
+  if (v==="closed") return "dicht";
+  if (["open","tilt","dicht"].includes(v)) return v;
+  return kind==="window" ? "dicht" : "open";
+}
+function toggleModal(open) { document.getElementById("report-modal").classList.toggle("open", open); }
+
+async function saveReport() {
+  if (!ensureToken()) return;
+  const btn = document.getElementById("report-save"); btn.textContent = "⋯ bewaren";
+  try {
+    const log = await fetchOpeningsLog();
+    log.push({ t: new Date().toISOString(), states: { ...state.pending } });
+    // Houd de log behapbaar (laatste ~500 snapshots).
+    const trimmed = log.slice(-500);
+    await saveOpeningsLog(trimmed);
+    await triggerWorkflow();
+    toggleModal(false);
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-ok">Standen bewaard — het model leert er bij de volgende run van (kan een paar minuten duren).</div>`;
+  } catch (e) {
+    alert("Bewaren mislukt: " + e.message);
+  } finally { btn.textContent = "Bewaar & leer"; }
+}
+function ensureToken() {
+  if (CONFIG.gistId && CONFIG.gistId !== "__GIST_ID__" && CONFIG.githubToken) return true;
+  const gid = prompt("Eerste keer: plak je Gist ID (zelfde gist als bodem/gazon):");
+  if (!gid) return false;
+  const cleanGid = gid.trim();
+  if (!/^[a-f0-9]{20,}$/i.test(cleanGid)) { alert("Dit ziet er niet uit als een Gist ID."); return false; }
+  const token = prompt("Plak een fine-grained GitHub token met 'Gists: read & write'.\nLet op: wordt in je browser bewaard.");
+  if (!token) return false;
+  localStorage.setItem("gist_id", cleanGid); localStorage.setItem("gh_token", token.trim());
+  CONFIG.gistId = cleanGid; CONFIG.githubToken = token.trim();
+  return true;
+}
+async function fetchOpeningsLog() {
+  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, { headers: { Authorization: `token ${CONFIG.githubToken}` } });
+  if (!r.ok) throw new Error(`Gist fetch: HTTP ${r.status}`);
+  const j = await r.json();
+  const content = j.files?.[OPENINGS_FILE]?.content;
+  if (!content) return [];
+  try { return JSON.parse(content).log || []; } catch { return []; }
+}
+async function saveOpeningsLog(log) {
+  const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`, {
+    method: "PATCH",
+    headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ files: { [OPENINGS_FILE]: { content: JSON.stringify({ log }, null, 2) } } }),
+  });
+  if (!r.ok) throw new Error(`Gist save: HTTP ${r.status}`);
+}
+async function triggerWorkflow() {
+  const host = location.host; const path = location.pathname.split('/').filter(Boolean);
+  if (!host.endsWith('.github.io') || path.length === 0) return;
+  const user = host.split('.')[0]; const repo = path[0];
+  try {
+    await fetch(`https://api.github.com/repos/${user}/${repo}/actions/workflows/airflow-notify.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `token ${CONFIG.githubToken}`, "Content-Type": "application/json", Accept: "application/vnd.github+json" },
+      body: JSON.stringify({ ref: "main" }),
+    });
+  } catch (e) { console.warn("Workflow trigger failed:", e); }
+}
+
+// ===================== HELPERS =====================
+function fmt(v, dec=1) { return (v==null || isNaN(v)) ? "—" : (+v).toFixed(dec); }
+function num(v) { return v==null ? "—" : (+v).toFixed(2); }
+function winLabel(wid) { const m=state.data.house_meta||{}; return (m.windows&&m.windows[wid]&&m.windows[wid].label)||wid; }
+function dirName(deg) { if (deg==null) return ""; const dirs=["N","NO","O","ZO","Z","ZW","W","NW"]; return dirs[Math.round(((deg%360)/45))%8]; }
+function windArrow(deg) { if (deg==null) return ""; const a=["↓","↙","←","↖","↑","↗","→","↘"]; return a[Math.round(((deg%360)/45))%8]; }
+function sunGlyph(el) { return el!=null && el>0 ? "☀" : "🌙"; }
+function learnTrendText(d) {
+  const h = (d.learned && d.learned.rmse_history) || [];
+  if (h.length < 3) return "leert nog op…";
+  const first = h[0].rmse, last = h[h.length-1].rmse;
+  if (last < first - 0.05) return `↓ verbeterd t.o.v. start (${first.toFixed(2)}°)`;
+  if (last > first + 0.05) return `↑ fout liep op (${first.toFixed(2)}°)`;
+  return "stabiel";
+}
+
+loadData();
+</script>
+</body>
+</html>

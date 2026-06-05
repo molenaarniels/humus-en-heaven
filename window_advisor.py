@@ -50,6 +50,8 @@ CLOSE_MARGIN = 0.5    # °C — sluit als buiten tot binnen ± deze marge stijgt
 WARM_DAY_MAX = 22.0   # °C — onder deze verwachte dag-max: geen koeladvies
 LOOKAHEAD_H  = 12     # uur — vooruitblik voor "open weer rond HH:00"
 SMOOTH_WINDOW_H = 0.75  # uur — mediaanvenster op de buitentemp vóór decide() (anti-flapping)
+MIN_CLOSE_H  = 1.0    # uur — sluit een open raam niet voor een warmte-instroom die binnen
+                      #       dit venster alweer voorbij is (kort momentje ≠ moeite waard)
 
 # ── Per-kamer comfortband (low, high) in °C ────────────────────────────────────
 # Bóven `high` is de kamer te warm → koelen (raam open als buiten kouder is). Ónder
@@ -345,17 +347,35 @@ def upcoming_max_temp(hourly: list[dict], now: datetime, horizon_h: int = 24) ->
     return max(temps) if temps else None
 
 
-def reopen_hour(hourly: list[dict], inside: float, now: datetime) -> str | None:
-    """Eerste uur binnen LOOKAHEAD_H waarop buiten weer onder (binnen - OPEN_MARGIN)
-    zakt → 'HH:00', anders None."""
+def next_reopen(hourly: list[dict], inside: float, now: datetime) -> datetime | None:
+    """Eerste forecast-uur binnen LOOKAHEAD_H waarop buiten weer onder
+    (binnen - OPEN_MARGIN) zakt → datetime, anders None."""
     for r in hourly:
         if r["dt"] <= now or r["temp"] is None:
             continue
         if (r["dt"] - now).total_seconds() > LOOKAHEAD_H * 3600:
             break
         if r["temp"] <= inside - OPEN_MARGIN:
-            return r["dt"].strftime("%H:%M")
+            return r["dt"]
     return None
+
+
+def reopen_hour(hourly: list[dict], inside: float, now: datetime) -> str | None:
+    """Idem als next_reopen, maar als 'HH:MM'-string (voor de Telegram-hint)."""
+    rt = next_reopen(hourly, inside, now)
+    return rt.strftime("%H:%M") if rt else None
+
+
+def reopen_is_brief(hourly: list[dict], inside: float | None, now: datetime) -> bool:
+    """True als buiten binnen MIN_CLOSE_H alweer onder de open-drempel zakt — een kort,
+    voorbijgaand warmte-instroommomentje dat een open raam sluiten niet de moeite waard
+    maakt. Voorwaarde voor de 'laat-maar-openstaan'-onderdrukking in decide()."""
+    if inside is None:
+        return False
+    rt = next_reopen(hourly, inside, now)
+    if rt is None:
+        return False
+    return (rt - now).total_seconds() <= MIN_CLOSE_H * 3600
 
 
 # ── Slimme combinatie: forecast geijkt op het eigen station + binnentrend ─────────
@@ -529,7 +549,8 @@ def open_desire(inside: float | None, outside: float | None, low: float, high: f
 
 def decide(inside: float | None, outside: float | None, prev: str,
            low: float, high: float, bank_cooling: bool = False,
-           vent_rh: float | None = None, humidity: float | None = None) -> str:
+           vent_rh: float | None = None, humidity: float | None = None,
+           reopen_soon: bool = False) -> str:
     if inside is None or outside is None:
         return prev  # geen meting → advies niet wijzigen
     if vent_rh is not None and vent_rh >= RH_HARD_CAP:
@@ -537,7 +558,13 @@ def decide(inside: float | None, outside: float | None, prev: str,
     if open_desire(inside, outside, low, high, vent_rh, humidity):
         return "open"
     if outside >= inside - CLOSE_MARGIN:
-        return "dicht"  # warmte-instroom: buiten heeft de kamer ingehaald → sluiten
+        # Warmte-instroom: buiten heeft de kamer ingehaald → normaal sluiten. Maar staat
+        # het raam nú open en zakt buiten binnen MIN_CLOSE_H alweer onder de open-drempel,
+        # dan is even sluiten de moeite niet — laat het raam staan (geen geflapper voor
+        # een kort warmte-momentje). Een muf-veto hierboven gaat hier wél vóór.
+        if reopen_soon and prev == "open":
+            return prev
+        return "dicht"
     # Kamer is koel genoeg (≤ `low`, de onderkant van de comfortband). Normaal sluiten we
     # dan om niet door te koelen, maar staat er een warme dag aan te komen, dan blijven we
     # 's nachts koelte "tanken" zolang het buiten kouder blijft.
@@ -660,9 +687,10 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         hum_slope = room_trend(hist, now, "hum", RH_TREND_MAX)
         vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
         rh_off = humidity_offset(vent_rh)
+        reopen_soon = reopen_is_brief(om["hourly"], inside, now)
         advice = decide(inside, od, prev_rooms.get(room, "dicht"),
                         low, high, bank_cooling=warm_ahead,
-                        vent_rh=vent_rh, humidity=humidity)
+                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
         # De vooruit-voorspeller verschuift de open-drempel mee met de huidige vochtstraf
         # (per-uur RH-forecast valt buiten scope → huidige offset als statische benadering).
         intervals, proj = predict_open_intervals(fc, inside, slope, now, high + rh_off)
@@ -824,8 +852,9 @@ def main():
             rh_vent[room] = vent_rh
         prev   = prev_rooms.get(room, "dicht")
         low, high = comfort_band(room)
+        reopen_soon = reopen_is_brief(om["hourly"], inside, now)
         new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead,
-                        vent_rh=vent_rh, humidity=humidity)
+                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
         new_rooms[room] = new
         # Reden onthouden voor het bericht: veto (te muf → dicht) of ontvochtigen (open
         # zonder dat de kamer thermisch warm genoeg was).

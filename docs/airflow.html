@@ -44,6 +44,19 @@
   .hairline-bold { border-top: 2px solid var(--ink); margin-top: 24px; }
   .pulse { animation: pulse 1.5s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  /* Stromende, "luchtige" pijlen op de plattegrond: bewegende streepjes langs de
+     stroomlijn (snelheid ∝ debiet via inline animation-duration) + zachte ademhaling. */
+  @keyframes flowdash { to { stroke-dashoffset: -24; } }
+  @keyframes breathe { 0%,100% { opacity:.5 } 50% { opacity:.95 } }
+  .flowline { animation: flowdash 1s linear infinite; }
+  .airy { animation: breathe 3.5s ease-in-out infinite; }
+  .zone-rect { transition: fill .4s; }
+  .fp-svg text { -webkit-user-select: none; user-select: none; }
+  .ranked-row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed #2a241b22; align-items:baseline; }
+  .ranked-windows { font-style:italic; font-size:14px; }
+  .ranked-rooms { font-family:"JetBrains Mono",monospace; font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft); }
+  .ranked-score { font-family:"JetBrains Mono",monospace; font-weight:600; }
+  .ranked-bar { height:4px; background:var(--moss); margin-top:3px; border-radius:2px; }
   .pad { padding: 0 40px; }
   .grid { display: grid; gap: 24px; padding: 24px 40px 0; }
   .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
@@ -235,12 +248,19 @@ function render() {
     <div class="card-title">Wat zou koeling geven?</div>
     <p style="font-style:italic;font-size:15px;">${sg.headline || "—"}</p>`;
   if (sg.ranked && sg.ranked.length) {
-    html += `<table><thead><tr><th>Combinatie</th><th>score</th></tr></thead><tbody>`;
-    sg.ranked.slice(0,4).forEach(r => {
-      const labs = (r.windows||[]).map(wid => winLabel(wid)).join(" + ") || "alles dicht";
-      html += `<tr><td>${labs}</td><td class="num">${r.score}</td></tr>`;
+    const maxScore = Math.max(1, ...sg.ranked.map(r => r.score||0));
+    html += `<div style="margin-top:6px;">`;
+    sg.ranked.forEach(r => {
+      const labs = (r.windows||[]).map(wid => winLabel(wid)).join(" + ") || "alles dicht houden";
+      const rooms = (r.rooms||[]).map(roomLabel).join(" · ");
+      const bw = Math.max(2, Math.round(100*Math.max(0,r.score||0)/maxScore));
+      html += `<div class="ranked-row"><div style="flex:1;">
+          <div class="ranked-windows">${labs}</div>
+          ${rooms?`<div class="ranked-rooms">${rooms}</div>`:""}
+          <div class="ranked-bar" style="width:${bw}%;"></div>
+        </div><div class="ranked-score">${r.score}</div></div>`;
     });
-    html += `</tbody></table>`;
+    html += `</div>`;
   }
   html += `</div></div>`;
 
@@ -250,7 +270,11 @@ function render() {
     <div class="card-title">Wie waait waarheen</div>
     <div style="overflow-x:auto;">${floorPlanSVG(d)}</div>
     <div class="chips" style="margin-top:8px;">
-      <span>🟩 raam/rooster open</span><span>⬜ dicht</span><span>➜ luchtstroom (dikte ∝ debiet)</span>
+      <span style="color:var(--rain)">➜ instroom (koel)</span>
+      <span style="color:var(--clay)">➜ uitstroom (warm)</span>
+      <span style="color:var(--moss-light)">➜ tussen kamers</span>
+      <span>· · verbinding (deur)</span>
+      <span>dikte &amp; snelheid ∝ debiet</span>
     </div>
   </div></div>`;
 
@@ -301,85 +325,134 @@ function render() {
 }
 
 // ===================== FLOOR PLAN =====================
+const FLOOR_NL = {0:"Begane grond", 1:"1e verdieping", 2:"2e verdieping", 3:"3e"};
+function floorTag(f){ return f===0?"BG":f+"e"; }
+
+function zoneFill(r) {
+  if (!r || r.predicted_temp==null) return "rgba(92,79,60,0.06)";        // junctie / geen sensor
+  const t=r.predicted_temp, hi=r.comfort_high, lo=r.comfort_low;
+  if (hi!=null && t>hi) { const x=Math.min(1,(t-hi)/4.5); return `rgba(184,83,42,${(0.10+0.30*x).toFixed(2)})`; }
+  if (lo!=null && t<lo) { const x=Math.min(1,(lo-t)/4.5); return `rgba(74,107,138,${(0.10+0.22*x).toFixed(2)})`; }
+  return "rgba(61,90,58,0.13)";
+}
+
 function floorPlanSVG(d) {
-  const meta = d.house_meta || {}; const rooms = meta.rooms || {};
-  const ids = Object.keys(rooms);
+  const meta = d.house_meta || {};
+  const zones = Object.assign({}, meta.rooms||{}, meta.junctions||{});
+  const ids = Object.keys(zones).filter(z => Array.isArray(zones[z].plan_xy));
   if (!ids.length) return '<div class="ctl-sub">Geen plattegrond — vul plan_xy in house_model.json.</div>';
   let minx=99,miny=99,maxx=-99,maxy=-99;
-  ids.forEach(id => { const xy=rooms[id].plan_xy||[0,0]; minx=Math.min(minx,xy[0]); maxx=Math.max(maxx,xy[0]); miny=Math.min(miny,xy[1]); maxy=Math.max(maxy,xy[1]); });
-  const cw=150, ch=110, gap=18, pad=40;
+  ids.forEach(id => { const [x,y]=zones[id].plan_xy; minx=Math.min(minx,x); maxx=Math.max(maxx,x); miny=Math.min(miny,y); maxy=Math.max(maxy,y); });
+  const cw=164, ch=124, gap=30, padL=92, padT=58, padR=54, padB=30;
   const cols=maxx-minx+1, rowsN=maxy-miny+1;
-  const W=pad*2+cols*cw+(cols-1)*gap, H=pad*2+rowsN*ch+(rowsN-1)*gap+30;
-  const cx = id => { const xy=rooms[id].plan_xy||[0,0]; return pad+(xy[0]-minx)*(cw+gap); };
-  const cy = id => { const xy=rooms[id].plan_xy||[0,0]; return pad+(xy[1]-miny)*(ch+gap); };
-  const roomCenter = id => [cx(id)+cw/2, cy(id)+ch/2];
-  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:'JetBrains Mono',monospace;">`;
+  const W=padL+padR+cols*cw+(cols-1)*gap, H=padT+padB+rowsN*ch+(rowsN-1)*gap;
+  const cx = id => padL+(zones[id].plan_xy[0]-minx)*(cw+gap);
+  const cy = id => padT+(zones[id].plan_xy[1]-miny)*(ch+gap);
+  const ctr = id => [cx(id)+cw/2, cy(id)+ch/2];
+  const td  = id => (d.rooms||{})[id] || {};
 
-  // Wind arrow + sun (top-right corner gnomon).
-  const w = d.weather||{};
-  if (w.wind_dir!=null) {
-    const ax=W-pad-30, ay=pad-6, len=26;
-    const toRad=(w.wind_dir+180)%360 * Math.PI/180; // blow-to direction
-    const dx=Math.sin(toRad)*len, dy=-Math.cos(toRad)*len;
-    s += `<line x1="${ax-dx}" y1="${ay-dy}" x2="${ax+dx}" y2="${ay+dy}" stroke="${COLORS.rain}" stroke-width="3"/>`;
-    s += `<circle cx="${ax+dx}" cy="${ay+dy}" r="4" fill="${COLORS.rain}"/>`;
-    s += `<text x="${ax}" y="${ay+34}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle">WIND ${fmt(w.wind_speed,1)} m/s</text>`;
-  }
-  if (w.sun_el!=null && w.sun_el>0) {
-    s += `<text x="${pad}" y="${pad-10}" font-size="13" fill="${COLORS.sun}">☀ zon ${fmt(w.sun_az,0)}° / ${fmt(w.sun_el,0)}°</text>`;
-  }
+  let defs = `<defs>
+    <radialGradient id="sunhalo" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="${COLORS.sun}" stop-opacity="0.9"/><stop offset="100%" stop-color="${COLORS.sun}" stop-opacity="0"/></radialGradient>
+  </defs>`;
+  let s = `<svg class="fp-svg" viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:'JetBrains Mono',monospace;">${defs}`;
 
-  // Rooms.
-  ids.forEach(id => {
-    const r = (d.rooms||{})[id] || {};
-    const x=cx(id), y=cy(id);
-    const t = r.predicted_temp;
-    const warm = t!=null && r.comfort_high!=null && t>r.comfort_high;
-    s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="4" fill="${warm?'#b8532a14':'#3d5a3a10'}" stroke="${COLORS.ink}" stroke-width="1.5"/>`;
-    s += `<text x="${x+10}" y="${y+22}" font-size="12" fill="${COLORS.ink}" font-family="'Cormorant Garamond',serif" font-style="italic">${rooms[id].label||id}</text>`;
-    s += `<text x="${x+10}" y="${y+46}" font-size="18" fill="${COLORS.ink}" font-weight="600">${fmt(t)}°</text>`;
-    s += `<text x="${x+10}" y="${y+64}" font-size="10" fill="${COLORS.inkSoft}">tado ${fmt(r.actual_temp)}° · ACH ${fmt(r.ach,1)}</text>`;
-    if (r.solar_w>30) s += `<text x="${x+cw-10}" y="${y+22}" font-size="12" fill="${COLORS.sun}" text-anchor="end">☀${fmt(r.solar_w,0)}W</text>`;
+  // Verdieping-banden + labels links.
+  const floorsByRow = {};
+  ids.forEach(id => { const yrow=zones[id].plan_xy[1]; const f=zones[id].floor??0; floorsByRow[yrow]=f; });
+  Object.keys(floorsByRow).forEach(yrow => {
+    const y = padT+(yrow-miny)*(ch+gap)-gap/2;
+    s += `<rect x="2" y="${y}" width="${W-4}" height="${ch+gap}" fill="${(+yrow)%2?'#2a241b04':'#2a241b00'}"/>`;
+    s += `<text x="14" y="${y+(ch+gap)/2}" font-size="9" fill="${COLORS.inkSoft}" letter-spacing="1" transform="rotate(-90 14 ${y+(ch+gap)/2})" text-anchor="middle">${(FLOOR_NL[floorsByRow[yrow]]||'').toUpperCase()}</text>`;
   });
 
-  // Window/vent marks + flow arrows.
-  const wins = meta.windows || {};
-  (d.flows||[]).forEach(f => {
-    const win = wins[f.id];
-    let aCenter;
-    if (win && win.room && rooms[win.room]) aCenter = roomCenter(win.room);
-    else if (rooms[f.a]) aCenter = roomCenter(f.a);
-    else return;
-    const open = Math.abs(f.flow_m3s) > 0.001;
-    // Exterior opening: draw a mark on the room edge toward its façade.
-    if (f.b === "outside" && win) {
-      const az = (win.facade_azimuth_deg||0)*Math.PI/180;
-      const ex = aCenter[0] + Math.sin(az)*(cw/2-6), ey = aCenter[1] - Math.cos(az)*(ch/2-6);
-      s += `<rect x="${ex-7}" y="${ey-5}" width="14" height="10" rx="2" fill="${open?COLORS.moss:'#ffffff00'}" stroke="${COLORS.ink}" stroke-width="1.2"/>`;
-      if (open) {
-        const into = f.flow_m3s < 0; // negative a->b = inflow to room
-        const ox=ex+Math.sin(az)*16, oy=ey-Math.cos(az)*16;
-        const x1=into?ox:ex, y1=into?oy:ey, x2=into?ex:ox, y2=into?ey:oy;
-        s += arrow(x1,y1,x2,y2, COLORS.rain, 1.5+Math.min(6, Math.abs(f.flow_m3s)*8));
-      }
-    } else if (f.b !== "outside" && rooms[f.a] && rooms[f.b]) {
-      // Interior door flow between two rooms.
-      const c2 = roomCenter(f.b);
-      if (open) {
-        const fwd = f.flow_m3s >= 0;
-        s += arrow(fwd?aCenter[0]:c2[0], fwd?aCenter[1]:c2[1], fwd?c2[0]:aCenter[0], fwd?c2[1]:aCenter[1],
-                   COLORS.mossLight, 1+Math.min(5, Math.abs(f.flow_m3s)*6));
-      }
+  // Deur-skelet: een vage stippellijn voor élke deur (toont de verbindingen, óók dicht).
+  (Object.values(meta.doors||{})).forEach(door => {
+    const [a,b]=door.between||[]; if(!zones[a]||!zones[b]) return;
+    const [ax,ay]=ctr(a),[bx,by]=ctr(b);
+    s += `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${COLORS.ink}" stroke-width="1" stroke-dasharray="2 5" opacity="0.18"/>`;
+  });
+
+  // Zones (kamers + junctie/trap), getint op temperatuur.
+  ids.forEach(id => {
+    const r=td(id), z=zones[id], x=cx(id), y=cy(id);
+    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${cw}" height="${ch}" rx="7" fill="${zoneFill(r)}" stroke="${COLORS.ink}" stroke-width="1.4"/>`;
+    s += `<rect x="${x}" y="${y}" width="${cw}" height="20" rx="7" fill="#2a241b08"/>`;
+    s += `<text x="${x+12}" y="${y+14}" font-size="11" font-family="'Cormorant Garamond',serif" font-style="italic" fill="${COLORS.ink}">${z.label||id}</text>`;
+    s += `<text x="${x+cw-8}" y="${y+14}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="end">${floorTag(z.floor??0)}</text>`;
+    if (r.predicted_temp!=null) {
+      s += `<text x="${x+12}" y="${y+50}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
+      s += `<text x="${x+12}" y="${y+70}" font-size="9" fill="${COLORS.inkSoft}">model · tado ${fmt(r.actual_temp)}°</text>`;
+      s += `<text x="${x+12}" y="${y+88}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach,1)}${r.ach>=1?' 🌬':''}</text>`;
+      if (r.solar_w>40) s += `<text x="${x+cw-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
+    } else {
+      s += `<text x="${x+12}" y="${y+54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
+      s += `<text x="${x+12}" y="${y+74}" font-size="9" fill="${COLORS.inkSoft}">${fmt(r.predicted_temp)!=='—'?'model '+fmt(r.predicted_temp)+'°':'doorstroomzone'}</text>`;
     }
   });
+
+  // Stromen: geanimeerde, luchtige pijlen (dikte ∝ debiet, snelheid ∝ debiet).
+  const wins = meta.windows||{};
+  (d.flows||[]).forEach(f => {
+    const q=Math.abs(f.flow_m3s); if (q<0.0025) return;     // verwaarloosbaar → niet tekenen
+    const wd=Math.max(1.6, Math.min(8, q*15));
+    const dur=Math.max(0.5, Math.min(2.6, 0.16/q));
+    if (f.b==="outside") {
+      const win=wins[f.id]; const zid = (win&&win.room)||f.a; if(!zones[zid]) return;
+      const [zx,zy]=ctr(zid); const az=((win?win.facade_azimuth_deg:0)||0)*Math.PI/180;
+      const ux=Math.sin(az), uy=-Math.cos(az);
+      const edgeX=zx+ux*(cw/2-4), edgeY=zy+uy*(ch/2-4);
+      const outX=edgeX+ux*26, outY=edgeY+uy*26;
+      // raam/rooster-markering
+      s += `<rect x="${edgeX-6}" y="${edgeY-4}" width="12" height="8" rx="2" fill="${COLORS.moss}" stroke="${COLORS.ink}" stroke-width="1" transform="rotate(${(win?win.facade_azimuth_deg:0)||0} ${edgeX} ${edgeY})"/>`;
+      const into = f.flow_m3s < 0;          // negatief a→b = instroom de kamer in
+      const col = into?COLORS.rain:COLORS.clay;
+      s += into ? flowArrow(outX,outY,edgeX,edgeY,wd,dur,col) : flowArrow(edgeX,edgeY,outX,outY,wd,dur,col);
+    } else if (zones[f.a] && zones[f.b]) {
+      const [ax,ay]=ctr(f.a),[bx,by]=ctr(f.b); const fwd=f.flow_m3s>=0;
+      s += flowArrow(fwd?ax:bx, fwd?ay:by, fwd?bx:ax, fwd?by:ay, wd, dur, COLORS.mossLight);
+    }
+  });
+
+  s += compassSun(d.weather||{}, W, padT);
   s += `</svg>`;
   return s;
 }
-function arrow(x1,y1,x2,y2,col,wd) {
-  const ang=Math.atan2(y2-y1,x2-x1), ah=6+wd;
-  const a1=ang-Math.PI/7, a2=ang+Math.PI/7;
-  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${wd}" opacity="0.85"/>`+
-    `<path d="M ${x2} ${y2} L ${x2-Math.cos(a1)*ah} ${y2-Math.sin(a1)*ah} M ${x2} ${y2} L ${x2-Math.cos(a2)*ah} ${y2-Math.sin(a2)*ah}" stroke="${col}" stroke-width="${wd}" fill="none"/>`;
+
+function flowArrow(x1,y1,x2,y2,w,dur,col) {
+  const ang=Math.atan2(y2-y1,x2-x1), ah=6+w;
+  const head=`M ${x2} ${y2} L ${x2-Math.cos(ang-0.42)*ah} ${y2-Math.sin(ang-0.42)*ah} M ${x2} ${y2} L ${x2-Math.cos(ang+0.42)*ah} ${y2-Math.sin(ang+0.42)*ah}`;
+  const dash=`${Math.max(4,w*1.4).toFixed(0)} ${Math.max(7,w*3).toFixed(0)}`;
+  return `<line class="flowline airy" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${w.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${dash}" style="animation-duration:${dur.toFixed(2)}s,3.5s"/>`+
+    `<path class="airy" d="${head}" stroke="${col}" stroke-width="${w.toFixed(1)}" fill="none" stroke-linecap="round"/>`;
+}
+
+function compassSun(w, W, padT) {
+  let s="";
+  // Windroos rechtsboven.
+  if (w.wind_dir!=null) {
+    const cxp=W-46, cyp=padT-14, R=18;
+    const toRad=((w.wind_dir+180)%360)*Math.PI/180;     // waarheen de wind waait
+    const tx=cxp+Math.sin(toRad)*R, ty=cyp-Math.cos(toRad)*R;
+    const fx=cxp-Math.sin(toRad)*R, fy=cyp+Math.cos(toRad)*R;
+    s += `<circle cx="${cxp}" cy="${cyp}" r="${R}" fill="none" stroke="${COLORS.inkSoft}" stroke-width="1" opacity="0.4"/>`;
+    s += `<text x="${cxp}" y="${cyp-R-3}" font-size="7" fill="${COLORS.inkSoft}" text-anchor="middle">N</text>`;
+    s += flowArrow(fx,fy,tx,ty,3,Math.max(0.6,Math.min(2,6/Math.max(1,w.wind_speed||1))),COLORS.rain);
+    s += `<text x="${cxp}" y="${cyp+R+12}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">${fmt(w.wind_speed,1)} m/s ${dirName(w.wind_dir)}</text>`;
+  }
+  // Zon linksboven.
+  if (w.sun_el!=null) {
+    const sx=44, sy=padT-16;
+    if (w.sun_el>0) {
+      s += `<circle cx="${sx}" cy="${sy}" r="16" fill="url(#sunhalo)"/>`;
+      s += `<circle cx="${sx}" cy="${sy}" r="6" fill="${COLORS.sun}"/>`;
+      for (let i=0;i<8;i++){ const a=i*Math.PI/4; s+=`<line x1="${sx+Math.cos(a)*8}" y1="${sy+Math.sin(a)*8}" x2="${sx+Math.cos(a)*12}" y2="${sy+Math.sin(a)*12}" stroke="${COLORS.sun}" stroke-width="1.4"/>`; }
+      s += `<text x="${sx}" y="${sy+30}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">az ${fmt(w.sun_az,0)}° h ${fmt(w.sun_el,0)}°</text>`;
+    } else {
+      s += `<text x="${sx}" y="${sy+4}" font-size="14" text-anchor="middle">🌙</text>`;
+      s += `<text x="${sx}" y="${sy+20}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">nacht</text>`;
+    }
+  }
+  return s;
 }
 
 // ===================== CHARTS =====================
@@ -526,6 +599,7 @@ async function triggerWorkflow() {
 function fmt(v, dec=1) { return (v==null || isNaN(v)) ? "—" : (+v).toFixed(dec); }
 function num(v) { return v==null ? "—" : (+v).toFixed(2); }
 function winLabel(wid) { const m=state.data.house_meta||{}; return (m.windows&&m.windows[wid]&&m.windows[wid].label)||wid; }
+function roomLabel(rid) { const m=state.data.house_meta||{}; const z=(m.rooms&&m.rooms[rid])||(m.junctions&&m.junctions[rid]); return (z&&z.label)||rid; }
 function dirName(deg) { if (deg==null) return ""; const dirs=["N","NO","O","ZO","Z","ZW","W","NW"]; return dirs[Math.round(((deg%360)/45))%8]; }
 function windArrow(deg) { if (deg==null) return ""; const a=["↓","↙","←","↖","↑","↗","→","↘"]; return a[Math.round(((deg%360)/45))%8]; }
 function sunGlyph(el) { return el!=null && el>0 ? "☀" : "🌙"; }

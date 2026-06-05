@@ -84,11 +84,6 @@
       "max_open_area_m2": 1.4, "open_type": "door", "tilt_frac": 0.0,
       "center_height_m": 1.0, "shading": "deep", "label": "Keukendeur (ZO, onder terras)"
     },
-    "kitchen_mid_window": {
-      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.26, "glass_m2": 0.26,
-      "max_open_area_m2": 0.26, "open_type": "casement", "tilt_frac": 0.3,
-      "center_height_m": 1.7, "shading": "deep", "label": "Keuken middenraam (ZO, opent)"
-    },
     "kitchen_top_tilt": {
       "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.40, "glass_m2": 0.40,
       "max_open_area_m2": 0.08, "open_type": "tilt", "tilt_frac": 1.0,
@@ -155,11 +150,11 @@
 
   "doors": {
     "living_hall": {"between": ["living", "hall"], "area_m2": 2.0, "center_height_m": 1.0,
-                    "default_state": "open", "label": "Woonkamer ↔ gang (open doorgang)"},
+                    "default_state": "open", "fixed": true, "label": "Woonkamer ↔ gang (open doorgang)"},
     "hall_bath": {"between": ["hall", "bath"], "area_m2": 1.6, "center_height_m": 1.0,
                   "default_state": "dicht", "label": "Gang ↔ badkamer"},
     "hall_stair": {"between": ["hall", "stair"], "area_m2": 2.2, "center_height_m": 1.5,
-                   "default_state": "open", "label": "Gang ↔ trap (geen deur)"},
+                   "default_state": "open", "fixed": true, "label": "Gang ↔ trap (open doorgang)"},
     "ted_stair": {"between": ["ted", "stair"], "area_m2": 1.8, "center_height_m": 1.0,
                   "default_state": "open", "label": "Ted ↔ trap"},
     "hotties_stair": {"between": ["hotties", "stair"], "area_m2": 1.8, "center_height_m": 3.9,

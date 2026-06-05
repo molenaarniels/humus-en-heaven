@@ -181,6 +181,29 @@ def test_openings_at_timeline():
     assert am.openings_at(log, t0 + timedelta(hours=6))["w"] == "closed"
 
 
+def test_openings_at_accumulates_incremental():
+    # Kleine, losse meldingen: een element houdt zijn laatst-gezette waarde ook als een
+    # latere snapshot 'm niet herhaalt (zo kun je één raam wijzigen zonder de rest op te geven).
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    log = [
+        {"t": t0.isoformat(), "states": {"a": "open", "b": "dicht"}},
+        {"t": (t0 + timedelta(hours=1)).isoformat(), "states": {"b": "tilt"}},   # alleen b
+    ]
+    st = am.openings_at(log, t0 + timedelta(hours=2))
+    assert st["a"] == "open"      # behouden uit de eerdere snapshot
+    assert st["b"] == "tilt"      # bijgewerkt door de latere
+
+
+def test_shade_factor_override():
+    w = {"shading": "none", "shade": {"factor": 0.15}}
+    assert am._shade_factor("sky", w, {}) == 1.0                       # geen melding → static none
+    assert am._shade_factor("sky", w, {"sky_shade": "dicht"}) == 0.15  # dicht → scherm-factor
+    assert am._shade_factor("sky", w, {"sky_shade": "open"}) == 1.0    # open overschrijft
+    assert am._shade_factor("sky", w, {"sky_shade": "half"}) == pytest.approx(0.5 * (1 + 0.15))
+    # Raam zonder bedienbare zonwering valt terug op de statische `shading`.
+    assert am._shade_factor("x", {"shading": "lamella"}, {}) == am.SHADING_FACTOR["lamella"]
+
+
 def test_open_frac_mapping():
     elem = {"tilt_frac": 0.2}
     assert am._open_frac("open", elem) == 1.0

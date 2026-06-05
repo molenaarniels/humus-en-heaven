@@ -259,6 +259,24 @@ def air_density(temp_c: float) -> float:
 SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.67, "deep": 0.4,
                   "blind": 0.35, "shade": 0.2}
 
+
+def _shade_factor(wid: str, w: dict, states: dict) -> float:
+    """Zon-transmissiefractie door een raam. Een bedienbare zonwering (`shade`) die je
+    meldt, overschrijft de statische standaard-`shading`: open = 1.0, dicht = de
+    scherm-factor, half = ertussenin. Zonder melding geldt de statische standaard."""
+    sh = w.get("shade")
+    if sh:
+        rep = states.get(wid + "_shade")
+        if rep is not None:
+            s = str(rep).strip().lower()
+            if s in ("open", "0", "false", "nee"):
+                return 1.0
+            if s in ("half", "kier"):
+                return 0.5 * (1.0 + float(sh.get("factor", 0.2)))
+            if s in ("dicht", "closed", "toe", "1", "true", "ja"):
+                return float(sh.get("factor", 0.2))
+    return SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
+
 # Crossover-drukval (Pa) tussen het laminaire (lineaire) en turbulente (√) regime. De
 # orifice-wet Q∝√|ΔP| heeft een oneindige helling bij ΔP=0, wat de Newton-Jacobiaan
 # slecht conditioneert (een grote opening egaliseert de druk → ΔP≈0). Onder DP_LAM gaan
@@ -406,17 +424,24 @@ def _open_frac(value, element: dict) -> float:
 
 
 def openings_at(log: list[dict], when: datetime) -> dict:
-    """Actieve gerapporteerde toestanden op tijdstip `when`: de laatste snapshot met
-    tijdstempel ≤ when. Lege dict als er niets vóór `when` is gelogd."""
-    best, best_t = {}, None
+    """Actieve gerapporteerde toestand per element op tijdstip `when`, voorwaarts
+    geaccumuleerd: elk element houdt zijn laatst-gezette waarde tot het opnieuw gemeld
+    wordt. Zo kun je kleine, losse wijzigingen melden (één raam) zonder de rest te
+    herhalen, en weerspiegelt de toestand wat écht open/dicht staat. Lege dict als er
+    niets vóór `when` is gelogd."""
+    entries = []
     for entry in log:
         try:
             t = datetime.fromisoformat(entry["t"])
         except (ValueError, TypeError, KeyError):
             continue
-        if t <= when and (best_t is None or t > best_t):
-            best, best_t = entry.get("states", {}) or {}, t
-    return best
+        if t <= when:
+            entries.append((t, entry.get("states", {}) or {}))
+    entries.sort(key=lambda e: e[0])
+    state: dict = {}
+    for _, st in entries:
+        state.update(st)
+    return state
 
 
 def _default_frac(element: dict, kind: str) -> float:
@@ -972,18 +997,19 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         wx = {k: _interp_hourly(rows, t, k) for k in
               ("wind_speed", "wind_dir", "gust", "precip", "direct", "diffuse", "rh")}
         sun_az, sun_el = sun_position(lat, lon, t.astimezone(timezone.utc))
+        st = openings_at(log, t)            # gerapporteerde toestand op dit moment (incl. zonwering)
         irr = {}
         for rid, room in house.get("rooms", {}).items():
             tot = 0.0
             for wid, w in house.get("windows", {}).items():
                 if w.get("room") != rid:
                     continue
-                shade = SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
+                shade = _shade_factor(wid, w, st)
                 I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,
                                       wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0))
                 tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
             irr[rid] = tot
-        grid.append({"t": t, "T_out": T_out, "irr": irr, "states": openings_at(log, t),
+        grid.append({"t": t, "T_out": T_out, "irr": irr, "states": st,
                      "weather": wx, "dt": 900.0, "sun_az": sun_az, "sun_el": sun_el})
         t = t + _timedelta_h(0.25)
     return grid
@@ -1021,7 +1047,9 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     out_rh = cur.get("relative_humidity_2m")
 
     # Huidige openingen-toestand (laatste snapshot).
-    states_now = openings_at(load_openings_log_cached(), now) if False else timeline[-1]["states"] if timeline else {}
+    # Huidige (voorwaarts geaccumuleerde) toestand per element — dit voedt de modal zodat
+    # die toont wat écht open/dicht staat i.p.v. de defaults.
+    states_now = openings_at(load_openings_log_cached(), now)
 
     rooms_out = {}
     last_step = timeline[-1] if timeline else None
@@ -1083,7 +1111,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     "baseline_rmse": round(baseline, 3) if baseline is not None else None},
         "house_meta": {
             "rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid),
-                            "floor": r.get("floor", 0), "sensor": bool(r.get("from_window_data"))}
+                            "floor": r.get("floor", 0), "plan_h": r.get("plan_h", 1),
+                            "sensor": bool(r.get("from_window_data"))}
                       for rid, r in house.get("rooms", {}).items()},
             "junctions": {jid: {"plan_xy": j.get("plan_xy"), "label": j.get("label", jid),
                                 "floor": j.get("floor", 0), "sensor": False}
@@ -1110,6 +1139,15 @@ def _controls(house: dict, states_now: dict) -> list[dict]:
     for vid, v in house.get("vents", {}).items():
         out.append({"id": vid, "kind": "vent", "label": v.get("label", vid),
                     "room": v.get("room"), "state": states_now.get(vid, "open")})
+    # Bedienbare zonwering (lamella, buitenscherm, verduisteringsgordijn): wanneer dicht
+    # gemeld, dempt het de zoninstraling door dat raam.
+    for wid, w in house.get("windows", {}).items():
+        sh = w.get("shade")
+        if not sh:
+            continue
+        out.append({"id": wid + "_shade", "kind": "shade",
+                    "label": f"{sh.get('label', 'zonwering')} — {w.get('label', wid)}",
+                    "room": w.get("room"), "state": states_now.get(wid + "_shade", "open")})
     for did, d in house.get("doors", {}).items():
         if d.get("fixed"):
             continue   # permanente doorgang (geen deur) → niet bedienbaar, niet tonen

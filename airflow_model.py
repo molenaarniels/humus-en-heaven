@@ -66,6 +66,51 @@ SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabil
 RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 
+# ── Robuust leren: bescherming tegen niet-gerapporteerde raamwijzigingen ─────────────
+# Als de werkelijke openingen afwijken van de gerapporteerde log (b.v. iemand zet thuis
+# een raam open terwijl jij weg bent), wordt de voorspelfout anomaal hoog: het model
+# verklaart de werkelijkheid dan met de verkeerde aanname en zou de fysica-parameters
+# scheeftrekken. Dan PAUZEREN we het leren (parameters vasthouden) — we voorspellen nog
+# wél, zodat de divergentie zichtbaar blijft, maar leren niet van een venster waarvan de
+# log waarschijnlijk niet klopt. Het venster rolt vanzelf weg (CALIB_WINDOW_H), dus zodra
+# de log weer klopt herstelt het leren. Binnen een venster dempt een Huber-verlies losse
+# uitschieters (een enkele rare sensor-sample domineert de fit niet).
+ANOMALY_MIN_HISTORY = 12    # zoveel eerdere RMSE-punten nodig vóór we een norm vertrouwen
+ANOMALY_FACTOR      = 2.2   # fout > dit × de mediane recente RMSE → leren pauzeren
+ANOMALY_FLOOR       = 1.5   # °C — pauzeer nooit op kleine ruis; pas boven deze absolute fout
+ANOMALY_BASE_N      = 48    # mediaan over de laatste zoveel RMSE-punten = de norm
+HUBER_DELTA         = 1.5   # °C — residuen hierboven worden lineair (i.p.v. kwadratisch) gewogen
+
+
+def learning_baseline(history: list[dict]) -> float | None:
+    """Mediane recente kalibratie-RMSE als 'normale' fout. Alléén écht-geleerde runs tellen
+    mee — gepauzeerde (held) runs worden genegeerd, anders zou een langdurige anomalie de
+    norm langzaam optrekken en zichzelf un-gaten. None bij te weinig historie."""
+    vals = [h.get("rmse") for h in history
+            if h.get("rmse") is not None and not h.get("held")
+            and h.get("rmse") == h.get("rmse")]
+    if len(vals) < ANOMALY_MIN_HISTORY:
+        return None
+    recent = sorted(vals[-ANOMALY_BASE_N:])
+    n = len(recent)
+    return recent[n // 2] if n % 2 else 0.5 * (recent[n // 2 - 1] + recent[n // 2])
+
+
+def should_hold_learning(rmse_cur: float, history: list[dict]) -> tuple[bool, float | None]:
+    """(pauzeer?, norm). Pauzeer het leren als de huidige fout veel groter is dan de
+    recente norm én absoluut betekenisvol — het sterke teken dat de opening-log niet met
+    de werkelijkheid overeenkomt. Te weinig historie → nooit pauzeren (eerst bootstrappen)."""
+    base = learning_baseline(history)
+    if base is None or rmse_cur != rmse_cur:
+        return False, base
+    return rmse_cur > max(ANOMALY_FLOOR, base * ANOMALY_FACTOR), base
+
+
+def _huber_weights(residuals: list[float], delta: float = HUBER_DELTA) -> list[float]:
+    """Huber-gewicht per residu: 1 binnen ±delta, daarbuiten delta/|r| (<1) zodat een
+    uitschieter de kleinste-kwadraten-fit niet domineert."""
+    return [1.0 if abs(r) <= delta else delta / abs(r) for r in residuals]
+
 # Leakage (infiltratie) per kamer: een kleine, altijd aanwezige lek naar buiten. Houdt
 # het luchtstroomnetwerk goed geconditioneerd (een verder dichte kamer is niet singulier)
 # en is fysisch reëel (kieren). m² effectief lekoppervlak.
@@ -609,6 +654,13 @@ def rmse(res: list[float]) -> float:
     return math.sqrt(sum(r * r for r in res) / len(res)) if res else float("nan")
 
 
+def _wcost(res: list[float]) -> float:
+    """Huber-gewogen som van kwadraten — het doel dat de kalibratie minimaliseert (een
+    paar uitschieters wegen lineair i.p.v. kwadratisch mee)."""
+    w = _huber_weights(res)
+    return sum(w[i] * res[i] * res[i] for i in range(len(res)))
+
+
 def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
               time_budget_s: float = 25.0) -> tuple[dict, float]:
     """Minimaliseer Σ(voorspeld−werkelijk)² over het venster met gedempte Gauss-Newton.
@@ -623,9 +675,9 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     base = params
 
     r0 = _residuals(house, params, timeline, seed, actual, rooms_set)
-    best_rmse = rmse(r0)
     if not r0:
         return params, float("nan")
+    best_cost = _wcost(r0)          # Huber-gewogen kosten sturen accept/reject
 
     t_start = time.time()
     lam = 1e-3
@@ -637,6 +689,7 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         if not r:
             break
         m = len(r)
+        w = _huber_weights(r)       # demp uitschieters (rare samples / deels-verkeerde log)
         # Jacobiaan via voorwaartse differentie (één simulatie per parameter).
         J = [[0.0] * len(keys) for _ in range(m)]
         for j in range(len(keys)):
@@ -648,25 +701,25 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
                 continue
             for i in range(m):
                 J[i][j] = (rj[i] - r[i]) / dx
-        # Normaalvergelijkingen (JᵀJ + λI) δ = −Jᵀr.
+        # Gewogen normaalvergelijkingen (JᵀWJ + λI) δ = −JᵀWr.
         nk = len(keys)
-        JtJ = [[sum(J[i][a] * J[i][b] for i in range(m)) for b in range(nk)] for a in range(nk)]
+        JtJ = [[sum(w[i] * J[i][a] * J[i][b] for i in range(m)) for b in range(nk)] for a in range(nk)]
         for a in range(nk):
             JtJ[a][a] += lam * (JtJ[a][a] + 1.0)
-        Jtr = [sum(J[i][a] * r[i] for i in range(m)) for a in range(nk)]
+        Jtr = [sum(w[i] * J[i][a] * r[i] for i in range(m)) for a in range(nk)]
         delta = solve_linear(JtJ, [-v for v in Jtr])
         if delta is None:
             break
         x_new = [x[j] + delta[j] for j in range(nk)]
-        new_rmse = rmse(_residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set))
-        if math.isnan(new_rmse) or new_rmse >= best_rmse:
+        new_cost = _wcost(_residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set))
+        if math.isnan(new_cost) or new_cost >= best_cost:
             lam *= 4.0                      # geen verbetering → meer demping
             if lam > 1e6:
                 break
             continue
         lam = max(1e-4, lam / 3.0)
         x = x_new
-        best_rmse = new_rmse
+        best_cost = new_cost
 
     # Online: schuif LEARN_RATE van oud → nieuw zodat één run niet wild uitslaat.
     x_old = params_to_vec(params, keys)
@@ -960,7 +1013,7 @@ def collect_actual(house: dict, wd: dict, since: datetime) -> dict:
 
 
 def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
-                    actual, now, rmse_now) -> dict:
+                    actual, now, rmse_now, learning_held=False, baseline=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -1006,7 +1059,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
 
     rmse_hist = (learned.get("rmse_history") or [])[:]
     if rmse_now == rmse_now:   # niet-NaN
-        rmse_hist.append({"t": now.isoformat(), "rmse": round(rmse_now, 3)})
+        rmse_hist.append({"t": now.isoformat(), "rmse": round(rmse_now, 3),
+                          "held": bool(learning_held)})
     rmse_hist = rmse_hist[-RMSE_HISTORY_KEEP:]
 
     return {
@@ -1025,7 +1079,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "flows": _flow_summary(house, params, sim, timeline),
         "suggestion": sugg,
         "learned": {"params": params, "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
-                    "rmse_history": rmse_hist},
+                    "rmse_history": rmse_hist, "held": bool(learning_held),
+                    "baseline_rmse": round(baseline, 3) if baseline is not None else None},
         "house_meta": {
             "rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid),
                             "floor": r.get("floor", 0), "sensor": bool(r.get("from_window_data"))}
@@ -1156,11 +1211,24 @@ def main():
 
     # Leren (alleen als er werkelijke samples zijn om tegen te ijken).
     rmse_now = float("nan")
+    learning_held = False
+    baseline = None
     if actual:
         print(f"[leren] {sum(len(v) for v in actual.values())} samples over "
               f"{len(actual)} kamers in het venster.")
-        params, rmse_now = calibrate(house, params, timeline, seed, actual)
-        print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
+        # Anomalie-poort: hoe goed voorspellen de húidige parameters? Is die fout veel
+        # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
+        # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
+        rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
+        learning_held, baseline = should_hold_learning(rmse_cur, learned.get("rmse_history", []))
+        if learning_held:
+            rmse_now = rmse_cur
+            print(f"[leren] fout anomaal hoog ({rmse_cur:.2f}°C vs norm {baseline:.2f}°C) → "
+                  "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
+                  "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
+        else:
+            params, rmse_now = calibrate(house, params, timeline, seed, actual)
+            print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
 
@@ -1180,7 +1248,7 @@ def main():
     print(f"[suggestie] {sugg['headline']}")
 
     dash = build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
-                           actual, now, rmse_now)
+                           actual, now, rmse_now, learning_held=learning_held, baseline=baseline)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

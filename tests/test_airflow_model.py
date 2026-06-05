@@ -213,6 +213,74 @@ def test_suggest_opens_when_outside_cooler():
     assert any(i["action"] == "open" for i in sugg["instructions"])
 
 
+# ── 8. Robuust leren: anomalie-poort + Huber ─────────────────────────────────────────
+
+def _hist(*rmses):
+    return [{"t": "2026-06-01T00:00:00+02:00", "rmse": v} for v in rmses]
+
+
+def test_no_hold_without_enough_history():
+    # Te weinig historie → nooit pauzeren (eerst bootstrappen, ook bij hoge fout).
+    hold, base = am.should_hold_learning(9.0, _hist(0.5, 0.5, 0.5))
+    assert hold is False
+    assert base is None
+
+
+def test_hold_when_error_anomalous():
+    # Lange historie rond 0.5°C, nu plots 3°C → ver boven 2.2× norm én boven de vloer.
+    hist = _hist(*([0.5] * 30))
+    hold, base = am.should_hold_learning(3.0, hist)
+    assert hold is True
+    assert base == pytest.approx(0.5, abs=1e-9)
+
+
+def test_no_hold_when_error_normal():
+    hist = _hist(*([0.5] * 30))
+    assert am.should_hold_learning(0.7, hist)[0] is False     # binnen de norm
+    # Hoog t.o.v. norm maar absoluut klein (< ANOMALY_FLOOR) → niet pauzeren.
+    assert am.should_hold_learning(1.2, _hist(*([0.2] * 30)))[0] is False
+
+
+def test_held_runs_excluded_from_baseline():
+    # Een langdurige anomalie (gepauzeerde runs met hoge RMSE) mag de norm niet optrekken:
+    # de baseline blijft op de goede runs hangen, dus het blijft pauzeren tot de log weer
+    # klopt.
+    hist = _hist(*([0.5] * 20)) + [{"t": "x", "rmse": 12.0, "held": True} for _ in range(20)]
+    hold, base = am.should_hold_learning(5.0, hist)
+    assert base == pytest.approx(0.5, abs=1e-9)
+    assert hold is True
+
+
+def test_huber_weights_downweight_outliers():
+    w = am._huber_weights([0.0, 1.0, 1.5, 3.0], delta=1.5)
+    assert w[0] == 1.0 and w[1] == 1.0 and w[2] == 1.0      # binnen ±delta
+    assert w[3] == pytest.approx(1.5 / 3.0)                  # uitschieter gedempt
+    # Gewogen kosten zijn lager dan de pure kwadraatsom bij een uitschieter.
+    res = [0.2, -0.3, 5.0]
+    assert am._wcost(res) < sum(r * r for r in res)
+
+
+def test_calibrate_robust_to_single_outlier():
+    # Eén grof verkeerde sample mag de fit niet kapen: de geleerde params blijven dicht
+    # bij die uit schone data.
+    house = _toy_house()
+    tl = _varying_timeline(hours=24)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    truth = am.default_params(house)
+    for rid in house["rooms"]:
+        truth[rid]["solar_gain"] = 1.6
+    sim = am.simulate(house, truth, tl, seed, calib_only_rooms=set(house["rooms"]))
+    clean = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+    # Injecteer één absurde sample in kamer 'a'.
+    poisoned = {rid: list(s) for rid, s in clean.items()}
+    t_bad, _ = poisoned["a"][3]
+    poisoned["a"][3] = (t_bad, 80.0)
+    p_clean, _ = am.calibrate(house, am.default_params(house), tl, seed, clean, max_iter=5, time_budget_s=20)
+    p_pois, _ = am.calibrate(house, am.default_params(house), tl, seed, poisoned, max_iter=5, time_budget_s=20)
+    # De geleerde solar_gain mag door de uitschieter niet ver wegschieten.
+    assert abs(p_pois["a"]["solar_gain"] - p_clean["a"]["solar_gain"]) < 0.4
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ════════════════════════════════════════════════════════════════════════════════════

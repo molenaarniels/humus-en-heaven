@@ -240,6 +240,7 @@ function render() {
       <span class="chip-strong num">${rmse!=null?rmse.toFixed(2)+"°C":"—"}</span>
       <span class="ctl-sub">${learnTrendText(d)}</span>
     </div>
+    ${(d.learned&&d.learned.held)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog${d.learned.baseline_rmse!=null?` (norm ~${d.learned.baseline_rmse.toFixed(2)}°)`:''}. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
   </div>`;
 
   // — Suggestie —

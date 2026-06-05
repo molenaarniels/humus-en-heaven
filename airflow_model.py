@@ -687,10 +687,13 @@ def suggest(house: dict, params: dict, weather: dict, room_now: dict,
     raam + de top-combinaties. Puur adviserend — er wordt niet naar gehandeld."""
     rooms = list(house.get("rooms", {}).keys())
     zones = rooms + list(house.get("junctions", {}).keys())
-    windows = list(house.get("windows", {}).items())
+    # Alléén de te openen ramen meenemen: een vast raam "openen" doet niets (oppervlak 0),
+    # dus zou alleen schijn-variatie in de suggesties geven.
+    windows = [(wid, w) for wid, w in house.get("windows", {}).items()
+               if w.get("max_open_area_m2", 0.0) > 0.0]
     vents = house.get("vents", {})
-    if len(windows) > 8:
-        windows = windows[:8]   # houd de enumeratie behapbaar
+    if len(windows) > 10:
+        windows = windows[:10]   # houd de enumeratie behapbaar (2^n)
 
     zone_temps = {z: room_now.get(_wd_key(house, z), outside_temp) for z in zones}
 
@@ -746,6 +749,22 @@ def suggest(house: dict, params: dict, weather: dict, room_now: dict,
             best = {"windows": open_ids, "score": round(s, 1), "states": states}
     ranked.sort(key=lambda r: -r["score"])
 
+    # Diverse top-K: filter bijna-identieke combinaties (verschillen in ≤1 raam) eruit, zodat
+    # de lijst écht andere strategieën toont i.p.v. vier varianten op hetzelfde. Voeg de
+    # "alles dicht"-basislijn toe als ijkpunt. Geef per combinatie de betrokken kamers mee.
+    diverse = []
+    for cand in ranked:
+        cs = set(cand["windows"])
+        if cs and any(len(cs ^ set(d["windows"])) <= 1 for d in diverse):
+            continue
+        cand = dict(cand)
+        cand["rooms"] = sorted({house["windows"][w]["room"] for w in cand["windows"]})
+        diverse.append(cand)
+        if len(diverse) >= 5:
+            break
+    if not any(not d["windows"] for d in diverse):
+        diverse.append({"windows": [], "rooms": [], "score": round(score(dict(base_states)), 1)})
+
     instructions = []
     for wid, w in house.get("windows", {}).items():
         do_open = best is not None and wid in best["windows"]
@@ -755,7 +774,7 @@ def suggest(house: dict, params: dict, weather: dict, room_now: dict,
             "label": w.get("label", wid),
         })
     keep_closed = best is None or best["score"] <= 0.1
-    return {"instructions": instructions, "ranked": ranked[:5],
+    return {"instructions": instructions, "ranked": diverse,
             "keep_closed": keep_closed,
             "headline": _suggest_headline(house, best, keep_closed)}
 
@@ -1007,11 +1026,20 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "suggestion": sugg,
         "learned": {"params": params, "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                     "rmse_history": rmse_hist},
-        "house_meta": {"rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid)}
-                                 for rid, r in house.get("rooms", {}).items()},
-                       "windows": {wid: {"room": w.get("room"), "facade_azimuth_deg": w.get("facade_azimuth_deg"),
-                                         "label": w.get("label", wid)}
-                                   for wid, w in house.get("windows", {}).items()}},
+        "house_meta": {
+            "rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid),
+                            "floor": r.get("floor", 0), "sensor": bool(r.get("from_window_data"))}
+                      for rid, r in house.get("rooms", {}).items()},
+            "junctions": {jid: {"plan_xy": j.get("plan_xy"), "label": j.get("label", jid),
+                                "floor": j.get("floor", 0), "sensor": False}
+                          for jid, j in house.get("junctions", {}).items()},
+            "windows": {wid: {"room": w.get("room"), "facade_azimuth_deg": w.get("facade_azimuth_deg"),
+                              "kind": "skylight" if w.get("tilt_deg", 90) < 45 else "window",
+                              "label": w.get("label", wid)}
+                        for wid, w in house.get("windows", {}).items()},
+            "doors": {did: {"between": d.get("between"), "label": d.get("label", did)}
+                      for did, d in house.get("doors", {}).items()},
+        },
     }
 
 
@@ -1028,6 +1056,8 @@ def _controls(house: dict, states_now: dict) -> list[dict]:
         out.append({"id": vid, "kind": "vent", "label": v.get("label", vid),
                     "room": v.get("room"), "state": states_now.get(vid, "open")})
     for did, d in house.get("doors", {}).items():
+        if d.get("fixed"):
+            continue   # permanente doorgang (geen deur) → niet bedienbaar, niet tonen
         out.append({"id": did, "kind": "door", "label": d.get("label", did),
                     "between": d.get("between"),
                     "state": states_now.get(did, d.get("default_state", "open"))})

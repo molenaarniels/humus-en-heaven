@@ -509,23 +509,44 @@ function learnedTable(d) {
 }
 
 // ===================== REPORTING MODAL =====================
-function openReport() {
+// Voeg de gerapporteerde snapshots voorwaarts samen tot de huidige toestand per element
+// (zelfde logica als openings_at in Python): elk element houdt zijn laatst-gezette waarde.
+function accumulateLog(log) {
+  const s = {};
+  (log || []).slice().sort((a,b)=>(""+(a.t||"")).localeCompare(""+(b.t||"")))
+    .forEach(e => Object.assign(s, e.states || {}));
+  return s;
+}
+
+async function openReport() {
   const ctls = (state.data && state.data.controls) || [];
   if (!ctls.length) { alert("Nog geen elementen — vul house_model.json en laat het model één keer draaien."); return; }
   state.pending = {};
+  document.getElementById("ctl-list").innerHTML = '<div class="ctl-sub pulse">⋯ huidige stand laden…</div>';
+  toggleModal(true);
+  // Lees de ÉCHTE huidige toestand rechtstreeks uit de Gist-log, niet uit de (tot ~15 min
+  // verouderde) server-gegenereerde snapshot. Zo toont de modal direct wat je laatst hebt
+  // ingesteld, onafhankelijk van wanneer de Action draait. Valt terug op c.state bij geen token.
+  let live = null;
+  if (CONFIG.githubToken && CONFIG.gistId && CONFIG.gistId !== "__GIST_ID__") {
+    try { live = accumulateLog(await fetchOpeningsLog()); }
+    catch (e) { console.warn("Live Gist-status ophalen mislukt, val terug op dashboard:", e); }
+  }
+  const stateOf = (c) => (live && (c.id in live)) ? live[c.id] : c.state;
   const groups = { window:"Ramen", vent:"Roosters", shade:"Zonwering", door:"Deuren" };
   const opts = { window:["dicht","tilt","open"], vent:["dicht","open"], shade:["open","half","dicht"], door:["dicht","open"] };
-  let html = "";
+  let html = live ? "" : `<div class="ctl-sub" style="color:var(--clay);margin-bottom:6px;">⚠ kon de live Gist-status niet lezen — toont de laatst bekende dashboard-stand</div>`;
   ["window","vent","shade","door"].forEach(kind => {
     const items = ctls.filter(c => c.kind===kind);
     if (!items.length) return;
     html += `<div class="grp-title">${groups[kind]}</div>`;
     items.forEach(c => {
-      state.pending[c.id] = normState(c.state, kind);
+      const cur = normState(stateOf(c), kind);
+      state.pending[c.id] = cur;
       const sub = c.between ? c.between.join(" ↔ ") : (c.room||"");
       html += `<div class="ctl-row"><div><div class="ctl-label">${c.label}</div><div class="ctl-sub">${sub}</div></div>
         <div class="seg" data-id="${c.id}">${opts[kind].map(o =>
-          `<button data-v="${o}" class="${normState(c.state,kind)===o?'active':''}">${o}</button>`).join("")}</div></div>`;
+          `<button data-v="${o}" class="${cur===o?'active':''}">${o}</button>`).join("")}</div></div>`;
     });
   });
   document.getElementById("ctl-list").innerHTML = html;
@@ -535,7 +556,6 @@ function openReport() {
     e.target.classList.add("active");
     state.pending[id] = e.target.dataset.v;
   }));
-  toggleModal(true);
 }
 function normState(v, kind) {
   const mid = kind==="shade" ? "half" : "tilt";

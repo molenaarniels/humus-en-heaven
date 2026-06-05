@@ -115,14 +115,14 @@
     "hotties_window": {
       "room": "hotties", "facade_azimuth_deg": 309, "area_m2": 4.5, "glass_m2": 4.5,
       "max_open_area_m2": 1.4, "open_type": "casement", "tilt_frac": 0.25,
-      "center_height_m": 4.3, "shading": "lamella",
-      "label": "Hotties straatraam (NW; 2 openende delen 1.1×1.4)"
+      "center_height_m": 4.3, "shading": "none",
+      "label": "Hotties straatraam (NW; 2 openende delen 1.1×1.4; verduisteringsgordijn 's nachts)"
     },
     "office_window": {
       "room": "office", "facade_azimuth_deg": 309, "area_m2": 1.65, "glass_m2": 1.65,
       "max_open_area_m2": 0.8, "open_type": "casement", "tilt_frac": 0.25,
       "center_height_m": 7.1, "shading": "none",
-      "label": "Kantoor straatraam 1.5×1.1 (NW; 2 openende delen)"
+      "label": "Kantoor straatraam 1.5×1.1 (NW; 2 openende delen; verduisteringsgordijn 's nachts)"
     },
     "stair_skylight": {
       "room": "stair", "facade_azimuth_deg": 180, "tilt_deg": 0, "area_m2": 0.25, "glass_m2": 0.25,
@@ -144,11 +144,11 @@
     "hotties_vent2": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.010,
                       "max_open_area_m2": 0.010, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 2 (25×4cm)"},
     "office_vent1": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.012,
-                     "max_open_area_m2": 0.012, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 1 (30×4cm)"},
+                     "max_open_area_m2": 0.012, "center_height_m": 7.8, "default_state": "open", "label": "Kantoor rooster 1 (30×4cm)"},
     "office_vent2": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.012,
-                     "max_open_area_m2": 0.012, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 2 (30×4cm)"},
-    "front_door_leak": {"room": "hall", "facade_azimuth_deg": 309, "area_m2": 0.020,
-                        "max_open_area_m2": 0.020, "center_height_m": 1.2, "default_state": "open", "label": "Voordeur-kieren (slecht geïsoleerd)"},
+                     "max_open_area_m2": 0.012, "center_height_m": 7.8, "default_state": "open", "label": "Kantoor rooster 2 (30×4cm)"},
+    "front_door_leak": {"room": "hall", "facade_azimuth_deg": 309, "area_m2": 0.005,
+                        "max_open_area_m2": 0.005, "center_height_m": 1.2, "default_state": "open", "label": "Voordeur-kieren (rest-lek; achter een altijd-dichte tussendeur)"},
     "bath_extract": {"room": "bath", "facade_azimuth_deg": 129, "area_m2": 0.020,
                      "max_open_area_m2": 0.020, "center_height_m": 2.2, "default_state": "dicht", "label": "Badkamer mechanische afzuiging (aan/uit)"}
   },
@@ -161,10 +161,10 @@
     "hall_stair": {"between": ["hall", "stair"], "area_m2": 2.2, "center_height_m": 1.5,
                    "default_state": "open", "label": "Gang ↔ trap (geen deur)"},
     "ted_stair": {"between": ["ted", "stair"], "area_m2": 1.8, "center_height_m": 1.0,
-                  "default_state": "dicht", "label": "Ted ↔ trap"},
-    "hotties_stair": {"between": ["hotties", "stair"], "area_m2": 1.8, "center_height_m": 4.0,
-                      "default_state": "dicht", "label": "Hotties ↔ trap (1e)"},
-    "office_stair": {"between": ["office", "stair"], "area_m2": 1.8, "center_height_m": 6.8,
-                     "default_state": "dicht", "label": "Kantoor ↔ trap (2e)"}
+                  "default_state": "open", "label": "Ted ↔ trap"},
+    "hotties_stair": {"between": ["hotties", "stair"], "area_m2": 1.8, "center_height_m": 3.9,
+                      "default_state": "open", "label": "Hotties ↔ trap (1e)"},
+    "office_stair": {"between": ["office", "stair"], "area_m2": 1.8, "center_height_m": 7.0,
+                     "default_state": "open", "label": "Kantoor ↔ trap (2e)"}
   }
 }

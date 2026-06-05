@@ -1,34 +1,23 @@
 {
   "_README": [
-    "Project 8 — geometrie van het huis (NIET-GEHEIM, publiek). Vul de echte cijfers in;",
-    "dit is een sjabloon met plausibele placeholders voor een Utrechts rijtjeshuis.",
-    "Het model leert de fysica (warmtecapaciteit, zonwinst, windgedrag) zelf bij; deze",
-    "JSON levert alleen de GEOMETRIE die het niet kan raden.",
+    "Project 8 — geometrie van het huis (NIET-GEHEIM, publiek). Gebouwd uit Niels'",
+    "mondelinge rondleiding (zie git-historie). Het model leert de fysica zelf bij;",
+    "deze JSON levert de geometrie die het niet kan raden.",
     "",
-    "Velden:",
-    "  rooms.<id>:",
-    "    from_window_data : tado-zonenaam zoals in docs/window_data.json (de echte temp).",
-    "    volume_m3        : kamervolume (l×b×h).",
-    "    exterior_wall_m2 : buitenmuur+raam-oppervlak (voor de schil-UA-prior).",
-    "    floor            : verdieping (0 = begane grond).",
-    "    plan_xy          : [x, y] roosterpositie voor de plattegrond op het dashboard.",
-    "    label            : weergavenaam (optioneel).",
-    "  junctions.<id>    : gang/overloop/trapgat — doet mee in de luchtstroom, geen sensor.",
-    "  windows.<id>:",
-    "    room             : bij welke kamer hoort dit raam.",
-    "    facade_azimuth_deg: kompasrichting waar het raam NAAR KIJKT (0=N,90=O,180=Z,270=W).",
-    "    area_m2          : totaal raamoppervlak; glass_m2 : glasoppervlak (zonwinst).",
-    "    max_open_area_m2 : effectief doorstroomoppervlak als het VOLLEDIG open staat.",
-    "    open_type        : tilt | casement | sliding (informatief).",
-    "    tilt_frac        : effectieve open-fractie in de kiepstand.",
-    "    center_height_m  : hoogte van het midden van de opening (voor schoorsteeneffect).",
-    "    shading          : none | overhang | blind (zonwering-demping).",
-    "    label            : weergavenaam.",
-    "  vents.<id>        : ventilatierooster — kleine, vaak constante opening (trickle).",
-    "  doors.<id>        : binnendeur/trapgat. between:[zoneA,zoneB]; area_m2; default_state.",
+    "ORIENTATIE: de voorgevel (straatzijde) kijkt op ~309° (WNW). Afgeleide gevels:",
+    "  straat/voor = 309° · tuin/achter = 129° (ZO, krijgt de meeste zon) · zijgevel = 219° (ZW).",
+    "  facade_azimuth_deg = richting waar het raam NAAR kijkt. tilt_deg = helling vanaf",
+    "  horizontaal (90 = verticaal raam, ~0 = plat dakraam/skylight).",
+    "center_height_m = ABSOLUTE hoogte boven de begane grond (zo werkt het schoorsteen-",
+    "  effect tussen verdiepingen): bg ~1–2.5m, 1e ~4–5m, 2e ~7m, skylight ~8.7m.",
     "",
-    "Elk element mag een 'default_state' krijgen (open|tilt|dicht of 0..1) als basisstand",
-    "vóór jij iets rapporteert. Standaard: ramen dicht, binnendeuren open, roosters open."
+    "SCHATTINGEN (corrigeer gerust): kamervolumes, het tilt-raampje boven de keukendeur,",
+    "  en de exacte rooster-doorsneden zijn ingeschat. Sensorplaatsing staat per kamer als",
+    "  notitie (beïnvloedt hoe representatief de meting is).",
+    "",
+    "De woonkamer en keuken zijn één open L-vormige ruimte met één tado-sensor → één zone",
+    "('living') met álle openingen van beide. Trap is een eigen zone met de skylight (vangt",
+    "zon, drijft de stack). Gang en badkamer zijn junctie-zones zonder sensor."
   ],
 
   "location": {"lat": 52.0907, "lon": 5.1214, "elevation_m": 5},
@@ -36,77 +25,145 @@
 
   "rooms": {
     "living": {
-      "from_window_data": "Living room", "volume_m3": 75, "exterior_wall_m2": 22,
-      "floor": 0, "plan_xy": [1, 2], "label": "Woonkamer"
+      "from_window_data": "Living room", "volume_m3": 95, "exterior_wall_m2": 34,
+      "floor": 0, "plan_xy": [0, 2], "label": "Woonkamer + keuken",
+      "_sensor": "midden in de kamer → goede proxy voor kamergemiddelde"
+    },
+    "ted": {
+      "from_window_data": "Ted", "volume_m3": 32, "exterior_wall_m2": 12,
+      "floor": 0, "plan_xy": [2, 2], "label": "Ted (slaapkamer bg)",
+      "_sensor": "binnenrand, niet bij de buitenmuur → redelijk representatief"
+    },
+    "hotties": {
+      "from_window_data": "hotties", "volume_m3": 32, "exterior_wall_m2": 12,
+      "floor": 1, "plan_xy": [2, 1], "label": "Hotties (slaapkamer 1e)",
+      "_sensor": "op de buitenmuur → leest richting buitentemp (let op bias)"
     },
     "office": {
       "from_window_data": "office", "volume_m3": 32, "exterior_wall_m2": 12,
-      "floor": 1, "plan_xy": [1, 1], "label": "Kantoor"
+      "floor": 2, "plan_xy": [2, 0], "label": "Kantoor (2e)",
+      "_sensor": "op de buitenmuur → leest richting buitentemp (let op bias)"
     },
-    "ted": {
-      "from_window_data": "Ted", "volume_m3": 30, "exterior_wall_m2": 11,
-      "floor": 1, "plan_xy": [2, 1], "label": "Ted (slaapkamer)"
-    },
-    "hotties": {
-      "from_window_data": "hotties", "volume_m3": 28, "exterior_wall_m2": 10,
-      "floor": 1, "plan_xy": [3, 1], "label": "Hotties (slaapkamer)"
+    "stair": {
+      "volume_m3": 26, "exterior_wall_m2": 6, "floor": 0, "plan_xy": [3, 1],
+      "label": "Trappenhuis (bg→2e)",
+      "_note": "geen tado-sensor → niet gekalibreerd, wél gesimuleerd. Vangt de skylight-zon en drijft het schoorsteeneffect tussen de verdiepingen."
     }
   },
 
   "junctions": {
-    "hall": {"floor": 0, "volume_m3": 18, "plan_xy": [2, 2], "label": "Gang/hal"},
-    "landing": {"floor": 1, "volume_m3": 14, "plan_xy": [2, 2], "label": "Overloop"}
+    "hall": {"floor": 0, "volume_m3": 14, "plan_xy": [1, 2], "label": "Gang/hal"},
+    "bath": {"floor": 0, "volume_m3": 18, "plan_xy": [1, 3], "label": "Badkamer (geen ramen)"}
   },
 
   "windows": {
-    "living_front": {
-      "room": "living", "facade_azimuth_deg": 180, "area_m2": 3.0, "glass_m2": 2.4,
-      "max_open_area_m2": 0.8, "open_type": "tilt", "tilt_frac": 0.15,
-      "center_height_m": 1.6, "shading": "none", "label": "Woonkamer voor (Z)"
+    "living_french": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 3.0, "glass_m2": 3.0,
+      "max_open_area_m2": 1.5, "open_type": "casement", "tilt_frac": 0.2,
+      "center_height_m": 1.0, "shading": "none", "label": "Tuindeuren (ZO)"
     },
-    "living_back": {
-      "room": "living", "facade_azimuth_deg": 0, "area_m2": 2.4, "glass_m2": 1.9,
-      "max_open_area_m2": 1.2, "open_type": "sliding", "tilt_frac": 0.2,
-      "center_height_m": 1.4, "shading": "none", "label": "Woonkamer tuin (N)"
+    "living_skylight": {
+      "room": "living", "facade_azimuth_deg": 129, "tilt_deg": 15, "area_m2": 3.0, "glass_m2": 3.0,
+      "max_open_area_m2": 0.0, "center_height_m": 2.6, "shading": "none",
+      "label": "Serre-dakraam (bijna plat, ZO) — buitenscherm mogelijk"
     },
-    "office_window": {
-      "room": "office", "facade_azimuth_deg": 180, "area_m2": 1.4, "glass_m2": 1.1,
-      "max_open_area_m2": 0.5, "open_type": "tilt", "tilt_frac": 0.15,
-      "center_height_m": 1.5, "shading": "none", "label": "Kantoor (Z)"
+    "living_garden_fix1": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 1.0, "glass_m2": 1.0,
+      "max_open_area_m2": 0.0, "center_height_m": 1.4, "shading": "none", "label": "Tuinraam 1 (ZO, vast)"
+    },
+    "living_garden_fix2": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 1.0, "glass_m2": 1.0,
+      "max_open_area_m2": 0.0, "center_height_m": 1.4, "shading": "none", "label": "Tuinraam 2 (ZO, vast)"
+    },
+    "living_side_fix": {
+      "room": "living", "facade_azimuth_deg": 219, "area_m2": 1.4, "glass_m2": 1.4,
+      "max_open_area_m2": 0.0, "center_height_m": 1.2, "shading": "none", "label": "Zijraam (ZW, vast)"
+    },
+    "kitchen_door": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 1.8, "glass_m2": 0.66,
+      "max_open_area_m2": 1.4, "open_type": "door", "tilt_frac": 0.0,
+      "center_height_m": 1.0, "shading": "deep", "label": "Keukendeur (ZO, onder terras)"
+    },
+    "kitchen_mid_window": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.26, "glass_m2": 0.26,
+      "max_open_area_m2": 0.26, "open_type": "casement", "tilt_frac": 0.3,
+      "center_height_m": 1.7, "shading": "deep", "label": "Keuken middenraam (ZO, opent)"
+    },
+    "kitchen_top_tilt": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.36, "glass_m2": 0.36,
+      "max_open_area_m2": 0.08, "open_type": "tilt", "tilt_frac": 1.0,
+      "center_height_m": 2.3, "shading": "deep", "label": "Keuken kiepraam boven deur (SCHATTING grootte)"
+    },
+    "kitchen_fix1": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.585, "glass_m2": 0.585,
+      "max_open_area_m2": 0.0, "center_height_m": 1.3, "shading": "deep", "label": "Keukenraam 1 (ZO, vast)"
+    },
+    "kitchen_fix2": {
+      "room": "living", "facade_azimuth_deg": 129, "area_m2": 0.585, "glass_m2": 0.585,
+      "max_open_area_m2": 0.0, "center_height_m": 1.3, "shading": "deep", "label": "Keukenraam 2 (ZO, vast)"
+    },
+    "living_street_big": {
+      "room": "living", "facade_azimuth_deg": 309, "area_m2": 6.0, "glass_m2": 6.0,
+      "max_open_area_m2": 0.0, "center_height_m": 1.4, "shading": "lamella",
+      "label": "Woonkamer straatraam 3×2 (NW, lamella ~1/3, vast)"
     },
     "ted_window": {
-      "room": "ted", "facade_azimuth_deg": 0, "area_m2": 1.3, "glass_m2": 1.0,
-      "max_open_area_m2": 0.5, "open_type": "tilt", "tilt_frac": 0.15,
-      "center_height_m": 1.5, "shading": "blind", "label": "Ted (N)"
+      "room": "ted", "facade_azimuth_deg": 309, "area_m2": 4.5, "glass_m2": 4.5,
+      "max_open_area_m2": 0.0, "center_height_m": 1.4, "shading": "lamella",
+      "label": "Ted straatraam 3×1.5 (NW, lamella ~1/3, vast)"
     },
     "hotties_window": {
-      "room": "hotties", "facade_azimuth_deg": 0, "area_m2": 1.2, "glass_m2": 0.9,
-      "max_open_area_m2": 0.45, "open_type": "tilt", "tilt_frac": 0.15,
-      "center_height_m": 1.5, "shading": "blind", "label": "Hotties (N)"
+      "room": "hotties", "facade_azimuth_deg": 309, "area_m2": 4.5, "glass_m2": 4.5,
+      "max_open_area_m2": 1.4, "open_type": "casement", "tilt_frac": 0.25,
+      "center_height_m": 4.3, "shading": "lamella",
+      "label": "Hotties straatraam (NW; 2 openende delen 1.1×1.4)"
+    },
+    "office_window": {
+      "room": "office", "facade_azimuth_deg": 309, "area_m2": 1.65, "glass_m2": 1.65,
+      "max_open_area_m2": 0.8, "open_type": "casement", "tilt_frac": 0.25,
+      "center_height_m": 7.1, "shading": "none",
+      "label": "Kantoor straatraam 1.5×1.1 (NW; 2 openende delen)"
+    },
+    "stair_skylight": {
+      "room": "stair", "facade_azimuth_deg": 180, "tilt_deg": 0, "area_m2": 0.25, "glass_m2": 0.25,
+      "max_open_area_m2": 0.0, "center_height_m": 8.7, "shading": "none",
+      "label": "Trap-skylight 50×50 (plat, veel zon/warmte)"
     }
   },
 
   "vents": {
-    "living_rooster": {"room": "living", "facade_azimuth_deg": 180, "area_m2": 0.025,
-                       "max_open_area_m2": 0.025, "center_height_m": 2.3, "label": "Woonkamer rooster"},
-    "office_rooster": {"room": "office", "facade_azimuth_deg": 180, "area_m2": 0.015,
-                       "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Kantoor rooster"},
-    "ted_rooster": {"room": "ted", "facade_azimuth_deg": 0, "area_m2": 0.015,
-                    "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Ted rooster"},
-    "hotties_rooster": {"room": "hotties", "facade_azimuth_deg": 0, "area_m2": 0.015,
-                        "max_open_area_m2": 0.015, "center_height_m": 2.3, "label": "Hotties rooster"}
+    "living_vent1": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.008,
+                     "max_open_area_m2": 0.008, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 1 (35cm)"},
+    "living_vent2": {"room": "living", "facade_azimuth_deg": 309, "area_m2": 0.008,
+                     "max_open_area_m2": 0.008, "center_height_m": 2.4, "default_state": "open", "label": "Woonkamer rooster 2 (35cm)"},
+    "ted_vent": {"room": "ted", "facade_azimuth_deg": 309, "area_m2": 0.028,
+                 "max_open_area_m2": 0.028, "center_height_m": 2.2, "default_state": "open", "label": "Ted rooster (groot, 130cm)"},
+    "hotties_vent1": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.006,
+                      "max_open_area_m2": 0.006, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 1 (25cm)"},
+    "hotties_vent2": {"room": "hotties", "facade_azimuth_deg": 309, "area_m2": 0.006,
+                      "max_open_area_m2": 0.006, "center_height_m": 5.2, "default_state": "open", "label": "Hotties rooster 2 (25cm)"},
+    "office_vent1": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.007,
+                     "max_open_area_m2": 0.007, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 1 (30cm)"},
+    "office_vent2": {"room": "office", "facade_azimuth_deg": 309, "area_m2": 0.007,
+                     "max_open_area_m2": 0.007, "center_height_m": 7.0, "default_state": "open", "label": "Kantoor rooster 2 (30cm)"},
+    "front_door_leak": {"room": "hall", "facade_azimuth_deg": 309, "area_m2": 0.020,
+                        "max_open_area_m2": 0.020, "center_height_m": 1.2, "default_state": "open", "label": "Voordeur-kieren (slecht geïsoleerd)"},
+    "bath_extract": {"room": "bath", "facade_azimuth_deg": 129, "area_m2": 0.020,
+                     "max_open_area_m2": 0.020, "center_height_m": 2.2, "default_state": "dicht", "label": "Badkamer mechanische afzuiging (aan/uit)"}
   },
 
   "doors": {
-    "living_hall": {"between": ["living", "hall"], "area_m2": 1.8, "center_height_m": 1.0,
-                    "default_state": "open", "label": "Woonkamer ↔ gang"},
-    "hall_stairs": {"between": ["hall", "landing"], "area_m2": 2.2, "center_height_m": 2.5,
-                    "vertical": true, "default_state": "open", "label": "Trapgat"},
-    "office_landing": {"between": ["office", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
-                       "default_state": "open", "label": "Kantoor ↔ overloop"},
-    "ted_landing": {"between": ["ted", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
-                    "default_state": "dicht", "label": "Ted ↔ overloop"},
-    "hotties_landing": {"between": ["hotties", "landing"], "area_m2": 1.6, "center_height_m": 1.0,
-                        "default_state": "dicht", "label": "Hotties ↔ overloop"}
+    "living_hall": {"between": ["living", "hall"], "area_m2": 2.0, "center_height_m": 1.0,
+                    "default_state": "open", "label": "Woonkamer ↔ gang (open doorgang)"},
+    "hall_bath": {"between": ["hall", "bath"], "area_m2": 1.6, "center_height_m": 1.0,
+                  "default_state": "dicht", "label": "Gang ↔ badkamer"},
+    "hall_stair": {"between": ["hall", "stair"], "area_m2": 2.2, "center_height_m": 1.5,
+                   "default_state": "open", "label": "Gang ↔ trap (geen deur)"},
+    "ted_stair": {"between": ["ted", "stair"], "area_m2": 1.8, "center_height_m": 1.0,
+                  "default_state": "dicht", "label": "Ted ↔ trap"},
+    "hotties_stair": {"between": ["hotties", "stair"], "area_m2": 1.8, "center_height_m": 4.0,
+                      "default_state": "dicht", "label": "Hotties ↔ trap (1e)"},
+    "office_stair": {"between": ["office", "stair"], "area_m2": 1.8, "center_height_m": 6.8,
+                     "default_state": "dicht", "label": "Kantoor ↔ trap (2e)"}
   }
 }

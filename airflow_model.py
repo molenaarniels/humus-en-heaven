@@ -160,17 +160,20 @@ def sun_position(lat: float, lon: float, when_utc: datetime) -> tuple[float, flo
 
 
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
-                      direct: float, diffuse: float) -> float:
-    """Instraling (W/m²) op een verticaal geveloppervlak met azimut `facade_az`.
-    Directe component via de invalshoek; diffuus via de halve hemelkoepel-view."""
+                      direct: float, diffuse: float, tilt_deg: float = 90.0) -> float:
+    """Instraling (W/m²) op een vlak met azimut `facade_az` en helling `tilt_deg` vanaf
+    horizontaal (90 = verticaal raam, 0 = plat dakraam/skylight). Directe component via de
+    invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2."""
+    beta = math.radians(tilt_deg)
+    sky_view = (1.0 + math.cos(beta)) / 2.0          # diffuse view factor (0.5 verticaal, 1.0 plat)
     if sun_el <= 0:
-        return max(0.0, (diffuse or 0.0) * 0.5)
-    el_r = math.radians(sun_el)
+        return max(0.0, (diffuse or 0.0) * sky_view)
+    zen = math.radians(90.0 - sun_el)
     daz = math.radians(((sun_az - facade_az + 180.0) % 360.0) - 180.0)
-    # cos(invalshoek) op een verticaal vlak: cos(el)·cos(Δazimut).
-    cos_inc = math.cos(el_r) * math.cos(daz)
+    # cos(invalshoek) op een vlak met helling β: standaard zon-op-vlak-formule.
+    cos_inc = math.cos(zen) * math.cos(beta) + math.sin(zen) * math.sin(beta) * math.cos(daz)
     direct_on = max(0.0, (direct or 0.0) * max(0.0, cos_inc))
-    return direct_on + (diffuse or 0.0) * 0.5
+    return direct_on + (diffuse or 0.0) * sky_view
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -204,6 +207,12 @@ def wind_pressure(facade_az: float, height: float, wind_speed: float,
 def air_density(temp_c: float) -> float:
     return P_ATM / (R_AIR * (temp_c + 273.15))
 
+
+# Zonwering-transmissie per `shading`-label (fractie zon die het glas haalt): geen, een
+# balkon/overstek erboven, lamella ~1/3 dicht, diep beschaduwd (b.v. onder een terras,
+# alleen ochtendzon), binnenzonwering/lamella dicht, of een buitenscherm uitgerold.
+SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.67, "deep": 0.4,
+                  "blind": 0.35, "shade": 0.2}
 
 # Crossover-drukval (Pa) tussen het laminaire (lineaire) en turbulente (√) regime. De
 # orifice-wet Q∝√|ΔP| heeft een oneindige helling bij ΔP=0, wat de Newton-Jacobiaan
@@ -267,9 +276,12 @@ def solve_network(zones: list[str], openings: list[dict], zone_temps: dict[str, 
                 res[idx[op["b"]]] -= md
         return res
 
+    def sse(r):
+        return sum(v * v for v in r)
+
     P = list(P_init) if P_init and len(P_init) == n else [0.0] * n
+    r = residual(P)
     for _ in range(40):
-        r = residual(P)
         if max(abs(v) for v in r) < 1e-6:
             break
         # Numerieke Jacobiaan.
@@ -284,10 +296,23 @@ def solve_network(zones: list[str], openings: list[dict], zone_temps: dict[str, 
         delta = solve_linear(J, [-v for v in r])
         if delta is None:
             break
-        step = max(abs(d) for d in delta)
-        damp = 1.0 if step < 5.0 else 5.0 / step   # begrens de stap voor stabiliteit
-        for j in range(n):
-            P[j] += damp * delta[j]
+        # Backtracking line search: neem de grootste stapfractie die de residu-norm
+        # daadwerkelijk verkleint. Zonder dit kan de Newton-iteratie tussen twee
+        # toestanden oscilleren (sterke deurkoppeling + de √-niet-lineariteit) en nooit
+        # convergeren.
+        sse0 = sse(r)
+        alpha = 1.0
+        r_try = r
+        for _ in range(24):
+            P_try = [P[j] + alpha * delta[j] for j in range(n)]
+            r_try = residual(P_try)
+            if sse(r_try) < sse0:
+                break
+            alpha *= 0.5
+        else:
+            break   # geen verbeterende stap meer → klaar
+        P = P_try
+        r = r_try
 
     # Debieten + verse-lucht-aanvoer reconstrueren.
     flows = []
@@ -388,10 +413,12 @@ def build_openings(house: dict, states: dict, weather: dict, params: dict,
         a, b = d["between"]
         ops.append({"a": a, "b": b, "area": area, "Cd": cd,
                     "z": d.get("center_height_m", 1.0), "Pe": 0.0, "id": did})
-    # Per-kamer infiltratielek (altijd aanwezig, klein) → netwerk blijft welgesteld.
-    for room in house.get("rooms", {}):
-        ops.append({"a": room, "b": "outside", "area": LEAK_AREA, "Cd": cd,
-                    "z": 1.5, "Pe": 0.0, "id": f"_leak_{room}"})
+    # Per-zone infiltratielek (altijd aanwezig, klein) → het netwerk blijft welgesteld,
+    # óók als een zone helemaal dicht zit (b.v. badkamer: deur dicht + afzuiging uit) —
+    # anders wordt die knoop singulier en ontspoort de hele drukoplossing.
+    for zone in list(house.get("rooms", {})) + list(house.get("junctions", {})):
+        ops.append({"a": zone, "b": "outside", "area": LEAK_AREA, "Cd": cd,
+                    "z": 1.5, "Pe": 0.0, "id": f"_leak_{zone}"})
     return ops
 
 
@@ -879,9 +906,9 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
             for wid, w in house.get("windows", {}).items():
                 if w.get("room") != rid:
                     continue
-                shade = {"none": 1.0, "overhang": 0.7, "blind": 0.35}.get(w.get("shading", "none"), 1.0)
+                shade = SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
                 I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,
-                                      wx["direct"], wx["diffuse"])
+                                      wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0))
                 tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
             irr[rid] = tot
         grid.append({"t": t, "T_out": T_out, "irr": irr, "states": openings_at(log, t),
@@ -993,6 +1020,8 @@ def _controls(house: dict, states_now: dict) -> list[dict]:
     stand — de bron voor de 'Stel ramen/roosters in'-modal op het dashboard."""
     out = []
     for wid, w in house.get("windows", {}).items():
+        if w.get("max_open_area_m2", 0.0) <= 0.0:
+            continue   # vast glas — niet bedienbaar, hoort niet in de modal
         out.append({"id": wid, "kind": "window", "label": w.get("label", wid),
                     "room": w.get("room"), "state": states_now.get(wid, "dicht")})
     for vid, v in house.get("vents", {}).items():

@@ -75,6 +75,23 @@ def test_crossvent_mass_balance_and_analytic():
     assert abs(net["flows"][1]) == pytest.approx(q_expected, rel=0.02)
 
 
+def test_sealed_zone_does_not_break_solve():
+    # Een volledig dichte zone (geen open opening) mag de hele drukoplossing niet singulier
+    # maken — de per-zone infiltratielek houdt 'm welgesteld.
+    house = _toy_house()
+    house["junctions"]["sealed"] = {"volume_m3": 8}     # nergens mee verbonden
+    house["rooms"]["a"]["from_window_data"] = "Living room"
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    params = am.default_params(house)
+    zt = {z: 24.0 for z in zones}
+    ops = am.build_openings(house, {"a_win": "open"}, {"wind_speed": 4.0, "wind_dir": 200.0},
+                            params, zt, 18.0)
+    net = am.solve_network(zones, ops, zt, 18.0)
+    assert all(math.isfinite(v) for v in net["pressures"].values())
+    res = _node_residual(zones, ops, net["pressures"], zt, 18.0)
+    assert max(abs(v) for v in res) < 1e-4
+
+
 def test_network_node_mass_balance_multizone():
     # Twee kamers + een deur, wind + schoorsteen: in elke interne knoop moet de
     # netto massa nul zijn (behoudswet).

@@ -240,6 +240,7 @@ function render() {
       <span class="chip-strong num">${rmse!=null?rmse.toFixed(2)+"°C":"—"}</span>
       <span class="ctl-sub">${learnTrendText(d)}</span>
     </div>
+    ${(d.learned&&d.learned.held)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog${d.learned.baseline_rmse!=null?` (norm ~${d.learned.baseline_rmse.toFixed(2)}°)`:''}. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
   </div>`;
 
   // — Suggestie —
@@ -346,9 +347,12 @@ function floorPlanSVG(d) {
   const cw=164, ch=124, gap=30, padL=92, padT=58, padR=54, padB=30;
   const cols=maxx-minx+1, rowsN=maxy-miny+1;
   const W=padL+padR+cols*cw+(cols-1)*gap, H=padT+padB+rowsN*ch+(rowsN-1)*gap;
-  const cx = id => padL+(zones[id].plan_xy[0]-minx)*(cw+gap);
-  const cy = id => padT+(zones[id].plan_xy[1]-miny)*(ch+gap);
-  const ctr = id => [cx(id)+cw/2, cy(id)+ch/2];
+  const planH = id => zones[id].plan_h || 1;                       // hoeveel rijen hoog (trap = 3)
+  const rectOf = id => { const x=padL+(zones[id].plan_xy[0]-minx)*(cw+gap), y=padT+(zones[id].plan_xy[1]-miny)*(ch+gap);
+    return {x, y, w:cw, h:planH(id)*ch+(planH(id)-1)*gap}; };
+  const ctr = id => { const r=rectOf(id); return [r.x+r.w/2, r.y+r.h/2]; };
+  const border = (id, tx, ty) => { const r=rectOf(id);            // punt op de rand richting (tx,ty)
+    return [Math.max(r.x, Math.min(r.x+r.w, tx)), Math.max(r.y, Math.min(r.y+r.h, ty))]; };
   const td  = id => (d.rooms||{})[id] || {};
 
   let defs = `<defs>
@@ -356,38 +360,40 @@ function floorPlanSVG(d) {
   </defs>`;
   let s = `<svg class="fp-svg" viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:'JetBrains Mono',monospace;">${defs}`;
 
-  // Verdieping-banden + labels links.
+  // Verdieping-banden + labels links. Hoge, doorlopende zones (trap) tellen NIET mee voor
+  // het verdieping-label van een rij, zodat de rij op hotties' hoogte "1e verdieping" toont.
   const floorsByRow = {};
-  ids.forEach(id => { const yrow=zones[id].plan_xy[1]; const f=zones[id].floor??0; floorsByRow[yrow]=f; });
+  ids.forEach(id => { if (planH(id)>1) return; const yrow=zones[id].plan_xy[1]; floorsByRow[yrow]=zones[id].floor??0; });
   Object.keys(floorsByRow).forEach(yrow => {
     const y = padT+(yrow-miny)*(ch+gap)-gap/2;
     s += `<rect x="2" y="${y}" width="${W-4}" height="${ch+gap}" fill="${(+yrow)%2?'#2a241b04':'#2a241b00'}"/>`;
-    s += `<text x="14" y="${y+(ch+gap)/2}" font-size="9" fill="${COLORS.inkSoft}" letter-spacing="1" transform="rotate(-90 14 ${y+(ch+gap)/2})" text-anchor="middle">${(FLOOR_NL[floorsByRow[yrow]]||'').toUpperCase()}</text>`;
+    s += `<text x="16" y="${y+(ch+gap)/2}" font-size="9" fill="${COLORS.inkSoft}" letter-spacing="1" transform="rotate(-90 16 ${y+(ch+gap)/2})" text-anchor="middle">${(FLOOR_NL[floorsByRow[yrow]]||'').toUpperCase()}</text>`;
   });
 
   // Deur-skelet: een vage stippellijn voor élke deur (toont de verbindingen, óók dicht).
   (Object.values(meta.doors||{})).forEach(door => {
     const [a,b]=door.between||[]; if(!zones[a]||!zones[b]) return;
     const [ax,ay]=ctr(a),[bx,by]=ctr(b);
-    s += `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${COLORS.ink}" stroke-width="1" stroke-dasharray="2 5" opacity="0.18"/>`;
+    const [pax,pay]=border(a,bx,by), [pbx,pby]=border(b,ax,ay);
+    s += `<line x1="${pax}" y1="${pay}" x2="${pbx}" y2="${pby}" stroke="${COLORS.ink}" stroke-width="1" stroke-dasharray="2 5" opacity="0.18"/>`;
   });
 
   // Zones (kamers + junctie/trap), getint op temperatuur.
   ids.forEach(id => {
-    const r=td(id), z=zones[id], x=cx(id), y=cy(id);
-    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${cw}" height="${ch}" rx="7" fill="${zoneFill(r)}" stroke="${COLORS.ink}" stroke-width="1.4"/>`;
-    s += `<rect x="${x}" y="${y}" width="${cw}" height="20" rx="7" fill="#2a241b08"/>`;
+    const r=td(id), z=zones[id], rc=rectOf(id), x=rc.x, y=rc.y, tall=planH(id)>1;
+    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${rc.w}" height="${rc.h}" rx="7" fill="${zoneFill(r)}" stroke="${COLORS.ink}" stroke-width="1.4"/>`;
+    s += `<rect x="${x}" y="${y}" width="${rc.w}" height="20" rx="7" fill="#2a241b08"/>`;
     s += `<text x="${x+12}" y="${y+14}" font-size="11" font-family="'Cormorant Garamond',serif" font-style="italic" fill="${COLORS.ink}">${z.label||id}</text>`;
-    s += `<text x="${x+cw-8}" y="${y+14}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="end">${floorTag(z.floor??0)}</text>`;
+    s += `<text x="${x+rc.w-8}" y="${y+14}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="end">${tall?'bg→2e':floorTag(z.floor??0)}</text>`;
     if (r.predicted_temp!=null) {
       s += `<text x="${x+12}" y="${y+50}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
-      s += `<text x="${x+12}" y="${y+70}" font-size="9" fill="${COLORS.inkSoft}">model · tado ${fmt(r.actual_temp)}°</text>`;
+      s += `<text x="${x+12}" y="${y+70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp!=null?' · tado '+fmt(r.actual_temp)+'°':''}</text>`;
       s += `<text x="${x+12}" y="${y+88}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach,1)}${r.ach>=1?' 🌬':''}</text>`;
-      if (r.solar_w>40) s += `<text x="${x+cw-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
+      if (r.solar_w>40) s += `<text x="${x+rc.w-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
     } else {
       s += `<text x="${x+12}" y="${y+54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
-      s += `<text x="${x+12}" y="${y+74}" font-size="9" fill="${COLORS.inkSoft}">${fmt(r.predicted_temp)!=='—'?'model '+fmt(r.predicted_temp)+'°':'doorstroomzone'}</text>`;
     }
+    if (tall) s += `<text x="${x+rc.w/2}" y="${y+rc.h-12}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
   });
 
   // Stromen: geanimeerde, luchtige pijlen (dikte ∝ debiet, snelheid ∝ debiet).
@@ -398,18 +404,21 @@ function floorPlanSVG(d) {
     const dur=Math.max(0.5, Math.min(2.6, 0.16/q));
     if (f.b==="outside") {
       const win=wins[f.id]; const zid = (win&&win.room)||f.a; if(!zones[zid]) return;
-      const [zx,zy]=ctr(zid); const az=((win?win.facade_azimuth_deg:0)||0)*Math.PI/180;
-      const ux=Math.sin(az), uy=-Math.cos(az);
-      const edgeX=zx+ux*(cw/2-4), edgeY=zy+uy*(ch/2-4);
-      const outX=edgeX+ux*26, outY=edgeY+uy*26;
-      // raam/rooster-markering
-      s += `<rect x="${edgeX-6}" y="${edgeY-4}" width="12" height="8" rx="2" fill="${COLORS.moss}" stroke="${COLORS.ink}" stroke-width="1" transform="rotate(${(win?win.facade_azimuth_deg:0)||0} ${edgeX} ${edgeY})"/>`;
-      const into = f.flow_m3s < 0;          // negatief a→b = instroom de kamer in
-      const col = into?COLORS.rain:COLORS.clay;
+      const rc=rectOf(zid); const into = f.flow_m3s < 0; const col = into?COLORS.rain:COLORS.clay;
+      let edgeX, edgeY, outX, outY;
+      if (win && win.kind==="skylight") {            // plat dakraam → bovenaan, pijl omhoog
+        edgeX=rc.x+rc.w/2; edgeY=rc.y+5; outX=edgeX; outY=edgeY-26;
+      } else {
+        const az=((win?win.facade_azimuth_deg:0)||0)*Math.PI/180, ux=Math.sin(az), uy=-Math.cos(az);
+        edgeX=rc.x+rc.w/2+ux*(rc.w/2-4); edgeY=rc.y+rc.h/2+uy*(Math.min(rc.h,ch)/2-4);
+        outX=edgeX+ux*26; outY=edgeY+uy*26;
+        s += `<rect x="${edgeX-6}" y="${edgeY-4}" width="12" height="8" rx="2" fill="${COLORS.moss}" stroke="${COLORS.ink}" stroke-width="1" transform="rotate(${(win?win.facade_azimuth_deg:0)||0} ${edgeX} ${edgeY})"/>`;
+      }
       s += into ? flowArrow(outX,outY,edgeX,edgeY,wd,dur,col) : flowArrow(edgeX,edgeY,outX,outY,wd,dur,col);
     } else if (zones[f.a] && zones[f.b]) {
-      const [ax,ay]=ctr(f.a),[bx,by]=ctr(f.b); const fwd=f.flow_m3s>=0;
-      s += flowArrow(fwd?ax:bx, fwd?ay:by, fwd?bx:ax, fwd?by:ay, wd, dur, COLORS.mossLight);
+      const [ax,ay]=ctr(f.a),[bx,by]=ctr(f.b);
+      const [pax,pay]=border(f.a,bx,by), [pbx,pby]=border(f.b,ax,ay); const fwd=f.flow_m3s>=0;
+      s += flowArrow(fwd?pax:pbx, fwd?pay:pby, fwd?pbx:pax, fwd?pby:pay, wd, dur, COLORS.mossLight);
     }
   });
 
@@ -504,10 +513,10 @@ function openReport() {
   const ctls = (state.data && state.data.controls) || [];
   if (!ctls.length) { alert("Nog geen elementen — vul house_model.json en laat het model één keer draaien."); return; }
   state.pending = {};
-  const groups = { window:"Ramen", vent:"Roosters", door:"Deuren" };
-  const opts = { window:["dicht","tilt","open"], vent:["dicht","open"], door:["dicht","open"] };
+  const groups = { window:"Ramen", vent:"Roosters", shade:"Zonwering", door:"Deuren" };
+  const opts = { window:["dicht","tilt","open"], vent:["dicht","open"], shade:["open","half","dicht"], door:["dicht","open"] };
   let html = "";
-  ["window","vent","door"].forEach(kind => {
+  ["window","vent","shade","door"].forEach(kind => {
     const items = ctls.filter(c => c.kind===kind);
     if (!items.length) return;
     html += `<div class="grp-title">${groups[kind]}</div>`;
@@ -529,11 +538,14 @@ function openReport() {
   toggleModal(true);
 }
 function normState(v, kind) {
-  if (typeof v === "number") return v>0.5 ? "open" : (v>0 ? "tilt" : "dicht");
+  const mid = kind==="shade" ? "half" : "tilt";
+  if (typeof v === "number") return v>0.5 ? "open" : (v>0 ? mid : "dicht");
   v = (""+v).toLowerCase();
-  if (v==="closed") return "dicht";
-  if (["open","tilt","dicht"].includes(v)) return v;
-  return kind==="window" ? "dicht" : "open";
+  if (v==="closed" || v==="toe") return "dicht";
+  if (v==="kier") return mid;
+  const allowed = kind==="shade" ? ["open","half","dicht"] : ["open","tilt","dicht"];
+  if (allowed.includes(v)) return v;
+  return kind==="window" ? "dicht" : "open";   // ramen default dicht; rest (vent/shade/door) open
 }
 function toggleModal(open) { document.getElementById("report-modal").classList.toggle("open", open); }
 

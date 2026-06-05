@@ -181,6 +181,29 @@ def test_openings_at_timeline():
     assert am.openings_at(log, t0 + timedelta(hours=6))["w"] == "closed"
 
 
+def test_openings_at_accumulates_incremental():
+    # Kleine, losse meldingen: een element houdt zijn laatst-gezette waarde ook als een
+    # latere snapshot 'm niet herhaalt (zo kun je één raam wijzigen zonder de rest op te geven).
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    log = [
+        {"t": t0.isoformat(), "states": {"a": "open", "b": "dicht"}},
+        {"t": (t0 + timedelta(hours=1)).isoformat(), "states": {"b": "tilt"}},   # alleen b
+    ]
+    st = am.openings_at(log, t0 + timedelta(hours=2))
+    assert st["a"] == "open"      # behouden uit de eerdere snapshot
+    assert st["b"] == "tilt"      # bijgewerkt door de latere
+
+
+def test_shade_factor_override():
+    w = {"shading": "none", "shade": {"factor": 0.15}}
+    assert am._shade_factor("sky", w, {}) == 1.0                       # geen melding → static none
+    assert am._shade_factor("sky", w, {"sky_shade": "dicht"}) == 0.15  # dicht → scherm-factor
+    assert am._shade_factor("sky", w, {"sky_shade": "open"}) == 1.0    # open overschrijft
+    assert am._shade_factor("sky", w, {"sky_shade": "half"}) == pytest.approx(0.5 * (1 + 0.15))
+    # Raam zonder bedienbare zonwering valt terug op de statische `shading`.
+    assert am._shade_factor("x", {"shading": "lamella"}, {}) == am.SHADING_FACTOR["lamella"]
+
+
 def test_open_frac_mapping():
     elem = {"tilt_frac": 0.2}
     assert am._open_frac("open", elem) == 1.0
@@ -211,6 +234,74 @@ def test_suggest_opens_when_outside_cooler():
                       room_now, 16.0, 55.0, 16.0)
     assert sugg["keep_closed"] is False
     assert any(i["action"] == "open" for i in sugg["instructions"])
+
+
+# ── 8. Robuust leren: anomalie-poort + Huber ─────────────────────────────────────────
+
+def _hist(*rmses):
+    return [{"t": "2026-06-01T00:00:00+02:00", "rmse": v} for v in rmses]
+
+
+def test_no_hold_without_enough_history():
+    # Te weinig historie → nooit pauzeren (eerst bootstrappen, ook bij hoge fout).
+    hold, base = am.should_hold_learning(9.0, _hist(0.5, 0.5, 0.5))
+    assert hold is False
+    assert base is None
+
+
+def test_hold_when_error_anomalous():
+    # Lange historie rond 0.5°C, nu plots 3°C → ver boven 2.2× norm én boven de vloer.
+    hist = _hist(*([0.5] * 30))
+    hold, base = am.should_hold_learning(3.0, hist)
+    assert hold is True
+    assert base == pytest.approx(0.5, abs=1e-9)
+
+
+def test_no_hold_when_error_normal():
+    hist = _hist(*([0.5] * 30))
+    assert am.should_hold_learning(0.7, hist)[0] is False     # binnen de norm
+    # Hoog t.o.v. norm maar absoluut klein (< ANOMALY_FLOOR) → niet pauzeren.
+    assert am.should_hold_learning(1.2, _hist(*([0.2] * 30)))[0] is False
+
+
+def test_held_runs_excluded_from_baseline():
+    # Een langdurige anomalie (gepauzeerde runs met hoge RMSE) mag de norm niet optrekken:
+    # de baseline blijft op de goede runs hangen, dus het blijft pauzeren tot de log weer
+    # klopt.
+    hist = _hist(*([0.5] * 20)) + [{"t": "x", "rmse": 12.0, "held": True} for _ in range(20)]
+    hold, base = am.should_hold_learning(5.0, hist)
+    assert base == pytest.approx(0.5, abs=1e-9)
+    assert hold is True
+
+
+def test_huber_weights_downweight_outliers():
+    w = am._huber_weights([0.0, 1.0, 1.5, 3.0], delta=1.5)
+    assert w[0] == 1.0 and w[1] == 1.0 and w[2] == 1.0      # binnen ±delta
+    assert w[3] == pytest.approx(1.5 / 3.0)                  # uitschieter gedempt
+    # Gewogen kosten zijn lager dan de pure kwadraatsom bij een uitschieter.
+    res = [0.2, -0.3, 5.0]
+    assert am._wcost(res) < sum(r * r for r in res)
+
+
+def test_calibrate_robust_to_single_outlier():
+    # Eén grof verkeerde sample mag de fit niet kapen: de geleerde params blijven dicht
+    # bij die uit schone data.
+    house = _toy_house()
+    tl = _varying_timeline(hours=24)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    truth = am.default_params(house)
+    for rid in house["rooms"]:
+        truth[rid]["solar_gain"] = 1.6
+    sim = am.simulate(house, truth, tl, seed, calib_only_rooms=set(house["rooms"]))
+    clean = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+    # Injecteer één absurde sample in kamer 'a'.
+    poisoned = {rid: list(s) for rid, s in clean.items()}
+    t_bad, _ = poisoned["a"][3]
+    poisoned["a"][3] = (t_bad, 80.0)
+    p_clean, _ = am.calibrate(house, am.default_params(house), tl, seed, clean, max_iter=5, time_budget_s=20)
+    p_pois, _ = am.calibrate(house, am.default_params(house), tl, seed, poisoned, max_iter=5, time_budget_s=20)
+    # De geleerde solar_gain mag door de uitschieter niet ver wegschieten.
+    assert abs(p_pois["a"]["solar_gain"] - p_clean["a"]["solar_gain"]) < 0.4
 
 
 # ════════════════════════════════════════════════════════════════════════════════════

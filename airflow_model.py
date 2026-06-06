@@ -253,29 +253,38 @@ def air_density(temp_c: float) -> float:
     return P_ATM / (R_AIR * (temp_c + 273.15))
 
 
-# Zonwering-transmissie per `shading`-label (fractie zon die het glas haalt): geen, een
-# balkon/overstek erboven, lamella ~1/3 dicht, diep beschaduwd (b.v. onder een terras,
-# alleen ochtendzon), binnenzonwering/lamella dicht, of een buitenscherm uitgerold.
-SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.67, "deep": 0.4,
+# Statische, áltijd-aanwezige zonwering per `shading`-label (fractie zon die het glas
+# haalt): geen, een balkon/overstek erboven, een vaste lichte dubbel-papieren lamella die
+# ~1/3 van het raam bedekt en weinig verduistert (translucent → ~0.9: de 2/3 vrije glas
+# laat alles door, de bedekte 1/3 nog het meeste), diep beschaduwd (b.v. onder een terras,
+# alleen ochtendzon), of een binnenzonwering. Een bedíénbare zonwering (gordijn/scherm)
+# staat hier los van en wordt er multiplicatief overheen gelegd (zie _shade_factor) — de
+# twee lagen werken tegelijk op hetzelfde raam.
+SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.9, "deep": 0.4,
                   "blind": 0.35, "shade": 0.2}
 
 
 def _shade_factor(wid: str, w: dict, states: dict) -> float:
-    """Zon-transmissiefractie door een raam. Een bedienbare zonwering (`shade`) die je
-    meldt, overschrijft de statische standaard-`shading`: open = 1.0, dicht = de
-    scherm-factor, half = ertussenin. Zonder melding geldt de statische standaard."""
+    """Zon-transmissiefractie door een raam = de statische, altijd-aanwezige zonwering
+    (`shading`, b.v. een vaste lamella of overstek) × de bedienbare zonwering (`shade`,
+    b.v. een gordijn) die je meldt. De twee lagen vermenigvuldigen, zodat een raam met
+    zówel een vaste lamella áls een gordijn ze allebei tegelijk meetelt. Bedienbare
+    standen: open = ×1.0, dicht = ×scherm-factor, half = ertussenin. Een niet-gemelde
+    bedienbare zonwering geldt als open (×1.0) — zo geven 'niet gemeld' en 'open' exact
+    dezelfde transmissie (geen sprong tussen de twee)."""
+    base = SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
     sh = w.get("shade")
+    mult = 1.0
     if sh:
         rep = states.get(wid + "_shade")
         if rep is not None:
             s = str(rep).strip().lower()
-            if s in ("open", "0", "false", "nee"):
-                return 1.0
             if s in ("half", "kier"):
-                return 0.5 * (1.0 + float(sh.get("factor", 0.2)))
-            if s in ("dicht", "closed", "toe", "1", "true", "ja"):
-                return float(sh.get("factor", 0.2))
-    return SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
+                mult = 0.5 * (1.0 + float(sh.get("factor", 0.2)))
+            elif s in ("dicht", "closed", "toe", "1", "true", "ja"):
+                mult = float(sh.get("factor", 0.2))
+            # open/0/false/nee (of onbekend) → mult blijft 1.0
+    return base * mult
 
 # Crossover-drukval (Pa) tussen het laminaire (lineaire) en turbulente (√) regime. De
 # orifice-wet Q∝√|ΔP| heeft een oneindige helling bij ΔP=0, wat de Newton-Jacobiaan

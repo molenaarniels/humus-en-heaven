@@ -253,29 +253,58 @@ def air_density(temp_c: float) -> float:
     return P_ATM / (R_AIR * (temp_c + 273.15))
 
 
-# Zonwering-transmissie per `shading`-label (fractie zon die het glas haalt): geen, een
-# balkon/overstek erboven, lamella ~1/3 dicht, diep beschaduwd (b.v. onder een terras,
-# alleen ochtendzon), binnenzonwering/lamella dicht, of een buitenscherm uitgerold.
-SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.67, "deep": 0.4,
+# Statische, áltijd-aanwezige zonwering per `shading`-label (fractie zon die het glas
+# haalt): geen, een balkon/overstek erboven, een vaste lichte dubbel-papieren lamella die
+# ~1/3 van het raam bedekt en weinig verduistert (translucent → ~0.9: de 2/3 vrije glas
+# laat alles door, de bedekte 1/3 nog het meeste), diep beschaduwd (b.v. onder een terras,
+# alleen ochtendzon), of een binnenzonwering. Een bedíénbare zonwering (gordijn/scherm)
+# staat hier los van en wordt er multiplicatief overheen gelegd (zie _shade_factor) — de
+# twee lagen werken tegelijk op hetzelfde raam.
+SHADING_FACTOR = {"none": 1.0, "overhang": 0.7, "lamella": 0.9, "deep": 0.4,
                   "blind": 0.35, "shade": 0.2}
 
 
 def _shade_factor(wid: str, w: dict, states: dict) -> float:
-    """Zon-transmissiefractie door een raam. Een bedienbare zonwering (`shade`) die je
-    meldt, overschrijft de statische standaard-`shading`: open = 1.0, dicht = de
-    scherm-factor, half = ertussenin. Zonder melding geldt de statische standaard."""
+    """Zon-transmissiefractie door een raam = de statische, altijd-aanwezige zonwering
+    (`shading`, b.v. een vaste lamella of overstek) × de bedienbare zonwering (`shade`)
+    die je meldt. De twee lagen vermenigvuldigen, zodat een raam met zówel een vaste
+    lamella áls een bedienbare zonwering ze allebei tegelijk meetelt. Een niet-gemelde
+    bedienbare zonwering geldt als z'n default-stand (voor het simpele type = open, ×1.0)
+    — zo geeft 'niet gemeld' dezelfde transmissie als de defaultstand (geen sprong).
+
+    Twee `shade`-typen:
+    - **simpel scherm/gordijn** (`factor`): open ×1.0, dicht ×factor, half ertussenin —
+      vaste opaciteit, je trekt 'm dicht of open (b.v. Teds verduisteringsgordijn).
+    - **coverage-lamella** (`coverage` + `paper`): vaste papier-opaciteit, variabele
+      dékking. De gemelde stand kiest een dekkingsfractie (b.v. open 0.30 / half 0.50 /
+      dicht 1.00); transmissie = 1 − dekking·(1 − papier). Het onbedekte glas laat alles
+      door, alleen het bedekte deel dempt (b.v. de woonkamer-lamella die je tot 30/50/100%
+      uittrekt)."""
+    base = SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
     sh = w.get("shade")
-    if sh:
-        rep = states.get(wid + "_shade")
-        if rep is not None:
-            s = str(rep).strip().lower()
-            if s in ("open", "0", "false", "nee"):
-                return 1.0
-            if s in ("half", "kier"):
-                return 0.5 * (1.0 + float(sh.get("factor", 0.2)))
-            if s in ("dicht", "closed", "toe", "1", "true", "ja"):
-                return float(sh.get("factor", 0.2))
-    return SHADING_FACTOR.get(w.get("shading", "none"), 1.0)
+    if not sh:
+        return base
+    rep = states.get(wid + "_shade")
+    cov = sh.get("coverage")
+    if cov:
+        paper = float(sh.get("paper", 0.7))
+        key = str(rep).strip().lower() if rep is not None else sh.get("default", "open")
+        frac = cov.get(key)
+        if frac is None:
+            try:                                    # losse dekkingsfractie 0..1 toegestaan
+                frac = max(0.0, min(1.0, float(key)))
+            except (TypeError, ValueError):
+                frac = cov.get(sh.get("default", "open"), 0.0)
+        return base * (1.0 - float(frac) * (1.0 - paper))
+    mult = 1.0
+    if rep is not None:
+        s = str(rep).strip().lower()
+        if s in ("half", "kier"):
+            mult = 0.5 * (1.0 + float(sh.get("factor", 0.2)))
+        elif s in ("dicht", "closed", "toe", "1", "true", "ja"):
+            mult = float(sh.get("factor", 0.2))
+        # open/0/false/nee (of onbekend) → mult blijft 1.0
+    return base * mult
 
 # Crossover-drukval (Pa) tussen het laminaire (lineaire) en turbulente (√) regime. De
 # orifice-wet Q∝√|ΔP| heeft een oneindige helling bij ΔP=0, wat de Newton-Jacobiaan

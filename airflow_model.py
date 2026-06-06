@@ -66,6 +66,36 @@ SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabil
 RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 
+# ── Tussenwoning-fysica: buren + interne warmtelast ─────────────────────────────────
+# Dit is een jaren-'20 rijtjeshuis (tussenwoning): woningscheidende (party) muren grenzen
+# aan álle kamers aan verwarmde buren die ~jaarrond op kamertemperatuur zitten. Die muren
+# trekken elke kamer naar NEIGHBOR_TEMP i.p.v. naar de (koude) buitenlucht — een grote,
+# bijna-constante warmtebuffer die het model zónder deze term structureel mist (waardoor
+# het de kamers te koud voorspelt en de kalibratie álle knoppen naar hun grens duwt om
+# warmte vast te houden). Vaste constante (geen buur-sensor); de geleerde per-kamer
+# `ua_party` vangt de geleiding-grootte op.
+NEIGHBOR_TEMP = 20.0
+
+# Interne warmtelast (mensen, koken, apparaten, verlichting): nominale dichtheid (W/m³
+# kamervolume) × de geleerde per-kamer `q_int` × een dag/nacht-profiel. Overdag (wakker)
+# vol, 's nachts gedempt — slapende lichamen + sluimerverbruik zijn niet nul.
+INTERNAL_GAIN_WM3        = 1.5   # W per m³ kamervolume bij profiel = 1.0 (prior; q_int schaalt)
+INTERNAL_DAY_START       = 7     # lokaal uur: profiel → dag (wakker)
+INTERNAL_NIGHT_START     = 23    # lokaal uur: profiel → nacht (slapend)
+INTERNAL_NIGHT_FRACTION  = 0.5   # nacht-aandeel van de dag-last
+
+
+def internal_gain_profile(t) -> float:
+    """Dag/nacht-schaalfactor (0..1) voor de interne warmtelast op tijdstip `t` (lokaal).
+    Wakker (INTERNAL_DAY_START..NIGHT_START) = 1.0, slapend = INTERNAL_NIGHT_FRACTION.
+    Robuust tegen een t zonder .hour (→ 1.0)."""
+    try:
+        hr = t.hour
+    except AttributeError:
+        return 1.0
+    awake = INTERNAL_DAY_START <= hr < INTERNAL_NIGHT_START
+    return 1.0 if awake else INTERNAL_NIGHT_FRACTION
+
 # ── Robuust leren: bescherming tegen niet-gerapporteerde raamwijzigingen ─────────────
 # Als de werkelijke openingen afwijken van de gerapporteerde log (b.v. iemand zet thuis
 # een raam open terwijl jij weg bent), wordt de voorspelfout anomaal hoog: het model
@@ -130,16 +160,19 @@ PRIORS = {
     "ua_env":      1.0,   # schil-conductie (lucht-gekoppeld deel)
     "ua_mass":     1.0,   # schil-conductie naar de massaknoop
     "solar_gain":  1.0,   # zonwinst dóór het glas
+    "ua_party":    1.0,   # geleiding naar de buur (woningscheidende muren → NEIGHBOR_TEMP)
+    "q_int":       1.0,   # interne warmtelast (mensen/koken/apparaten), dag/nacht-profiel
 }
 # Clamp-banden voor de leerbare schalen (ondergrens, bovengrens).
 BOUNDS = {
     "cp_shelter": (0.1, 1.2), "cd": (0.3, 0.9), "vent_eff": (0.3, 2.0),
     "c_air": (0.3, 4.0), "c_mass": (0.2, 6.0), "h_am": (0.2, 5.0),
     "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.0, 3.0),
+    "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0),
 }
 # Welke parameters per kamer leren (h_am/ua_mass blijven op hun prior — minder vrijheid,
 # stabieler leren). De rest is globaal.
-PER_ROOM_PARAMS = ["c_air", "c_mass", "ua_env", "solar_gain"]
+PER_ROOM_PARAMS = ["c_air", "c_mass", "ua_env", "solar_gain", "ua_party", "q_int"]
 GLOBAL_PARAMS   = ["cp_shelter", "cd", "vent_eff"]
 
 
@@ -556,6 +589,7 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
     par = {}
     for rid, r in house.get("rooms", {}).items():
         c_air0, c_mass0, ua0 = room_base_capacitances(r)
+        vol = r.get("volume_m3", 40.0)
         p = params.get(rid, {})
         par[rid] = {
             "C_a": c_air0 * p.get("c_air", 1.0),
@@ -564,12 +598,19 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
             "UA_env": ua0 * 0.5 * p.get("ua_env", 1.0),
             "UA_mass": ua0 * 0.5 * p.get("ua_mass", 1.0),
             "solar": p.get("solar_gain", 1.0), "f_air": 0.4,
+            # Buur-geleiding via de woningscheidende muren → NEIGHBOR_TEMP. Basis ~ schil-UA
+            # (party-muur-oppervlak is van dezelfde orde als de gevel); de geleerde schaal
+            # vangt de werkelijke grootte. Een hoekkamer met minder buren leert 'm lager.
+            "UA_party": ua0 * p.get("ua_party", 1.0),
+            # Interne warmtelast (W) bij profiel = 1.0; het dag/nacht-profiel schaalt 'm per stap.
+            "Q_int_base": vol * INTERNAL_GAIN_WM3 * p.get("q_int", 1.0),
         }
     for jid, j in house.get("junctions", {}).items():
         vol = j.get("volume_m3", 15.0)
         c_air0 = vol * 1.2 * CP_AIR * 3.0
         par[jid] = {"C_a": c_air0, "C_m": c_air0 * 2.0, "H_am": 15.0,
-                    "UA_env": 3.0, "UA_mass": 1.0, "solar": 0.0, "f_air": 1.0}
+                    "UA_env": 3.0, "UA_mass": 1.0, "solar": 0.0, "f_air": 1.0,
+                    "UA_party": 0.0, "Q_int_base": 0.0}
     return par
 
 
@@ -619,10 +660,16 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 ia, im = 2 * k, 2 * k + 1
                 pa = par[z]
                 q_solar = step["irr"].get(z, 0.0) * pa["solar"]
+                # Buur-geleiding (party walls → NEIGHBOR_TEMP) en interne warmtelast (W,
+                # dag/nacht-profiel). Beide werken op de luchtknoop: de buur als een vaste
+                # warme rand, de interne last als bron.
+                ua_party = pa.get("UA_party", 0.0)
+                q_int = pa.get("Q_int_base", 0.0) * internal_gain_profile(step["t"])
                 # Luchtknoop.
-                A[ia][ia] += pa["C_a"] / h + gvent[z] + pa["UA_env"] + pa["H_am"]
+                A[ia][ia] += pa["C_a"] / h + gvent[z] + pa["UA_env"] + pa["H_am"] + ua_party
                 A[ia][im] += -pa["H_am"]
-                b[ia] += pa["C_a"] / h * Ta[z] + gvent[z] * T_out + pa["UA_env"] * T_out + pa["f_air"] * q_solar
+                b[ia] += (pa["C_a"] / h * Ta[z] + gvent[z] * T_out + pa["UA_env"] * T_out
+                          + pa["f_air"] * q_solar + ua_party * NEIGHBOR_TEMP + q_int)
                 # Massaknoop.
                 A[im][im] += pa["C_m"] / h + pa["H_am"] + pa["UA_mass"]
                 A[im][ia] += -pa["H_am"]
@@ -1082,6 +1129,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
 
     rooms_out = {}
     last_step = timeline[-1] if timeline else None
+    zpar = _zone_thermal_params(house, params)
+    int_profile_now = internal_gain_profile(now)
     for rid, room in house.get("rooms", {}).items():
         wd_key = room.get("from_window_data")
         rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
@@ -1107,6 +1156,11 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "humidity": rd.get("humidity"),
             "ach": fresh_ach,
             "solar_w": round(last_step["irr"].get(rid, 0.0), 0) if last_step else None,
+            # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
+            # twee tussenwoning-termen, voor inzicht op het dashboard.
+            "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - pred_now), 0)
+                        if pred_now is not None else None),
+            "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * int_profile_now, 0),
             "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
             "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
             "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)} for t, v in pred_series],

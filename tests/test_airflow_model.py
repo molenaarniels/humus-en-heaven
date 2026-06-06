@@ -113,8 +113,14 @@ def test_network_node_mass_balance_multizone():
 def test_rc_relaxes_to_outside_no_solar():
     # Geen zon, dichte ramen, constante buitentemp → binnen relaxeert náár buiten. Het
     # gebouw heeft een grote thermische tijdconstante (~dag), dus geef het ruim de tijd.
+    # We toetsen hier de pure schil-relaxatie, dus zónder de tussenwoning-warmtebronnen
+    # (buren + interne last) — díe tillen de evenwichtstemp op en worden apart getoetst in
+    # test_tussenwoning_terms_lift_above_outside.
     house = _toy_house()
     params = am.default_params(house)
+    for rid in house["rooms"]:
+        params[rid]["ua_party"] = 0.0
+        params[rid]["q_int"] = 0.0
     T_out = 18.0
     tl = _const_timeline(T_out, hours=240, irr=0.0)
     seed = {z: 26.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
@@ -123,6 +129,33 @@ def test_rc_relaxes_to_outside_no_solar():
         assert sim["Ta"][rid] == pytest.approx(T_out, abs=0.4)
         # Monotone afkoeling: eindtemp ligt tussen buiten en de startwaarde.
         assert T_out <= sim["Ta"][rid] < 26.0
+
+
+def test_tussenwoning_terms_lift_above_outside():
+    # Mét de tussenwoning-termen aan (buren op NEIGHBOR_TEMP + interne last) landt een kamer
+    # met dichte ramen en zónder zon bóven de koudere buitentemp — naar de buren toe plus de
+    # interne last. Dit is het structurele verschil dat de koude-bias verhielp.
+    house = _toy_house()
+    T_out = 16.0
+    tl = _const_timeline(T_out, hours=240, irr=0.0)
+    seed = {z: T_out for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+
+    p_on = am.default_params(house)                       # priors: ua_party=1, q_int=1
+    sim_on = am.simulate(house, p_on, tl, seed, calib_only_rooms=set(house["rooms"]))
+
+    p_off = am.default_params(house)
+    for rid in house["rooms"]:
+        p_off[rid]["ua_party"] = 0.0
+        p_off[rid]["q_int"] = 0.0
+    sim_off = am.simulate(house, p_off, tl, seed, calib_only_rooms=set(house["rooms"]))
+
+    for rid in house["rooms"]:
+        # Zonder termen: terug naar buiten. Mét termen: aantoonbaar opgetild, boven buiten
+        # maar niet absurd boven de buurtemp.
+        assert sim_off["Ta"][rid] == pytest.approx(T_out, abs=0.4)
+        assert sim_on["Ta"][rid] > T_out + 0.5
+        assert sim_on["Ta"][rid] > sim_off["Ta"][rid] + 1.0
+        assert sim_on["Ta"][rid] <= am.NEIGHBOR_TEMP + 3.0
 
 
 def test_rc_mass_node_lags_air_node():

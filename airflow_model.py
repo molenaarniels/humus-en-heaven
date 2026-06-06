@@ -259,23 +259,48 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
 # ════════════════════════════════════════════════════════════════════════════════════
 
 def cp_coefficient(theta_deg: float) -> float:
-    """Surface-averaged druk-coëfficiënt voor een laagbouwgevel als functie van de
-    invalshoek θ (0° = wind recht op de gevel → loef; 180° = lij). Twee-cosinus-fit
+    """Surface-averaged druk-coëfficiënt voor een verticale laagbouwgevel als functie
+    van de invalshoek θ (0° = wind recht op de gevel → loef; 180° = lij). Twee-cosinus-fit
     op tabel-Cp's: loef ≈ +0.7, zijgevel ≈ −0.4, lij ≈ −0.25. Nog ongeschaald door
     de (leerbare) beschuttingsfactor."""
     t = math.radians(theta_deg)
     return 0.475 * math.cos(t) + 0.3125 * math.cos(2 * t) - 0.0875
 
 
+def cp_roof(theta_deg: float) -> float:
+    """Cp voor een (bijna) plat dakvlak. Anders dan een verticale gevel staat een laag-
+    hellend dak op álle windrichtingen onder ónderdruk (zuiging): de wind versnelt
+    eroverheen → Bernoulli-onderdruk over het hele vlak, met de loefrand iets minder
+    negatief dan de lijrand. Er is géén loef-overdruklob zoals bij een muur. Milde
+    richtingsafhankelijkheid rond een surface-averaged ~−0.6 (laagbouw-daktabellen);
+    de magnitude wordt verder geschaald door de leerbare `cp_shelter`."""
+    return -0.6 + 0.1 * math.cos(math.radians(theta_deg))
+
+
+def cp_tilted(theta_deg: float, tilt_deg: float) -> float:
+    """Cp voor een opening met willekeurige helling: lineair gemengd tussen het muur-
+    profiel (tilt 90° = verticaal raam) en het dakprofiel (tilt 0° = plat dakraam). Zo
+    krijgt een (bijna) plat dakraam de fysisch juiste alom-zuiging i.p.v. de muur-loeflob
+    te lenen — terwijl een gewoon verticaal raam (default tilt 90°) exact het oude gedrag
+    houdt. NB: de werkelijke Cp van een dakluik schuift met hóé ver het opengaat (kier →
+    dak-achtig, wijd open → de opstaande klep wordt muur-achtiger); dat tweede-orde-effect
+    modelleren we niet — dit luik gaat alleen op een kier (~5 cm), dus dak-achtig is juist."""
+    w_wall = max(0.0, min(1.0, tilt_deg / 90.0))
+    return w_wall * cp_coefficient(theta_deg) + (1.0 - w_wall) * cp_roof(theta_deg)
+
+
 def wind_pressure(facade_az: float, height: float, wind_speed: float,
-                  wind_dir: float, shelter: float, rho: float) -> float:
+                  wind_dir: float, shelter: float, rho: float,
+                  tilt_deg: float = 90.0) -> float:
     """Externe winddruk (Pa) op een opening: Cp·½ρU_lokaal². `wind_dir` = richting
     waar de wind vandaan komt (meteorologisch). U_lokaal via een power-law-profiel
-    naar de openingshoogte (stedelijke ruwheid)."""
+    naar de openingshoogte (stedelijke ruwheid). `tilt_deg` (90 = verticaal raam,
+    0 = plat dakraam) kiest het Cp-profiel via `cp_tilted`: een (bijna) plat dakvlak
+    is op álle windrichtingen zuiging, niet de loef-overdruk van een muur."""
     theta = abs(((wind_dir - facade_az + 180.0) % 360.0) - 180.0)
     z = max(1.5, height)
     u_local = (wind_speed or 0.0) * (z / 10.0) ** 0.30
-    return shelter * cp_coefficient(theta) * 0.5 * rho * u_local * u_local
+    return shelter * cp_tilted(theta, tilt_deg) * 0.5 * rho * u_local * u_local
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -529,7 +554,8 @@ def build_openings(house: dict, states: dict, weather: dict, params: dict,
         if area <= 0:
             return
         pe = wind_pressure(elem.get("facade_azimuth_deg", 0.0),
-                           elem.get("center_height_m", 1.5), wind_s, wind_d, shelter, rho_out)
+                           elem.get("center_height_m", 1.5), wind_s, wind_d, shelter, rho_out,
+                           elem.get("tilt_deg", 90.0))
         ops.append({"a": elem["room"], "b": "outside", "area": area, "Cd": cd,
                     "z": elem.get("center_height_m", 1.5), "Pe": pe, "id": elem_id})
 

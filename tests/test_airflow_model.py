@@ -55,6 +55,35 @@ def test_cp_symmetry():
         assert am.cp_coefficient(theta) == pytest.approx(am.cp_coefficient(-theta), abs=1e-9)
 
 
+def test_cp_roof_always_suction():
+    # Een (bijna) plat dak staat op élke windrichting onder onderdruk (geen loeflob).
+    for theta in range(0, 361, 15):
+        assert am.cp_roof(theta) < 0.0
+    # Loefrand iets minder negatief dan de lijrand.
+    assert am.cp_roof(0) > am.cp_roof(180)
+
+
+def test_cp_tilted_endpoints():
+    # tilt 90° (verticaal, default) → exact het muurprofiel: backward-compatible.
+    for theta in (0, 45, 90, 180):
+        assert am.cp_tilted(theta, 90.0) == pytest.approx(am.cp_coefficient(theta), abs=1e-12)
+        assert am.cp_tilted(theta, 0.0) == pytest.approx(am.cp_roof(theta), abs=1e-12)
+    # Een plat dakraam op de loef heeft géén overdruk meer (muur wél).
+    assert am.cp_coefficient(0) > 0.5
+    assert am.cp_tilted(0, 0.0) < 0.0
+
+
+def test_wind_pressure_default_unchanged():
+    # Zonder tilt_deg-argument blijft de druk identiek aan het verticale-muur-gedrag.
+    rho = am.air_density(20.0)
+    p_default = am.wind_pressure(309.0, 4.3, 5.0, 194.0, 0.5, rho)
+    p_vertical = am.wind_pressure(309.0, 4.3, 5.0, 194.0, 0.5, rho, tilt_deg=90.0)
+    assert p_default == pytest.approx(p_vertical, abs=1e-12)
+    # Plat dakraam op dezelfde plek → zuiging (negatief), ongeacht of de muur dat zou zijn.
+    p_roof = am.wind_pressure(309.0, 4.3, 5.0, 194.0, 0.5, rho, tilt_deg=0.0)
+    assert p_roof < 0.0
+
+
 # ── 3. Luchtstroomnetwerk ────────────────────────────────────────────────────────────
 
 def test_crossvent_mass_balance_and_analytic():

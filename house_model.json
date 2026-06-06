@@ -216,8 +216,14 @@
       "glass_m2": 6.0,
       "max_open_area_m2": 0.0,
       "center_height_m": 1.4,
-      "shading": "lamella",
-      "label": "Woonkamer straatraam 3×2 (NW, vast glas; vaste paper-lamella ~1/3)"
+      "shading": "none",
+      "label": "Woonkamer straatraam 3×2 (NW, vast glas; paper-lamella, regelbare dekking)",
+      "shade": {
+        "coverage": {"open": 0.30, "half": 0.50, "dicht": 1.00},
+        "paper": 0.7,
+        "default": "open",
+        "label": "Paper-lamella (dekking 30/50/100%)"
+      }
     },
     "ted_window": {
       "room": "ted",

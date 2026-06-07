@@ -238,20 +238,27 @@ def sun_position(lat: float, lon: float, when_utc: datetime) -> tuple[float, flo
 
 
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
-                      direct: float, diffuse: float, tilt_deg: float = 90.0) -> float:
+                      direct: float, diffuse: float, tilt_deg: float = 90.0,
+                      diffuse_only: bool = False) -> float:
     """Instraling (W/m²) op een vlak met azimut `facade_az` en helling `tilt_deg` vanaf
     horizontaal (90 = verticaal raam, 0 = plat dakraam/skylight). Directe component via de
-    invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2."""
+    invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2.
+
+    `diffuse_only`: het raam wordt door een vast obstakel (b.v. een huis ervóór + zonwering)
+    permanent uit de directe zonnestraal gehouden, maar ziet nog wél de diffuse hemel. Dan
+    valt de beam-term volledig weg en blijft alleen de diffuse view-factor over — anders dan
+    een `shading`/`shade`-factor, die juist béíde componenten gelijk dempt."""
     beta = math.radians(tilt_deg)
     sky_view = (1.0 + math.cos(beta)) / 2.0          # diffuse view factor (0.5 verticaal, 1.0 plat)
-    if sun_el <= 0:
-        return max(0.0, (diffuse or 0.0) * sky_view)
+    diff_on = (diffuse or 0.0) * sky_view
+    if diffuse_only or sun_el <= 0:
+        return max(0.0, diff_on)
     zen = math.radians(90.0 - sun_el)
     daz = math.radians(((sun_az - facade_az + 180.0) % 360.0) - 180.0)
     # cos(invalshoek) op een vlak met helling β: standaard zon-op-vlak-formule.
     cos_inc = math.cos(zen) * math.cos(beta) + math.sin(zen) * math.sin(beta) * math.cos(daz)
     direct_on = max(0.0, (direct or 0.0) * max(0.0, cos_inc))
-    return direct_on + (diffuse or 0.0) * sky_view
+    return direct_on + diff_on
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1108,7 +1115,8 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                     continue
                 shade = _shade_factor(wid, w, st)
                 I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,
-                                      wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0))
+                                      wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0),
+                                      bool(w.get("diffuse_only", False)))
                 tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
             irr[rid] = tot
         grid.append({"t": t, "T_out": T_out, "irr": irr, "states": st,

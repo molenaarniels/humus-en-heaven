@@ -73,6 +73,27 @@ def test_cp_tilted_endpoints():
     assert am.cp_tilted(0, 0.0) < 0.0
 
 
+def test_facade_irradiance_default_unchanged():
+    # Zonder diffuse_only-argument blijft de instraling identiek (backward-compatible).
+    i_default = am.facade_irradiance(219.0, 219.0, 45.0, 700.0, 150.0, 90.0)
+    i_explicit = am.facade_irradiance(219.0, 219.0, 45.0, 700.0, 150.0, 90.0, False)
+    assert i_default == pytest.approx(i_explicit, abs=1e-12)
+    assert i_default > 150.0  # bevat de directe beam-bijdrage
+
+
+def test_facade_irradiance_diffuse_only_drops_beam():
+    # Zon recht op een ZW-raam: normaal véél directe instraling, diffuse_only laat alleen
+    # de hemel-viewfactor over (geen beam) — het huis ervóór schermt de directe zon af.
+    full = am.facade_irradiance(219.0, 219.0, 45.0, 700.0, 150.0, 90.0, False)
+    diff = am.facade_irradiance(219.0, 219.0, 45.0, 700.0, 150.0, 90.0, True)
+    assert diff == pytest.approx(150.0 * 0.5, abs=1e-9)   # verticaal → sky_view 0.5
+    assert diff < full
+    # 's Nachts (zon onder horizon) is er sowieso geen beam → beide gelijk.
+    night_full = am.facade_irradiance(219.0, 219.0, -5.0, 0.0, 80.0, 90.0, False)
+    night_diff = am.facade_irradiance(219.0, 219.0, -5.0, 0.0, 80.0, 90.0, True)
+    assert night_full == pytest.approx(night_diff, abs=1e-12)
+
+
 def test_wind_pressure_default_unchanged():
     # Zonder tilt_deg-argument blijft de druk identiek aan het verticale-muur-gedrag.
     rho = am.air_density(20.0)

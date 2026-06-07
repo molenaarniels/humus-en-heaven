@@ -166,7 +166,7 @@ PRIORS = {
 # Clamp-banden voor de leerbare schalen (ondergrens, bovengrens).
 BOUNDS = {
     "cp_shelter": (0.1, 1.2), "cd": (0.3, 0.9), "vent_eff": (0.3, 2.0),
-    "c_air": (0.3, 4.0), "c_mass": (0.2, 6.0), "h_am": (0.2, 5.0),
+    "c_air": (0.3, 8.0), "c_mass": (0.2, 10.0), "h_am": (0.2, 5.0),
     "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.0, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0),
 }

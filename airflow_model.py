@@ -783,6 +783,25 @@ def _to_sensor_series(house, timeline, rid, pred: list[tuple]) -> list[tuple]:
     return [(t, _sensor_temp(v, tout.get(t), frac)) for t, v in pred]
 
 
+def _series_trend(series: list[tuple], since: datetime | None = None) -> float | None:
+    """Kleinste-kwadraten-helling (°C/uur) van een (t, temp)-reeks. Met `since` enkel de
+    punten vanaf dat moment — zo geeft de voorspelde reeks (die tot now+2u doorloopt) de
+    vóóruit geprojecteerde richting: + = opwarmend, − = afkoelend. None bij <2 punten."""
+    pts = [(t, v) for t, v in series if v is not None and (since is None or t >= since)]
+    if len(pts) < 2:
+        return None
+    t0 = pts[0][0]
+    xs = [(t - t0).total_seconds() / 3600.0 for t, _ in pts]
+    ys = [float(v) for _, v in pts]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    den = sum((x - mx) ** 2 for x in xs)
+    if den <= 0:
+        return None
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return num / den
+
+
 def _residuals(house, params, timeline, seed, actual, rooms_set) -> list[float]:
     """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
     voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
@@ -1193,6 +1212,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     last_step = timeline[-1] if timeline else None
     zpar = _zone_thermal_params(house, params)
     int_profile_now = internal_gain_profile(now)
+    veff = params.get("vent_eff", 1.0)
+    rho_cp = 1.2 * CP_AIR
     for rid, room in house.get("rooms", {}).items():
         wd_key = room.get("from_window_data")
         rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
@@ -1204,13 +1225,24 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         act_now = rd.get("inside")
         err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
         fresh_ach = None
+        env_w = vent_w = None        # warmtestroom naar/uit buiten (W, + = winst, − = verlies)
         if last_step is not None:
             ops = build_openings(house, last_step["states"], last_step["weather"], params,
                                  sim["Ta"], last_step["T_out"])
             net = solve_network(list(house["rooms"]) + list(house.get("junctions", {})),
                                 ops, sim["Ta"], last_step["T_out"])
             vol = room.get("volume_m3", 40.0)
-            fresh_ach = round(net["fresh"].get(rid, 0.0) * 3600.0 / vol, 2)
+            fresh_m3s = net["fresh"].get(rid, 0.0)
+            fresh_ach = round(fresh_m3s * 3600.0 / vol, 2)
+            # De twee "naar buiten"-termen, de tegenhanger van de zonwinst: schil-conductie
+            # en ventilatie-uitwisseling met de buitenlucht. Negatief = energie verlaat de
+            # kamer (koeling/warmteverlies). Zelfde tekens als in simulate()'s luchtknoop.
+            if ta_now is not None and t_out_now is not None:
+                ua_env = zpar.get(rid, {}).get("UA_env", 0.0)
+                env_w = round(ua_env * (t_out_now - ta_now), 0)
+                vent_w = round(rho_cp * veff * fresh_m3s * (t_out_now - ta_now), 0)
+        sens_series = _to_sensor_series(house, timeline, rid, pred_series)
+        trend = _series_trend(sens_series, since=now)
         rooms_out[rid] = {
             "label": room.get("label", rid),
             "from_window_data": wd_key,
@@ -1224,6 +1256,12 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "humidity": rd.get("humidity"),
             "ach": fresh_ach,
             "solar_w": round(last_step["irr"].get(rid, 0.0), 0) if last_step else None,
+            # Energie naar buiten (W, signed): schil-conductie + ventilatie-uitwisseling.
+            # − = de kamer verliest warmte (koelt af) langs deze weg; tegenhanger van solar_w.
+            "env_w": env_w,
+            "vent_w": vent_w,
+            # Richting van de temperatuurverandering (°C/uur): + opwarmend, − afkoelend.
+            "trend_c_per_h": round(trend, 2) if trend is not None else None,
             # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
             # twee tussenwoning-termen, voor inzicht op het dashboard.
             "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - ta_now), 0)
@@ -1232,7 +1270,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
             "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
             "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
-                                 for t, v in _to_sensor_series(house, timeline, rid, pred_series)],
+                                 for t, v in sens_series],
             "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
             "params": params.get(rid, {}),
         }

@@ -478,11 +478,13 @@ function floorPlanSVG(d, opts={}) {
       if (r.solar_w>40) s += `<text x="${x+rc.w-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
       if (live) {
         // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
-        // + = buitenlucht warmt 'm op. De tegenhanger van de zon-instroom hierboven.
+        // + = buitenlucht warmt 'm op. De tegenhanger van de zon-instroom hierboven. Drempel
+        // bewust laag (~8 W): in mild weer met dichte ramen verliest een kamer maar tientallen
+        // W, dus een hoge drempel (zoals de zon) zou bijna alles verbergen.
         const net = outsideNet(r);
-        if (net!=null && net<-40)
+        if (net!=null && net<-8)
           s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.rain}">❄ ${fmt(-net,0)} W naar buiten</text>`;
-        else if (net!=null && net>40)
+        else if (net!=null && net>8)
           s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.clay}">🔥 ${fmt(net,0)} W van buiten</text>`;
         // Trend-uitlezing rechtsonder, in dezelfde kleur als de rand.
         if (r.trend_c_per_h!=null)

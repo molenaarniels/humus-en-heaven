@@ -227,6 +227,42 @@ def test_calibrate_reduces_error():
     assert rmse2 <= rmse1 + 1e-6
 
 
+def test_sensor_outdoor_bias_blend():
+    # Een sensor op de buitenmuur leest een lineaire blend richting buiten. frac=0 en
+    # ontbrekende waarden zijn no-ops (mirror van wu_bias: vaste meetcorrectie).
+    assert am._sensor_temp(22.0, 12.0, 0.0) == 22.0
+    assert am._sensor_temp(22.0, 12.0, 0.25) == pytest.approx(0.75 * 22 + 0.25 * 12)
+    assert am._sensor_temp(None, 12.0, 0.25) is None
+    assert am._sensor_temp(22.0, None, 0.25) == 22.0
+
+
+def test_sensor_bias_shifts_residuals_not_physics():
+    # De buitenmuur-bias is een meet-laag, geen fysica: de luchtknoop blijft identiek, maar
+    # de vergelijking met de gemeten temp verschuift richting buiten. Bij koud buiten leest
+    # de gebiasde voorspelling structureel lager dan de wáre luchttemp → negatieve residuen,
+    # terwijl een ongebiasde kamer exact blijft.
+    house = _toy_house()
+    tl = _const_timeline(12.0, hours=12, irr=0.0)          # koud buiten
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 22.0 for z in zones}
+    params = am.default_params(house)
+    sim = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    # "Werkelijk" = de wáre luchtknoop (alsof de sensor perfect zou zijn).
+    actual = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+
+    # Ongebiasde kamer 'a' blijft exact; de fysica is onveranderd.
+    res_a = am._residuals(house, params, tl, seed, {"a": actual["a"]}, {"a"})
+    assert max(abs(r) for r in res_a) < 1e-6
+
+    # Bias op 'b' verandert sim["Ta"] níét, maar trekt de vergeleken voorspelling omlaag.
+    house["rooms"]["b"]["sensor_outdoor_frac"] = 0.2
+    sim2 = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert sim2["Ta"]["b"] == pytest.approx(sim["Ta"]["b"], abs=1e-9)   # fysica intact
+    res_b = am._residuals(house, params, tl, seed, {"b": actual["b"]}, {"b"})
+    assert all(r < 0 for r in res_b)                       # systematisch te laag
+    assert min(res_b) < -0.5
+
+
 # ── 6. openings_at ───────────────────────────────────────────────────────────────────
 
 def test_openings_at_timeline():

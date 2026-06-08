@@ -757,15 +757,43 @@ def vec_to_params(vec: list[float], keys: list[tuple], base: dict) -> dict:
     return p
 
 
+def _sensor_temp(ta: float | None, t_out: float | None, frac: float) -> float | None:
+    """Wat een sensor leest die (deels) op de buitenmuur zit: een blend van de échte
+    luchttemp `ta` en de buitentemp `t_out`. Een tado-voeler vlak op de exterieurmuur leest
+    een fractie `frac` richting de (koude/warme) wand-/buitenkant i.p.v. zuiver de kamerlucht
+    (zie `sensor_outdoor_frac` per kamer in house_model.json). frac=0 → ongewijzigd.
+
+    Dit is een meet-laag, niet de fysica: het laat de luchtknoop de wáre kamertemp blijven
+    terwijl de fit tegen de gebiasde sensor vergelijkt — zo hoeft de kalibratie ua_env niet
+    meer te maximaliseren om een naar-buiten-lekkende sensor na te bootsen. Mirror van
+    `wu_bias`: een vaste, gedocumenteerde constante, géén leerbare parameter (zou anders
+    degenereren met ua_env)."""
+    if ta is None or not frac or t_out is None:
+        return ta
+    return (1.0 - frac) * ta + frac * t_out
+
+
+def _to_sensor_series(house, timeline, rid, pred: list[tuple]) -> list[tuple]:
+    """Map een voorspelde luchttemp-reeks (t, Ta) naar wat de sensor van die kamer zou
+    lezen, per stap met de bijbehorende buitentemp. No-op voor kamers zonder bias."""
+    frac = house.get("rooms", {}).get(rid, {}).get("sensor_outdoor_frac", 0.0)
+    if not frac:
+        return pred
+    tout = {s["t"]: s["T_out"] for s in timeline}
+    return [(t, _sensor_temp(v, tout.get(t), frac)) for t, v in pred]
+
+
 def _residuals(house, params, timeline, seed, actual, rooms_set) -> list[float]:
     """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
-    voorspelde reeks)."""
+    voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
+    bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt."""
     sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set)
     res = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
         if not pred:
             continue
+        pred = _to_sensor_series(house, timeline, rid, pred)
         for ts, val in samples:
             res.append(_interp(pred, ts) - val)
     return res
@@ -1169,7 +1197,10 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         wd_key = room.get("from_window_data")
         rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
         pred_series = sim["series"].get(rid, [])
-        pred_now = sim["Ta"].get(rid)
+        ta_now = sim["Ta"].get(rid)            # échte (debiased) luchttemp van het model
+        frac = room.get("sensor_outdoor_frac", 0.0)
+        t_out_now = last_step["T_out"] if last_step else None
+        pred_now = _sensor_temp(ta_now, t_out_now, frac)   # wat de sensor leest → vergelijkbaar met tado
         act_now = rd.get("inside")
         err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
         fresh_ach = None
@@ -1185,6 +1216,9 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "from_window_data": wd_key,
             "actual_temp": act_now,
             "predicted_temp": round(pred_now, 2) if pred_now is not None else None,
+            # Debiased wáre luchttemp (vóór de buitenmuur-sensorbias); == predicted_temp als frac=0.
+            "predicted_air_temp": round(ta_now, 2) if ta_now is not None else None,
+            "sensor_outdoor_frac": frac,
             "predicted_mass_temp": round(sim["Tm"].get(rid), 2) if sim["Tm"].get(rid) is not None else None,
             "error": round(err, 2) if err is not None else None,
             "humidity": rd.get("humidity"),
@@ -1192,12 +1226,13 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "solar_w": round(last_step["irr"].get(rid, 0.0), 0) if last_step else None,
             # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
             # twee tussenwoning-termen, voor inzicht op het dashboard.
-            "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - pred_now), 0)
-                        if pred_now is not None else None),
+            "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - ta_now), 0)
+                        if ta_now is not None else None),
             "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * int_profile_now, 0),
             "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
             "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
-            "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)} for t, v in pred_series],
+            "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
+                                 for t, v in _to_sensor_series(house, timeline, rid, pred_series)],
             "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
             "params": params.get(rid, {}),
         }

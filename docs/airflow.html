@@ -277,6 +277,15 @@ function render() {
       <span>· · verbinding (deur)</span>
       <span>dikte &amp; snelheid ∝ debiet</span>
     </div>
+    <div class="chips" style="margin-top:6px;">
+      <span style="color:var(--sun)">☀ zon erin</span>
+      <span style="color:var(--rain)">❄ warmte eruit</span>
+      <span style="color:var(--clay)">🔥 warmte erin (van buiten)</span>
+      <span>·</span>
+      <span>rand:
+        <span style="display:inline-block;width:54px;height:9px;vertical-align:middle;border-radius:5px;border:1px solid #2a241b33;background:linear-gradient(90deg,rgb(47,111,176),rgb(150,144,130),rgb(214,51,42));"></span>
+        afkoelend → stabiel → opwarmend</span>
+    </div>
   </div></div>`;
 
   // — Temperatuur: voorspeld vs werkelijk —
@@ -301,9 +310,10 @@ function render() {
       </div>
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
-        <span class="ctl-sub">zon</span><span class="num">${fmt(r.solar_w,0)} W</span>
+        <span class="ctl-sub">zon in</span><span class="num">${fmt(r.solar_w,0)} W</span>
         <span class="ctl-sub">RV</span><span class="num">${fmt(r.humidity,0)}%</span>
       </div>
+      ${energyRow(r)}
       ${r.predicted_mass_temp!=null?`<div class="ctl-sub" style="margin-top:8px;">massaknoop (wanden) ${r.predicted_mass_temp.toFixed(1)}°C · comfort ${r.comfort_low??"?"}–${r.comfort_high??"?"}°</div>`:""}
     </div>`;
   });
@@ -369,7 +379,48 @@ function zoneFill(r) {
   return "rgba(61,90,58,0.13)";
 }
 
-function floorPlanSVG(d) {
+// Randkleur = richting van de temperatuurverandering (trend_c_per_h). Fel rood = opwarmend,
+// fel blauw = afkoelend, grijs ertussenin (geen verandering). De vulling toont de toestand
+// (warm/koel t.o.v. comfort); de rand toont waar het naartoe gáát — twee aparte signalen.
+const TREND_FULL = 0.8;                       // °C/uur → volle verzadiging van de rand
+const TREND_GRAY = [150,144,130], TREND_WARM = [214,51,42], TREND_COOL = [47,111,176];
+function lerpColor(a, b, t) {
+  const r=Math.round(a[0]+(b[0]-a[0])*t), g=Math.round(a[1]+(b[1]-a[1])*t), bl=Math.round(a[2]+(b[2]-a[2])*t);
+  return `rgb(${r},${g},${bl})`;
+}
+function outlineColor(trend) {
+  if (trend==null || isNaN(trend)) return null;               // geen sensor → standaard rand
+  const x = Math.max(-1, Math.min(1, trend / TREND_FULL));
+  return x>=0 ? lerpColor(TREND_GRAY, TREND_WARM, x) : lerpColor(TREND_GRAY, TREND_COOL, -x);
+}
+function outlineWidth(trend) {
+  return trend==null ? 1.4 : 2.0 + 1.8*Math.min(1, Math.abs(trend)/TREND_FULL);
+}
+// Netto warmte-uitwisseling met buiten (W): schil-conductie + ventilatie. − = energie verlaat
+// de kamer (koeling), + = de buitenlucht warmt de kamer op. De tegenhanger van de zonwinst.
+function outsideNet(r) {
+  if (r.env_w==null && r.vent_w==null) return null;
+  return (r.env_w||0) + (r.vent_w||0);
+}
+function trendText(t) {
+  if (t==null || isNaN(t)) return "—";
+  const a = t>0.03 ? "↑" : (t<-0.03 ? "↓" : "→");
+  return `${a} ${t>0?"+":""}${t.toFixed(2)}°/u`;
+}
+function energyRow(r) {
+  const net = outsideNet(r);
+  const oc = outlineColor(r.trend_c_per_h) || COLORS.inkSoft;
+  const outTxt = net==null ? "—"
+    : (net < 0 ? `<span style="color:${COLORS.rain}">❄ ${Math.round(-net)} W eruit</span>`
+    : (net > 0 ? `<span style="color:${COLORS.clay}">🔥 ${Math.round(net)} W erin</span>` : "0 W"));
+  return `<div class="chips" style="margin-top:6px;">
+      <span class="ctl-sub">naar buiten</span><span class="num">${outTxt}</span>
+      <span class="ctl-sub">richting</span><span class="num" style="color:${oc};font-weight:600;">${trendText(r.trend_c_per_h)}</span>
+    </div>`;
+}
+
+function floorPlanSVG(d, opts={}) {
+  const live = opts.live !== false;           // false = speeltuin: temp/energie niet herrekend
   const meta = d.house_meta || {};
   const zones = Object.assign({}, meta.rooms||{}, meta.junctions||{});
   const ids = Object.keys(zones).filter(z => Array.isArray(zones[z].plan_xy));
@@ -413,7 +464,10 @@ function floorPlanSVG(d) {
   // Zones (kamers + junctie/trap), getint op temperatuur.
   ids.forEach(id => {
     const r=td(id), z=zones[id], rc=rectOf(id), x=rc.x, y=rc.y, tall=planH(id)>1;
-    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${rc.w}" height="${rc.h}" rx="7" fill="${zoneFill(r)}" stroke="${COLORS.ink}" stroke-width="1.4"/>`;
+    // Rand = richting van de temperatuurverandering (rood opwarmend ↔ blauw afkoelend);
+    // in de speeltuin niet herrekend → standaard rand.
+    const oc = live ? outlineColor(r.trend_c_per_h) : null;
+    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${rc.w}" height="${rc.h}" rx="7" fill="${zoneFill(r)}" stroke="${oc||COLORS.ink}" stroke-width="${oc?outlineWidth(r.trend_c_per_h).toFixed(1):'1.4'}"/>`;
     s += `<rect x="${x}" y="${y}" width="${rc.w}" height="20" rx="7" fill="#2a241b08"/>`;
     s += `<text x="${x+12}" y="${y+14}" font-size="11" font-family="'Cormorant Garamond',serif" font-style="italic" fill="${COLORS.ink}">${z.label||id}</text>`;
     s += `<text x="${x+rc.w-8}" y="${y+14}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="end">${tall?'bg→2e':floorTag(z.floor??0)}</text>`;
@@ -422,6 +476,18 @@ function floorPlanSVG(d) {
       s += `<text x="${x+12}" y="${y+70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp!=null?' · tado '+fmt(r.actual_temp)+'°':''}</text>`;
       s += `<text x="${x+12}" y="${y+88}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach,1)}${r.ach>=1?' 🌬':''}</text>`;
       if (r.solar_w>40) s += `<text x="${x+rc.w-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
+      if (live) {
+        // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
+        // + = buitenlucht warmt 'm op. De tegenhanger van de zon-instroom hierboven.
+        const net = outsideNet(r);
+        if (net!=null && net<-40)
+          s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.rain}">❄ ${fmt(-net,0)} W naar buiten</text>`;
+        else if (net!=null && net>40)
+          s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.clay}">🔥 ${fmt(net,0)} W van buiten</text>`;
+        // Trend-uitlezing rechtsonder, in dezelfde kleur als de rand.
+        if (r.trend_c_per_h!=null)
+          s += `<text x="${x+rc.w-10}" y="${y+106}" font-size="9" fill="${oc||COLORS.inkSoft}" text-anchor="end">${trendText(r.trend_c_per_h)}</text>`;
+      }
     } else {
       s += `<text x="${x+12}" y="${y+54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
     }
@@ -877,7 +943,7 @@ function sandboxRecompute() {
   const simData = { house_meta: meta, rooms: d.rooms, flows,
     weather: { wind_dir: sb.wind_dir, wind_speed: sb.wind_speed,
                sun_az: (d.weather||{}).sun_az, sun_el: (d.weather||{}).sun_el } };
-  document.getElementById("sandbox-plan").innerHTML = floorPlanSVG(simData);
+  document.getElementById("sandbox-plan").innerHTML = floorPlanSVG(simData, {live:false});
   // Uitlezing: per kamer ventilatievoud (ACH), verse buitenlucht (m³/u) en koeling (W).
   let totalFresh = 0, totalCool = 0, rows = "";
   Object.entries(rooms).forEach(([rid, rm]) => {

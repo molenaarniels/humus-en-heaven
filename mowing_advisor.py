@@ -39,6 +39,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
+from gist_io import read_json as gist_read_json
 from notify import send_telegram
 
 # =============================================================================
@@ -108,17 +109,8 @@ def load_mowings_from_gist() -> dict:
     if not gist_id:
         print("[mowings] geen GIST_ID, overslaan")
         return {}
-    headers = {"Authorization": f"token {token}"} if token else {}
-    try:
-        r = requests.get(f"https://api.github.com/gists/{gist_id}",
-                         headers=headers, timeout=10)
-        r.raise_for_status()
-        files = r.json().get("files", {})
-        content = files.get("mowings.json", {}).get("content", "{}")
-        raw = json.loads(content)
-    except Exception as e:
-        print(f"[mowings] kon niet laden: {e}")
-        return {}
+    raw = gist_read_json(gist_id, "mowings.json", token=token,
+                         default={}, label="mowings")
 
     out = {}
     for key, val in raw.items():

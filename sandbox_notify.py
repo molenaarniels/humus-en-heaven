@@ -44,9 +44,12 @@ MIN_TEMP_LUCHTEN    = 7    # °C tmax minimaal nodig om luchten zinvol te achten
 def load_state() -> dict:
     defaults = {"status": "dicht", "last_updated": None, "last_notification": None}
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            data = json.load(f)
-        return {**defaults, **data}
+        try:
+            with open(STATE_FILE) as f:
+                data = json.load(f)
+            return {**defaults, **data}
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[state] {STATE_FILE} onleesbaar ({e}), terug naar defaults")
     return defaults
 
 

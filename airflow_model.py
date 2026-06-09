@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
+from gist_io import read_json as gist_read_json
 from wu_bias import correct_temp
 from window_advisor import convert_rh, RH_HARD_CAP, RH_COMFORT, ROOM_COMFORT
 
@@ -1064,18 +1065,9 @@ def load_openings_log() -> list[dict]:
     if not gist_id or not token:
         print("[openings] geen GIST_ID/GIST_TOKEN — lege log.")
         return []
-    try:
-        r = requests.get(f"https://api.github.com/gists/{gist_id}",
-                         headers={"Authorization": f"Bearer {token}",
-                                  "Accept": "application/vnd.github+json"}, timeout=20)
-        r.raise_for_status()
-        content = (r.json().get("files", {}).get(OPENINGS_FILE, {}) or {}).get("content")
-        if not content:
-            return []
-        return json.loads(content).get("log", [])
-    except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
-        print(f"[openings] log lezen mislukt: {e}")
-        return []
+    data = gist_read_json(gist_id, OPENINGS_FILE, token=token,
+                          default={}, label="openings")
+    return data.get("log", []) if isinstance(data, dict) else []
 
 
 def fetch_weather() -> dict:

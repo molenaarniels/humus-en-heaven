@@ -357,14 +357,20 @@ Fully isolated: the **only** dependency is the read-only consumption of `docs/wi
 
 ---
 
-## Shared module: `wu_bias.py`
+## Shared modules: `wu_bias.py`, `notify.py`, `gist_io.py`
 
-The only cross-project Python module (everything else is self-contained). Provides the WU
-station's radiative temperature-bias correction — `correct_temp(temp_c, solar_wm2)` and
-`bias_estimate(solar_wm2)` plus the calibrated `SOLAR_BIAS_SLOPE` (°C per W/m², source-agnostic
-driver). Imported by **soil_model.py** (Tmax/Tmean on WU days) and **window_advisor.py** (outside-now
-on WU readings). Calibrated by Project 7. Zero third-party deps. See the soil "WU stralingsbiascorrectie"
-bullet and Project 7 for the full picture.
+Three small cross-project Python modules (everything else is self-contained):
+- **`wu_bias.py`** — the WU station's radiative temperature-bias correction — `correct_temp(temp_c, solar_wm2)` and
+  `bias_estimate(solar_wm2)` plus the calibrated `SOLAR_BIAS_SLOPE` (°C per W/m², source-agnostic
+  driver). Imported by **soil_model.py** (Tmax/Tmean on WU days) and **window_advisor.py** (outside-now
+  on WU readings). Calibrated by Project 7. Zero third-party deps. See the soil "WU stralingsbiascorrectie"
+  bullet and Project 7 for the full picture.
+- **`notify.py`** — shared Telegram sender (`send_telegram`, transient-failure retry, never raises) plus
+  `sanitize_error(e)`: secret-safe exception rendering (scrubs `apiKey=`/token query params and Telegram
+  bot tokens out of URLs in exception text). **Always** print/forward exceptions from WU/Telegram calls
+  via `sanitize_error` — never raw `{e}` — because the credential sits in the request URL.
+- **`gist_io.py`** — shared **read-only** Gist helpers (`read_file` raises, `read_json` is graceful).
+  Gist *writes* deliberately stay per-project (see ground rule on Gist write logic).
 
 ---
 

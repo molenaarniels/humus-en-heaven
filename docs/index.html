@@ -17,16 +17,15 @@
 <title>Humus & Heaven · Utrecht Oost</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
 <!--
-  TODO (security): add SRI integrity= attributes to the two scripts below.
-  Run locally:
-    curl -sSL https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js \
-      | openssl dgst -sha384 -binary | openssl base64 -A
-    curl -sSL https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js \
-      | openssl dgst -sha384 -binary | openssl base64 -A
-  Then add integrity="sha384-<hash>" to each tag.
+  SRI: hashes berekend uit de npm-tarballs (registry.npmjs.org) — jsDelivr
+  serveert package-bestanden byte-identiek. chart.umd.js (al geminified in het
+  package) i.p.v. chart.umd.min.js: dat laatste bestaat niet in het package en
+  is jsDelivr's eigen auto-minify, waarvan de bytes niet onafhankelijk te
+  pinnen zijn. Bij een versie-bump: nieuwe tarball → openssl dgst -sha384
+  -binary | openssl base64 -A → integrity bijwerken (in alle dashboards).
 -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" integrity="sha384-oNtu+d18330MVFpltUTve1DatxCkkctlpA2AC3GulbVFOSqhHdDat3qHse/Lbuek" crossorigin="anonymous"></script>
 <style>
   :root {
     --parchment: #f3ecd9;
@@ -1024,7 +1023,10 @@ function updateWaterLog() {
   if (!log) return;
   const irr = state.irrigations || {};
   const meta = irr._meta || {};
-  const entries = Object.keys(meta).sort((a, b) => b.localeCompare(a)).slice(0, 8);
+  // Alleen strikte YYYY-MM-DD-keys renderen: de log komt uit de Gist en gaat
+  // via innerHTML het DOM in — een misvormde key mag geen HTML/JS injecteren.
+  const entries = Object.keys(meta).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort((a, b) => b.localeCompare(a)).slice(0, 8);
   if (entries.length === 0) {
     log.innerHTML = '<div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Geen ingevoerd.</div>';
     return;
@@ -1036,10 +1038,17 @@ function updateWaterLog() {
     if (m.minShrubs > 0) parts.push(`Struiken ${m.minShrubs}min (${m.mmShrubs}mm)`);
     return `<div class="log-entry">
       <span>${date} · ${parts.join(' · ')}</span>
-      <span class="rm" onclick="removeIrrigation('${date}')">×</span>
+      <span class="rm" data-date="${date}">×</span>
     </div>`;
   }).join('');
 }
+
+// Gedelegeerde listener i.p.v. inline onclick met geïnterpoleerde data:
+// data hoort nooit als code in een handler-string te belanden.
+document.addEventListener("click", (e) => {
+  const rm = e.target.closest("#water-log .rm[data-date]");
+  if (rm) removeIrrigation(rm.dataset.date);
+});
 
 async function removeIrrigation(date) {
   if (!confirm(`Irrigatie van ${date} verwijderen?`)) return;

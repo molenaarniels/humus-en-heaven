@@ -16,8 +16,8 @@
 ">
 <title>Grasmaai-adviseur · Humus &amp; Heaven</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" integrity="sha384-oNtu+d18330MVFpltUTve1DatxCkkctlpA2AC3GulbVFOSqhHdDat3qHse/Lbuek" crossorigin="anonymous"></script>
 <style>
   :root {
     --parchment: #f3ecd9; --parchment-deep: #e8dec3;
@@ -473,15 +473,25 @@ async function triggerWorkflow() {
 
 function updateMowLog() {
   const log = document.getElementById("mow-log");
-  const dates = Object.keys(state.mowings).sort((a,b) => b.localeCompare(a)).slice(0, 8);
+  // Alleen strikte YYYY-MM-DD-keys renderen: de log komt uit de Gist en gaat
+  // via innerHTML het DOM in — een misvormde key mag geen HTML/JS injecteren.
+  const dates = Object.keys(state.mowings).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort((a,b) => b.localeCompare(a)).slice(0, 8);
   if (dates.length === 0) {
     log.innerHTML = '<div style="color:var(--ink-soft);font-style:italic;padding:6px 0;">Nog niets gelogd.</div>';
     return;
   }
   log.innerHTML = dates.map(date =>
-    `<div class="log-entry"><span>${date} · ${state.mowings[date].length_mm}mm</span><span class="rm" onclick="removeMow('${date}')">×</span></div>`
+    `<div class="log-entry"><span>${date} · ${state.mowings[date].length_mm}mm</span><span class="rm" data-date="${date}">×</span></div>`
   ).join('');
 }
+
+// Gedelegeerde listener i.p.v. inline onclick met geïnterpoleerde data:
+// data hoort nooit als code in een handler-string te belanden.
+document.addEventListener("click", (e) => {
+  const rm = e.target.closest("#mow-log .rm[data-date]");
+  if (rm) removeMow(rm.dataset.date);
+});
 
 async function removeMow(date) {
   if (!confirm(`Maaibeurt van ${date} verwijderen?`)) return;

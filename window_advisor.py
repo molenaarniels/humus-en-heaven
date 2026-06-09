@@ -34,7 +34,8 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from notify import send_telegram
+import gist_io
+from notify import sanitize_error, send_telegram
 
 import requests
 
@@ -145,18 +146,9 @@ def _gist_env():
 
 
 def gist_read_file(filename: str) -> str | None:
+    # Raist bewust bij netwerk-/HTTP-fouten: zonder token-file geen run.
     gist_id, token = _gist_env()
-    r = requests.get(
-        f"https://api.github.com/gists/{gist_id}",
-        headers={"Authorization": f"Bearer {token}",
-                 "Accept": "application/vnd.github+json"},
-        timeout=20,
-    )
-    r.raise_for_status()
-    files = r.json().get("files", {})
-    if filename not in files:
-        return None
-    return files[filename].get("content")
+    return gist_io.read_file(gist_id, filename, token=token, timeout=20)
 
 
 def gist_write_files(files: dict[str, str]) -> None:
@@ -277,7 +269,8 @@ def fetch_wu_current_temp() -> tuple[float | None, float | None, float | None]:
         return ((obs.get("metric", {}) or {}).get("temp"),
                 obs.get("solarRadiation"), obs.get("humidity"))
     except Exception as e:
-        print(f"[WU] current call failed: {e}")
+        # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+        print(f"[WU] current call failed: {sanitize_error(e)}")
         return None, None, None
 
 

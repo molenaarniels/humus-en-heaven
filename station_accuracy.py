@@ -36,7 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
-from notify import send_telegram
+from notify import sanitize_error, send_telegram
 
 UTRECHT_LAT = 52.0907
 UTRECHT_LON = 5.1214
@@ -92,7 +92,8 @@ def fetch_wu_hourly(station_id: str, api_key: str, days: int) -> Dict[str, dict]
                     "solar": obs.get("solarRadiationHigh"),
                 }
         except Exception as e:
-            print(f"[WU] {d} failed: {e}")
+            # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+            print(f"[WU] {d} failed: {sanitize_error(e)}")
     print(f"[WU] {len(out)} uurwaarnemingen over {days} dagen")
     return out
 

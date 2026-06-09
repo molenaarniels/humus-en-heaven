@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from notify import sanitize_error
 from wu_bias import bias_estimate, correct_temp
 
 # --- Locatie & bodem ---
@@ -627,7 +628,8 @@ def fetch_wunderground_current(station_id: str, api_key: str) -> Optional[Dict]:
             "precip": precip,
         }
     except Exception as e:
-        print(f"[WU] current call failed: {e}")
+        # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+        print(f"[WU] current call failed: {sanitize_error(e)}")
         return None
 
 
@@ -669,7 +671,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                 })
             history_ok = bool(results)
     except Exception as e:
-        print(f"[WU] range call failed: {e}")
+        print(f"[WU] range call failed: {sanitize_error(e)}")
 
     if not history_ok:
         print("[WU] falling back to per-day...")
@@ -700,7 +702,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
                     "wu_solar_peak": obs.get("solarRadiationHigh"),
                 })
             except Exception as e:
-                print(f"[WU] {d} failed: {e}")
+                print(f"[WU] {d} failed: {sanitize_error(e)}")
 
     # Today's accumulatieve regen via current-endpoint. Overschrijft via de
     # merge alleen `precip` (andere velden zijn None) — Tmax/Tmin/etc. voor
@@ -756,7 +758,8 @@ def apply_et0_and_balance(series: List[Dict],
                 u2=d["u2"], Rs=d["Rs"], elev=UTRECHT_ELEV,
                 lat_rad=lat_rad, doy=doy,
             ), 2)
-        except Exception:
+        except Exception as e:
+            print(f"[ET0] {d.get('date')}: {type(e).__name__}: {e}")
             d["ET0"] = None
     for d in series:
         if d["ET0"] is None:

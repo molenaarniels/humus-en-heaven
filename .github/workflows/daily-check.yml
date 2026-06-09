@@ -14,9 +14,18 @@ on:
 permissions:
   contents: write
 
+# Eén run tegelijk: een handmatige dispatch tijdens de 06:00-cron zou anders
+# tegelijk met die run docs/data.json committen.
+concurrency:
+  group: daily-check
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    # API-calls + commit duren normaal <5 min; zonder cap houdt een hangende
+    # HTTP-call de runner 6 uur (GitHub-default) vast.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -48,5 +57,18 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "data: daily refresh $(date -u +%Y-%m-%d)"
-            git push
+            # De window/airflow-loops committen de hele dag door naar main —
+            # zonder rebase kan deze push racen en faalt de dagelijkse update
+            # stilletjes. data.json wordt elke run volledig opnieuw gegenereerd,
+            # dus bij conflict wint onze verse versie (-X theirs, zie de
+            # uitleg in window-notify.yml). Dit draait één keer per dag:
+            # falen moet hier juist hard en zichtbaar zijn (exit 1).
+            git rebase --abort 2>/dev/null || true
+            if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+              git push
+            else
+              git rebase --abort 2>/dev/null || true
+              echo "::error::rebase failed, daily data not pushed"
+              exit 1
+            fi
           fi

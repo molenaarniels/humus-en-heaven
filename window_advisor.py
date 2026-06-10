@@ -34,6 +34,7 @@ import time
 from datetime import datetime, timezone
 
 import gist_io
+from http_util import get_json
 from notify import run_guarded, sanitize_error, send_telegram
 
 import requests
@@ -330,19 +331,8 @@ def fetch_open_meteo() -> dict:
         "timezone":     "Europe/Amsterdam",
         "forecast_days": 2,
     }
-    data = None
-    for attempt, delay in [(1, 0), (2, 3), (3, 8)]:
-        if delay:
-            time.sleep(delay)
-        try:
-            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            break
-        except requests.exceptions.RequestException as e:
-            print(f"[open-meteo] poging {attempt}/3 mislukt: {e}")
-            if attempt == 3:
-                raise
+    data = get_json("https://api.open-meteo.com/v1/forecast", params,
+                    timeout=20, label="open-meteo")
     cur = data.get("current") or {}
     current = cur.get("temperature_2m")
     h = data.get("hourly", {})

@@ -36,10 +36,10 @@ import json
 import os
 from datetime import date, datetime, timedelta, timezone
 
-import requests
 
 import shared_const
 from gist_io import read_json as gist_read_json
+from http_util import get_json
 from notify import run_guarded, send_telegram
 
 # =============================================================================
@@ -184,9 +184,7 @@ def fetch_gdd_fallback() -> list[dict]:
         "forecast_days": 7,
         "timezone": "Europe/Amsterdam",
     }
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    d = resp.json()["daily"]
+    d = get_json(url, params, timeout=10, label="open-meteo")["daily"]
     today = date.today().isoformat()
     days = []
     for i, day in enumerate(d["time"]):

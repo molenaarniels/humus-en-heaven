@@ -9,6 +9,7 @@ from typing import List, Dict, Optional
 
 import requests
 
+from http_util import get_json
 from notify import sanitize_error
 from shared_const import LATITUDE, LONGITUDE, TZ
 from wu_bias import bias_estimate, correct_temp
@@ -538,20 +539,20 @@ def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
 def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_FORECAST]
     hourly_vars = ["precipitation", "shortwave_radiation"] + sm_layer_keys
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
-        f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
-        f"precipitation_probability_max,"
-        f"shortwave_radiation_sum,et0_fao_evapotranspiration"
-        f"&hourly={','.join(hourly_vars)}"
-        f"&past_days={days_past}&forecast_days={days_forecast}"
-        f"&timezone=Europe%2FAmsterdam"
-    )
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    j = r.json()
+    params = {
+        "latitude": UTRECHT_LAT,
+        "longitude": UTRECHT_LON,
+        "daily": ("temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+                  "relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+                  "precipitation_probability_max,"
+                  "shortwave_radiation_sum,et0_fao_evapotranspiration"),
+        "hourly": ",".join(hourly_vars),
+        "past_days": days_past,
+        "forecast_days": days_forecast,
+        "timezone": "Europe/Amsterdam",
+    }
+    j = get_json("https://api.open-meteo.com/v1/forecast", params,
+                 timeout=20, label="open-meteo")
     d = j["daily"]
     today = datetime.now(TZ).date().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
@@ -870,19 +871,19 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
 def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
     """Haalt historische data op via de Open-Meteo archive API (ERA5 reanalysis)."""
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_ARCHIVE]
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
-        f"&start_date={start_date}&end_date={end_date}"
-        f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
-        f"shortwave_radiation_sum"
-        f"&hourly={','.join(sm_layer_keys)}"
-        f"&timezone=Europe%2FAmsterdam"
-    )
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    j = r.json()
+    params = {
+        "latitude": UTRECHT_LAT,
+        "longitude": UTRECHT_LON,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": ("temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+                  "relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+                  "shortwave_radiation_sum"),
+        "hourly": ",".join(sm_layer_keys),
+        "timezone": "Europe/Amsterdam",
+    }
+    j = get_json("https://archive-api.open-meteo.com/v1/archive", params,
+                 timeout=30, label="open-meteo-archive")
     d = j["daily"]
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
     out = []

@@ -24,10 +24,10 @@ State wordt automatisch bijgewerkt na elk advies.
 import json
 import os
 import sys
-import requests
 from datetime import datetime, timezone
 
 import shared_const
+from http_util import get_json
 from notify import run_guarded, send_telegram
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
@@ -77,9 +77,7 @@ def fetch_forecast() -> list[dict]:
         "forecast_days": 4,
         "timezone":      "Europe/Amsterdam",
     }
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()["daily"]
+    data = get_json(url, params, timeout=10, label="open-meteo")["daily"]
 
     days = []
     for i, d in enumerate(data["time"]):

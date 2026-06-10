@@ -38,11 +38,11 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-import requests
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
 import shared_const
 from gist_io import read_json as gist_read_json
+from http_util import get_json
 from notify import run_guarded
 from window_advisor import convert_rh, RH_HARD_CAP, ROOM_COMFORT
 
@@ -1085,19 +1085,8 @@ def fetch_weather() -> dict:
         "timezone": "Europe/Amsterdam",
         "past_days": 3, "forecast_days": 2,
     }
-    data = None
-    for attempt, delay in [(1, 0), (2, 3), (3, 8)]:
-        if delay:
-            time.sleep(delay)
-        try:
-            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=25)
-            r.raise_for_status()
-            data = r.json()
-            break
-        except requests.exceptions.RequestException as e:
-            print(f"[open-meteo] poging {attempt}/3 mislukt: {e}")
-            if attempt == 3:
-                raise
+    data = get_json("https://api.open-meteo.com/v1/forecast", params,
+                    timeout=25, label="open-meteo")
     h = data.get("hourly", {})
     times = [datetime.fromisoformat(t).replace(tzinfo=TZ) for t in h.get("time", [])]
     rows = []

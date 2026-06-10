@@ -18,6 +18,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import shared_const
+from http_util import get_json
 from notify import run_guarded, send_telegram
 
 # ---------------------------------------------------------------------------
@@ -112,9 +113,7 @@ def fetch_forecast(location):
         "timezone":     location["timezone"],
         "forecast_days": 1,
     }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return get_json(url, params, timeout=20, label="open-meteo")
 
 
 def cloud_corrected_uv(uv_clear_sky, cloud_cover_pct):
@@ -353,9 +352,7 @@ def fetch_pollen(location):
         "forecast_days": 1,
     }
     try:
-        r = requests.get(POLLEN_API_URL, params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return get_json(POLLEN_API_URL, params, timeout=20, label="pollen")
     except requests.RequestException:
         return None
 

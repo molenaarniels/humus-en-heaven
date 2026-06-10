@@ -22,8 +22,11 @@ Actions maskeert secrets in de eigen logs, maar niet in een doorgestuurd
 Telegram-bericht — daarom altijd via deze helper printen/doorsturen.
 """
 
+import html
 import os
 import re
+import sys
+import tempfile
 import time
 
 import requests
@@ -102,3 +105,55 @@ def send_telegram(
         if attempt < len(RETRY_DELAYS):
             time.sleep(RETRY_DELAYS[attempt])
     return False
+
+
+def _counter_path(name: str, counter_file: str | None) -> str:
+    # RUNNER_TEMP overleeft de iteraties van de in-job kwartierloop (zelfde
+    # runner) en wordt per job schoon — precies de gewenste throttle-scope.
+    base = os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()
+    slug = re.sub(r"\W+", "_", name)
+    return counter_file or os.path.join(base, f"crash_counter_{slug}")
+
+
+def run_guarded(main_fn, name: str, *, chat_id: str | None = None,
+                fail_threshold: int = 1, counter_file: str | None = None) -> None:
+    """Top-level vangnet voor de runner-scripts: print een gesanitizede FATAL,
+    alerteer via Telegram en exit 1.
+
+    ``fail_threshold > 1`` is voor de kwartierloop-scripts: pas alerten na N
+    *opeenvolgende* crashes (teller in een file die de loop-iteraties binnen
+    één job-run overleeft), en alleen op de eerste overschrijding — een
+    transient API-hikje spamt dan niet, een echte storing alert precies één
+    keer. Een geslaagde run reset de teller. ``SystemExit`` (bewuste exits met
+    eigen melding, zoals de tado-auth-paden) passeert ongemoeid; onder
+    ``DRY_RUN=1`` wordt niet verzonden."""
+    counter = _counter_path(name, counter_file)
+    try:
+        main_fn()
+    except Exception as e:
+        err = sanitize_error(e)
+        print(f"FATAL: {err}", file=sys.stderr)
+        fails = 1
+        try:
+            with open(counter) as f:
+                fails = int(f.read().strip() or 0) + 1
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(counter, "w") as f:
+                f.write(str(fails))
+        except OSError:
+            pass
+        if fails == fail_threshold and os.environ.get("DRY_RUN") != "1":
+            suffix = f" ({fails}× op rij)" if fail_threshold > 1 else ""
+            # html.escape: excepties als '<Response [500]>' zouden anders de
+            # HTML-parse van Telegram breken en de alert laten mislukken.
+            send_telegram(f"⚠ <b>{html.escape(name)}</b> crashte{suffix}:\n"
+                          f"<code>{html.escape(err)}</code>",
+                          chat_id=chat_id)
+        sys.exit(1)
+    else:
+        try:
+            os.remove(counter)
+        except OSError:
+            pass

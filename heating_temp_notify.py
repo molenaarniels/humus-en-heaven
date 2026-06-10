@@ -8,7 +8,7 @@ and sends a Telegram reminder to set the living room thermostat.
 import os
 import random
 
-from notify import send_telegram
+from notify import run_guarded, send_telegram
 
 TEMP_MIN = 16.0
 TEMP_MAX = 19.5
@@ -35,4 +35,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_guarded(main, "verwarming")

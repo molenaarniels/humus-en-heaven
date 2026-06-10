@@ -34,13 +34,12 @@ Env vars (GitHub Secrets / vars):
 
 import json
 import os
-import sys
 from datetime import date, datetime, timedelta, timezone
 
 import requests
 
 from gist_io import read_json as gist_read_json
-from notify import send_telegram
+from notify import run_guarded, send_telegram
 
 # =============================================================================
 # Configuratie — alle tunables staan hier bovenaan.
@@ -654,12 +653,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"FATAL: {e}")
-        try:
-            send_telegram(f"⚠ <b>Grasmaai-adviseur</b> mislukt:\n<code>{e}</code>")
-        except Exception:
-            pass
-        sys.exit(1)
+    run_guarded(main, "Grasmaai-adviseur")

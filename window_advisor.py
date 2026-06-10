@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import gist_io
-from notify import sanitize_error, send_telegram
+from notify import run_guarded, sanitize_error, send_telegram
 
 import requests
 
@@ -946,4 +946,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # fail_threshold=3: kwartierloop — pas alerten bij ~45 min aanhoudende storing.
+    run_guarded(main, "window-advisor", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+                fail_threshold=3)

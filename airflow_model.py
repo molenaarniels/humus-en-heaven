@@ -43,6 +43,7 @@ import requests
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
 from gist_io import read_json as gist_read_json
+from notify import run_guarded
 from wu_bias import correct_temp
 from window_advisor import convert_rh, RH_HARD_CAP, RH_COMFORT, ROOM_COMFORT
 
@@ -1500,4 +1501,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # fail_threshold=3: kwartierloop — pas alerten bij ~45 min aanhoudende storing.
+    run_guarded(main, "airflow-twin", fail_threshold=3)

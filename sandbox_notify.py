@@ -27,7 +27,7 @@ import sys
 import requests
 from datetime import datetime, timezone
 
-from notify import send_telegram
+from notify import run_guarded, send_telegram
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
@@ -306,4 +306,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_guarded(main, "zandbak")

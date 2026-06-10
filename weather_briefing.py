@@ -12,13 +12,12 @@ only UV info is reported.
 """
 
 import os
-import sys
 import math
 import requests
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
-from notify import send_telegram
+from notify import run_guarded, send_telegram
 
 # ---------------------------------------------------------------------------
 # Config
@@ -463,4 +462,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_guarded(main, "weerbriefing", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"))

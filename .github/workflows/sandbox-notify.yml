@@ -48,10 +48,10 @@ jobs:
       - name: Python setup
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Installeer dependencies
-        run: pip install requests pytz
+        run: pip install -r requirements.txt
 
       - name: Bepaal mode
         id: mode
@@ -59,10 +59,9 @@ jobs:
           python3 << 'EOF'
           import os
           from datetime import datetime
-          import pytz
+          from zoneinfo import ZoneInfo
 
-          amsterdam = pytz.timezone("Europe/Amsterdam")
-          hour = datetime.now(amsterdam).hour
+          hour = datetime.now(ZoneInfo("Europe/Amsterdam")).hour
           event = os.environ.get("GITHUB_EVENT_NAME", "")
 
           if event == "workflow_dispatch":

@@ -26,6 +26,12 @@ on:
           - dicht
           - afgedekt
 
+# Eén run tegelijk: een handmatige dispatch (override) tijdens een cron-run
+# zou anders tegelijk sandbox_state.json committen.
+concurrency:
+  group: sandbox-notify
+  cancel-in-progress: false
+
 jobs:
   notify:
     runs-on: ubuntu-latest
@@ -108,5 +114,20 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sandbox_state.json docs/sandbox_state.json
-          git diff --cached --quiet || git commit -m "chore: update sandbox_state.json [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update sandbox_state.json [skip ci]"
+            # De window/airflow-loops committen elk kwartier naar main — zonder
+            # rebase raced deze push en faalt hij. De state wordt elke run
+            # volledig opnieuw geschreven, dus bij conflict wint onze verse
+            # versie (-X theirs). Falen moet hard en zichtbaar zijn (exit 1).
+            git rebase --abort 2>/dev/null || true
+            if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+              git push
+            else
+              git rebase --abort 2>/dev/null || true
+              echo "::error::rebase failed, sandbox state not pushed"
+              exit 1
+            fi
+          fi

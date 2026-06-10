@@ -87,7 +87,7 @@ def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
     try:
         series = fetch_open_meteo_archive(start_date, end_date)
     except Exception as e:
-        print(f"[bootstrap] archive fetch mislukt: {e}")
+        print(f"[bootstrap] archive fetch mislukt: {sanitize_error(e)}")
         return {}
 
     apply_et0_and_balance(series, irrigations_raw)
@@ -130,7 +130,7 @@ def send_email(subject: str, body_html: str) -> bool:
         print("[email] ✓ verzonden")
         return True
     except Exception as e:
-        print(f"[email] fout: {e}")
+        print(f"[email] fout: {sanitize_error(e)}")
         return False
 
 

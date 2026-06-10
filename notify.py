@@ -40,6 +40,9 @@ _SECRET_PATTERNS = (
     (re.compile(r"((?:api_key|token|key|access_token)=)[^&\s\"']+", re.IGNORECASE), r"\1***"),
     # Telegram bot token in the URL path: /bot<id>:<secret>/
     (re.compile(r"(/bot)[0-9]+:[A-Za-z0-9_-]+"), r"\1***"),
+    # Gist-ID in API-URLs: GIST_ID/TADO_GIST_ID zijn secrets en een requests-
+    # exceptie op een Gist-call bevat de volledige URL.
+    (re.compile(r"(gists/)[0-9a-f]{16,}", re.IGNORECASE), r"\1***"),
 )
 
 

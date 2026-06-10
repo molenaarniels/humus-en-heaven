@@ -829,9 +829,11 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
                 d["hasWU"] = True
             wu_days = sum(1 for d in om if d.get("hasWU"))
             if wu_days > 0:
-                source_note = f"Wunderground {station_id} ({wu_days}d) + Open-Meteo solar"
+                # Géén station-ID in de publieke data.json — WU_STATION_ID is een secret.
+                source_note = f"Wunderground PWS ({wu_days}d) + Open-Meteo solar"
         except Exception as e:
-            print(f"[WARN] WU merge failed: {e}")
+            # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+            print(f"[WARN] WU merge failed: {sanitize_error(e)}")
 
     apply_et0_and_balance(om, irrigations, seed_theta=seed_theta)
 

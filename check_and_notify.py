@@ -23,11 +23,11 @@ from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
-import requests
-
-from notify import send_telegram
-from soil_model import (apply_et0_and_balance, assess_status, build_full_dataset,
-                        build_monthly_totals_from_days, fetch_open_meteo_archive)
+from gist_io import read_json as gist_read_json
+from notify import sanitize_error, send_telegram
+from soil_model import (SOIL_FC, SOIL_WP, apply_et0_and_balance, assess_status,
+                        build_full_dataset, build_monthly_totals_from_days,
+                        fetch_open_meteo_archive)
 
 # =============================================================================
 
@@ -57,6 +57,14 @@ def load_previous_theta() -> dict:
         return {}
     te = prev.get("theta_end") or {}
     seed = {k: te[k] for k in ("lawn", "shrubs") if te.get(k) is not None}
+    # Een corrupte/handmatig bewerkte data.json mag de waterbalans niet met
+    # een onmogelijke θ seeden — clamp naar het fysieke bereik [WP, FC].
+    for k, v in seed.items():
+        if not isinstance(v, (int, float)) or not (SOIL_WP <= v <= SOIL_FC):
+            clamped = min(SOIL_FC, max(SOIL_WP, v)) if isinstance(v, (int, float)) else None
+            print(f"[seed] ongeldige θ voor {k}: {v!r} → {clamped if clamped is not None else 'genegeerd'}")
+            seed[k] = clamped
+    seed = {k: v for k, v in seed.items() if v is not None}
     if seed:
         print(f"[seed] vorige θ as of {te.get('as_of')}: "
               f"lawn={seed.get('lawn')}, shrubs={seed.get('shrubs')}")
@@ -95,19 +103,10 @@ def load_irrigations_from_gist() -> dict:
     if not gist_id:
         print("[irrigations] geen GIST_ID, overslaan")
         return {}
-    headers = {"Authorization": f"token {token}"} if token else {}
-    try:
-        r = requests.get(f"https://api.github.com/gists/{gist_id}",
-                         headers=headers, timeout=10)
-        r.raise_for_status()
-        files = r.json().get("files", {})
-        content = files.get("irrigations.json", {}).get("content", "{}")
-        data = json.loads(content)
-        print(f"[irrigations] {len(data)} events geladen")
-        return data
-    except Exception as e:
-        print(f"[irrigations] kon niet laden: {e}")
-        return {}
+    data = gist_read_json(gist_id, "irrigations.json", token=token,
+                          default={}, label="irrigations")
+    print(f"[irrigations] {len(data)} events geladen")
+    return data
 
 
 def send_email(subject: str, body_html: str) -> bool:
@@ -314,10 +313,12 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"FATAL: {e}")
-        # Stuur failure Telegram
+        # sanitize_error: een requests-exceptie bevat de volledige URL incl.
+        # apiKey — GitHub maskeert dat in de Actions-log, Telegram niet.
+        err = sanitize_error(e)
+        print(f"FATAL: {err}")
         try:
-            send_telegram(f"⚠ <b>Humus &amp; Heaven</b> check mislukt:\n<code>{e}</code>")
-        except Exception:
-            pass
+            send_telegram(f"⚠ <b>Humus &amp; Heaven</b> check mislukt:\n<code>{err}</code>")
+        except Exception as te:
+            print(f"FATAL: failure-notificatie zelf mislukt: {sanitize_error(te)}", file=sys.stderr)
         sys.exit(1)

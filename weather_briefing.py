@@ -14,7 +14,7 @@ only UV info is reported.
 import os
 import math
 import requests
-from datetime import datetime, date
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from notify import run_guarded, send_telegram

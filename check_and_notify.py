@@ -18,7 +18,7 @@ Benodigde env vars (in GitHub Secrets):
 import json
 import os
 import smtplib
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -247,7 +247,7 @@ def main():
         # Ga toch door met Open-Meteo only
     force = os.getenv("FORCE_NOTIFY", "").lower() in ("1", "true", "yes")
 
-    print(f"→ Irrigaties laden uit Gist...")
+    print("→ Irrigaties laden uit Gist...")
     irrigations_raw = load_irrigations_from_gist()
 
     # Bootstrap maandtotalen als er nog geen koude opslag is

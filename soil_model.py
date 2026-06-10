@@ -4,7 +4,7 @@ Shared between the GitHub Action and the data-builder for the static site.
 """
 import calendar as _calendar
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 

@@ -36,7 +36,7 @@ import math
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -44,8 +44,7 @@ import requests
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
 from gist_io import read_json as gist_read_json
 from notify import run_guarded
-from wu_bias import correct_temp
-from window_advisor import convert_rh, RH_HARD_CAP, RH_COMFORT, ROOM_COMFORT
+from window_advisor import convert_rh, RH_HARD_CAP, ROOM_COMFORT
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -1148,13 +1147,14 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         sun_az, sun_el = sun_position(lat, lon, t.astimezone(timezone.utc))
         st = openings_at(log, t)            # gerapporteerde toestand op dit moment (incl. zonwering)
         irr = {}
-        for rid, room in house.get("rooms", {}).items():
+        for rid in house.get("rooms", {}):
             tot = 0.0
             for wid, w in house.get("windows", {}).items():
                 if w.get("room") != rid:
                     continue
                 shade = _shade_factor(wid, w, st)
-                I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,
+                # I = invallende straling op het glas (W/m²) — fysica-symbool.
+                I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,  # noqa: E741
                                       wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0),
                                       bool(w.get("diffuse_only", False)))
                 tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
@@ -1381,10 +1381,8 @@ def load_openings_log_cached() -> list[dict]:
     return _OPENINGS_CACHE
 
 
-# kleine datetime-helpers (vermijd timedelta-import-ruis bovenin)
-from datetime import timedelta as _td
 def _timedelta_h(h: float):
-    return _td(hours=h)
+    return timedelta(hours=h)
 
 
 def _interp_hourly(rows: list[dict], t: datetime, key: str) -> float:

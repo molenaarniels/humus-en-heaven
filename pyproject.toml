@@ -1,0 +1,15 @@
+# Alleen tooling-config; het project zelf is losse scripts, geen package.
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120          # cosmetisch; E501 staat toch uit
+
+[tool.ruff.lint]
+# Pragmatische set: echte fouten (E/F), warnings (W) en bug-vangers (B).
+# Geen UP/SIM/E501: die zouden een massale herschrijfronde afdwingen van
+# werkende, gevalideerde wetenschappelijke code — niet de bedoeling.
+select = ["E4", "E7", "E9", "F", "W", "B"]
+ignore = [
+  "E501",   # lange regels: formules + NL-commentaar
+  "B905",   # zip() zonder strict=: bestaand gedrag bewust zo gelaten
+]

@@ -22,7 +22,7 @@ async function loadData() {
   document.getElementById("banner-slot").innerHTML = "";
   document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
   try {
-    const res = await fetch(`mowing_data.json?t=${Date.now()}`);
+    const res = await fetch(bust("mowing_data.json"));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
     state.mowings = state.data.mowings || {};
@@ -251,7 +251,7 @@ async function saveMow() {
 }
 
 async function fetchGistMowings() {
-  return JSON.parse(await gistReadFileContent("mowings.json") || "{}");
+  return await gistReadJSON("mowings.json", {});
 }
 
 async function saveGistMowings(data) {

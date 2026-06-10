@@ -49,7 +49,7 @@ async function loadData() {
   document.getElementById("banner-slot").innerHTML = "";
   document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
   try {
-    const res = await fetch(`data.json?t=${Date.now()}`);
+    const res = await fetch(bust("data.json"));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
     state.irrigations = state.data.irrigations || {};
@@ -665,7 +665,7 @@ async function saveIrrigation() {
 }
 
 async function fetchGistIrrigations() {
-  return JSON.parse(await gistReadFileContent("irrigations.json") || "{}");
+  return await gistReadJSON("irrigations.json", {});
 }
 
 async function saveGistIrrigations(data) {

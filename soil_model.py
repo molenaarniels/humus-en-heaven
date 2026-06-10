@@ -6,16 +6,16 @@ import calendar as _calendar
 import math
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 
 from notify import sanitize_error
+from shared_const import LATITUDE, LONGITUDE, TZ
 from wu_bias import bias_estimate, correct_temp
 
 # --- Locatie & bodem ---
-UTRECHT_LAT = 52.0907
-UTRECHT_LON = 5.1214
+UTRECHT_LAT = LATITUDE
+UTRECHT_LON = LONGITUDE
 UTRECHT_ELEV = 5.0
 
 SOIL_FC = 0.20  # ophoogzand met kleicomponent, Utrecht Oost (Schildersbuurt)
@@ -444,7 +444,7 @@ def _today_rain_so_far(hourly: Optional[Dict], today_str: str) -> float:
     hourly-data ontbreekt. Open-Meteo levert tijden in Amsterdam tz."""
     if not hourly or "time" not in hourly or "precipitation" not in hourly:
         return 0.0
-    now_ams = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    now_ams = datetime.now(TZ)
     cutoff = now_ams.strftime("%Y-%m-%dT%H:00")
     total = 0.0
     for t, p in zip(hourly["time"], hourly["precipitation"]):
@@ -464,7 +464,7 @@ def _today_solar_fraction(hourly: Optional[Dict], today_str: str) -> float:
     ontbrekende data of voor zonsopkomst, 1 als de dag voorbij is."""
     if not hourly or "time" not in hourly or "shortwave_radiation" not in hourly:
         return 0.0
-    now_ams = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    now_ams = datetime.now(TZ)
     cutoff = now_ams.strftime("%Y-%m-%dT%H:00")
     so_far = 0.0
     full = 0.0
@@ -553,7 +553,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     r.raise_for_status()
     j = r.json()
     d = j["daily"]
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
@@ -637,7 +637,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
     """Haalt WU PWS history (afgesloten dagen) + current observatie voor
     today's accumulatieve precip. Probeert range-call eerst, dan per-dag
     fallback voor history."""
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date()
+    today = datetime.now(TZ).date()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
     url = (
@@ -911,7 +911,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
     kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
     maand wordt nooit bevroren.
     """
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     raw: Dict[str, Dict] = {}
     for d in days:
         if d.get("forecast") or d["date"] >= today:

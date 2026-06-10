@@ -38,6 +38,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
+import shared_const
 from gist_io import read_json as gist_read_json
 from notify import run_guarded, send_telegram
 
@@ -90,8 +91,8 @@ MOWING_DATA_PATH = os.getenv("MOWING_DATA_PATH", "docs/mowing_data.json")
 STATE_FILE = os.getenv("MOWING_STATE_FILE", "mowing_state.json")
 SOIL_MAX_AGE_H = 36.0
 
-LATITUDE = 52.0907
-LONGITUDE = 5.1214
+LATITUDE = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
 
 NL_DAYS = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
 NL_MONTHS = ["", "jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]

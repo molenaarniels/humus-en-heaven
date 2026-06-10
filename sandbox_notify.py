@@ -27,13 +27,14 @@ import sys
 import requests
 from datetime import datetime, timezone
 
+import shared_const
 from notify import run_guarded, send_telegram
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
 
-LATITUDE  = 52.0907
-LONGITUDE = 5.1214
+LATITUDE  = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
 
 RAIN_PROB_THRESHOLD = 30   # % kans → "regen verwacht"
 RAIN_MM_THRESHOLD   = 1.0  # mm → ook "regen verwacht"

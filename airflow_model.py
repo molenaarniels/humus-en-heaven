@@ -37,16 +37,16 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 import requests
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
+import shared_const
 from gist_io import read_json as gist_read_json
 from notify import run_guarded
 from window_advisor import convert_rh, RH_HARD_CAP, ROOM_COMFORT
 
-TZ = ZoneInfo("Europe/Amsterdam")
+TZ = shared_const.TZ
 
 # ── Bestanden ─────────────────────────────────────────────────────────────────────
 HOUSE_FILE     = os.getenv("HOUSE_MODEL_PATH", "house_model.json")
@@ -1403,8 +1403,9 @@ def _interp_hourly(rows: list[dict], t: datetime, key: str) -> float:
 #  Main
 # ════════════════════════════════════════════════════════════════════════════════════
 
-_LAT = 52.0907
-_LON = 5.1214
+# Defaults; de `location` in house_model.json overschrijft deze in main().
+_LAT = shared_const.LATITUDE
+_LON = shared_const.LONGITUDE
 
 
 def main():

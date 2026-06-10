@@ -17,20 +17,23 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import shared_const
 from notify import run_guarded, send_telegram
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
+# Waar ik nú ben — bewust hand-aanpasbaar (vakantiemodus): mag afwijken van
+# de vaste thuislocatie (HOME_COORDS) waartegen is_home() vergelijkt.
 LOCATION = {
-    "lat": 52.0907,
-    "lon": 5.1214,
+    "lat": shared_const.LATITUDE,
+    "lon": shared_const.LONGITUDE,
     "label": "Utrecht",
     "timezone": "Europe/Amsterdam",
 }
 
-HOME_COORDS = (52.0907, 5.1214)
+HOME_COORDS = (shared_const.LATITUDE, shared_const.LONGITUDE)
 HOME_RADIUS_KM = 10.0
 
 # Blocks for regular weekdays (Mon–Thu). weekdays: 0=Mon … 6=Sun

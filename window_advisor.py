@@ -32,13 +32,13 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import gist_io
 from notify import run_guarded, sanitize_error, send_telegram
 
 import requests
 
+import shared_const
 from wu_bias import correct_temp
 
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
@@ -119,9 +119,9 @@ PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken
 HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
 
 # ── Locatie (Utrecht) ──────────────────────────────────────────────────────────
-LATITUDE  = 52.0907
-LONGITUDE = 5.1214
-TZ        = ZoneInfo("Europe/Amsterdam")
+LATITUDE  = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
+TZ        = shared_const.TZ
 
 # ── tado endpoints ──────────────────────────────────────────────────────────────
 # Publieke device-flow client-id van de tado-app (algemeen bekend, geen geheim).

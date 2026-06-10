@@ -84,6 +84,11 @@ This repo contains three independent automation pipelines, all running on GitHub
 ### Frontend conventions
 - Vanilla HTML + Chart.js 4.4 — no frameworks, no build step
 - Cache-bust pattern: `data.json?t=${Date.now()}` — always keep this
+- **JS layout:** per-page script in `docs/js/<page>.js`; shared Gist/token/workflow-dispatch logic
+  in `docs/js/shared.js` (loaded *before* the page script on index/mowing/airflow — the writer pages).
+  CSP `script-src` has **no `unsafe-inline`**: never add inline `<script>` blocks or `onclick=`-style
+  attributes — wire events with `addEventListener`/delegation and `data-*` attributes.
+- CDN scripts carry SRI `integrity` hashes (computed from the npm tarballs); bump version → recompute.
 - Two zone columns side by side (gauge + recommendation + minutes advice)
 - "Ik heb water gegeven" modal: input in minutes → convert to mm → write to Gist via GitHub API → trigger workflow_dispatch
 

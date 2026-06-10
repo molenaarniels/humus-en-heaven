@@ -166,6 +166,39 @@ def gist_write_files(files: dict[str, str]) -> None:
 
 # ── tado auth (refresh-token flow, met rotatie-persistentie) ──────────────────────
 
+# Retry-schema voor het persisteren van de geroteerde refresh token. tado herroept
+# de oude token bij rotatie, dus één mislukte Gist-PATCH = keten gebroken =
+# handmatige re-bootstrap. De PATCH is idempotent → agressief retryen mag.
+TOKEN_PERSIST_DELAYS = (2, 4, 8, 16, 32)  # s — ~6 pogingen, ~62s worst case
+
+
+def _persist_rotated_token(new_refresh: str) -> None:
+    """Schrijf de geroteerde refresh token naar de Gist, met retry/backoff.
+
+    Bij definitief falen: Telegram-alert (de keten is dan mogelijk gebroken) en
+    doorgaan — de access token van déze run is nog geldig, dus advies + dashboard
+    kloppen nog. NOOIT de token zelf printen of doorsturen (publieke logs)."""
+    last_err: Exception | None = None
+    for attempt, delay in enumerate((0, *TOKEN_PERSIST_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            gist_write_files({TOKEN_FILE: json.dumps({"refresh_token": new_refresh}, indent=2)})
+            if attempt > 1:
+                print(f"[tado] token-persist gelukt op poging {attempt}")
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[tado] token-persist poging {attempt} mislukt: {sanitize_error(e)}")
+    send_telegram(
+        "⚠️ *tado window advisor*: kon de geroteerde refresh token niet opslaan — "
+        "token-keten mogelijk gebroken. Re-run `tado_auth_bootstrap.py` als de "
+        "volgende runs op 401 stuklopen.\n"
+        f"Laatste fout: {sanitize_error(last_err)}",
+        chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"), parse_mode="Markdown",
+    )
+
+
 def get_access_token() -> str:
     """Wissel de opgeslagen refresh token in voor een access token en schrijf de
     (geroteerde) refresh token meteen terug naar de Gist."""
@@ -203,7 +236,7 @@ def get_access_token() -> str:
 
     # Rotatie: bewaar de nieuwe refresh token onmiddellijk (de oude is herroepen).
     new_refresh = tok.get("refresh_token", refresh_token)
-    gist_write_files({TOKEN_FILE: json.dumps({"refresh_token": new_refresh}, indent=2)})
+    _persist_rotated_token(new_refresh)
 
     return tok["access_token"]
 

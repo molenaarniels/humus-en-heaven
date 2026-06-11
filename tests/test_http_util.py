@@ -32,6 +32,24 @@ def test_succes_op_derde_poging(monkeypatch):
     assert pogingen["n"] == 3
 
 
+def test_default_venster_vijf_pogingen(monkeypatch):
+    """De default moet een korte storingsburst overleven: 5 pogingen,
+    backoff 3+8+30+60s (~100s venster i.p.v. ~11s)."""
+    pogingen = {"n": 0}
+    slaap = []
+
+    def kapot(url, params=None, timeout=None):
+        pogingen["n"] += 1
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr(http_util.requests, "get", kapot)
+    monkeypatch.setattr(http_util.time, "sleep", slaap.append)
+    with pytest.raises(requests.ConnectionError):
+        http_util.get_json("https://x")
+    assert pogingen["n"] == 5
+    assert slaap == [3, 8, 30, 60]
+
+
 def test_raist_na_laatste_poging(monkeypatch):
     pogingen = {"n": 0}
 

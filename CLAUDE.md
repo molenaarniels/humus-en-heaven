@@ -295,7 +295,7 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
 Since March 2025 tado uses the OAuth2 **device-code flow** (no username/password). Refresh tokens **rotate** (each refresh revokes the previous) and live ≤30 days; hourly runs keep the chain alive. The refresh token lives **only** in the secret Gist + Actions secrets — **never committed** (public repo). Public app `client_id` is hardcoded (not a secret). If the chain breaks, re-run `tado_auth_bootstrap.py`.
 
 ### Notification cadence
-Per-room state machine like the sandbox project. One check per 15 minutes, message only on a change. `DRY_RUN=1` prints instead of sending (token + state are still persisted — rotation must not be skipped). `fetch_open_meteo` retried 3× met korte backoff (geen retry → ~17% iteratieverlies bij incidentele 5xx-hiccups gemeten).
+Per-room state machine like the sandbox project. One check per 15 minutes, message only on a change. `DRY_RUN=1` prints instead of sending (token + state are still persisted — rotation must not be skipped). `fetch_open_meteo` retried via `http_util.get_json` (geen retry → ~17% iteratieverlies bij incidentele 5xx-hiccups gemeten).
 
 ### Relation to other projects
 Independent. **Commits `docs/window_data.json` each run** (workflow is now `contents: write`) so the dashboard has fresh data — this replaces the earlier "no commit-back" design. The tado **refresh token and per-room advice state still live only in the secret Gist** (`tado_token.json`, `window_state.json`) and are **never committed**; only the non-secret dashboard JSON is published. Reuses Telegram (group), `GIST_TOKEN`, and the WU secrets.
@@ -381,12 +381,15 @@ Five small cross-project Python modules (everything else is self-contained):
   WU/Telegram/Gist calls via `sanitize_error` — never raw `{e}` — because the credential sits in the
   request URL. Also home of **`run_guarded(main, name, ...)`**: the top-level crash guard every runner
   script uses (sanitized FATAL, Telegram alert, exit 1). The two quarter-hour loop scripts pass
-  `fail_threshold=3` so a transient hiccup doesn't page — only ~45 min of consecutive failures does
+  `fail_threshold=6` so a transient hiccup doesn't page — only ~1.5h of consecutive failures does
   (counter in `RUNNER_TEMP`, reset on success, alert only on the first crossing; silent under `DRY_RUN=1`).
+  The daily soil check passes `fail_threshold=2`, paired with the workflow's one in-job retry after
+  10 min — a single 06:00 API blip retries silently; only a persistent outage pages.
 - **`gist_io.py`** — shared **read-only** Gist helpers (`read_file` raises, `read_json` is graceful).
   Gist *writes* deliberately stay per-project (see ground rule on Gist write logic).
 - **`http_util.py`** — `get_json(url, params, timeout=, label=)`: the one GET→JSON transport with
-  retry/backoff (3 attempts, 3+8s) and sanitized error logs, used by all six Open-Meteo fetch sites.
+  retry/backoff (5 attempts, 3+8+30+60s — a ~100s window that rides out short TLS-reset/timeout
+  bursts) and sanitized error logs, used by all six Open-Meteo fetch sites.
   Transport only — parameter sets and parsing stay at the call sites; exceptions propagate after the
   last attempt so existing fallback paths keep working. WU fetches deliberately stay outside it
   (apiKey embedded in the URL string + bespoke partial-failure handling).

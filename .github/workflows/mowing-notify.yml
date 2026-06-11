@@ -18,7 +18,8 @@ concurrency:
 jobs:
   advise:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cap dekt ook de in-job herkansing (10 min slaap + tweede poging).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -36,7 +37,15 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
           GH_TOKEN: ${{ secrets.GIST_TOKEN }}
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
-        run: python mowing_advisor.py
+        # Eén herkansing na 10 min: een transiente Open-Meteo/Gist-hapering
+        # kost dan geen run. run_guarded telt mee in RUNNER_TEMP (zelfde job)
+        # en alert pas bij de 2e mislukking (fail_threshold=2).
+        run: |
+          python mowing_advisor.py || {
+            echo "::warning::eerste poging mislukt — herkansing over 10 min"
+            sleep 600
+            python mowing_advisor.py
+          }
 
       - name: Commit updated data
         run: |

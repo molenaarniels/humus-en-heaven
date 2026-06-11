@@ -462,4 +462,8 @@ def main():
 
 
 if __name__ == "__main__":
-    run_guarded(main, "weerbriefing", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"))
+    # fail_threshold=2: de workflow doet bij falen één herkansing na 10 min
+    # (zelfde job, dus zelfde RUNNER_TEMP-teller) — alleen een aanhoudende
+    # storing alert.
+    run_guarded(main, "weerbriefing", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+                fail_threshold=2)

@@ -2,7 +2,14 @@
 const LAT = 52.0907, LON = 5.1214;
 const DATA_REFRESH_MS = 5 * 60 * 1000;   // 5 min
 const THEME_TICK_MS   = 60 * 1000;
-const STALE_HOURS     = 12;
+// Versheidsdrempels per bron-cadans. De dagelijkse artefacten (data.json
+// ~06:00, mowing_data.json 07:00 lokaal) vuren via GitHub's best-effort
+// scheduler in de praktijk uren te laat (gemeten: 2,5–4,5u) — één strakke
+// drempel zou ze dus elke avond "verouderd" verklaren terwijl alles gezond
+// is. Daily = pas stale na een écht gemiste dag (36u, zelfde conventie als
+// SOIL_MAX_AGE_H in mowing_advisor.py); live = de kwartiercadans-feed.
+const STALE_HOURS_DAILY = 36;
+const STALE_HOURS_LIVE  = 12;
 
 // Same shape as weather_briefing.py
 const WEEKDAY_BLOCKS = [
@@ -87,9 +94,10 @@ function applyTheme() {
 }
 
 // ─── Stale check ─────────────────────────────────────────────
-function markStaleIf(...timestamps) {
+function markStaleIf(...sources) {
   const now = Date.now();
-  const stale = timestamps.some(t => t && (now - new Date(t).getTime()) > STALE_HOURS * 3600 * 1000);
+  const stale = sources.some(({ t, maxH }) =>
+    t && (now - new Date(t).getTime()) > maxH * 3600 * 1000);
   $("stale-banner").classList.toggle("show", stale);
 }
 
@@ -153,9 +161,9 @@ async function loadAll() {
     pollen:     pollen.status     === "fulfilled" ? pollen.value     : null,
   }));
   markStaleIf(
-    soil.status       === "fulfilled" ? soil.value.generated_at       : null,
-    mowing.status     === "fulfilled" ? mowing.value.generated_at     : null,
-    windowData.status === "fulfilled" ? windowData.value.generated_at : null,
+    { t: soil.status       === "fulfilled" ? soil.value.generated_at       : null, maxH: STALE_HOURS_DAILY },
+    { t: mowing.status     === "fulfilled" ? mowing.value.generated_at     : null, maxH: STALE_HOURS_DAILY },
+    { t: windowData.status === "fulfilled" ? windowData.value.generated_at : null, maxH: STALE_HOURS_LIVE },
   );
   applyTheme();
 }

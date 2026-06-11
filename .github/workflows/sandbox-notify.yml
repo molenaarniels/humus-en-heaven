@@ -35,7 +35,8 @@ concurrency:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cap dekt ook de in-job herkansing (10 min slaap + tweede poging).
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -103,7 +104,16 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SANDBOX_STATE_FILE: sandbox_state.json
-        run: python3 sandbox_notify.py ${{ steps.mode.outputs.mode }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        # Eén herkansing na 10 min: een transiente Open-Meteo-hapering kost dan
+        # geen run. run_guarded telt mee in RUNNER_TEMP (zelfde job) en alert
+        # pas bij de 2e mislukking (fail_threshold=2).
+        run: |
+          python3 sandbox_notify.py "$MODE" || {
+            echo "::warning::eerste poging mislukt — herkansing over 10 min"
+            sleep 600
+            python3 sandbox_notify.py "$MODE"
+          }
 
       - name: Publiceer zandbak state naar docs/
         run: cp sandbox_state.json docs/sandbox_state.json

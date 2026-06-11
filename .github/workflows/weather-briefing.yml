@@ -12,7 +12,8 @@ permissions:
 jobs:
   briefing:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Cap dekt ook de in-job herkansing (10 min slaap + tweede poging).
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
@@ -28,4 +29,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
-        run: python weather_briefing.py
+        # Eén herkansing na 10 min: een transiente Open-Meteo-hapering kost dan
+        # geen run. run_guarded telt mee in RUNNER_TEMP (zelfde job) en alert
+        # pas bij de 2e mislukking (fail_threshold=2).
+        run: |
+          python weather_briefing.py || {
+            echo "::warning::eerste poging mislukt — herkansing over 10 min"
+            sleep 600
+            python weather_briefing.py
+          }

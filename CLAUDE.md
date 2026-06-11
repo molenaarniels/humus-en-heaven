@@ -383,8 +383,9 @@ Five small cross-project Python modules (everything else is self-contained):
   script uses (sanitized FATAL, Telegram alert, exit 1). The two quarter-hour loop scripts pass
   `fail_threshold=6` so a transient hiccup doesn't page — only ~1.5h of consecutive failures does
   (counter in `RUNNER_TEMP`, reset on success, alert only on the first crossing; silent under `DRY_RUN=1`).
-  The daily soil check passes `fail_threshold=2`, paired with the workflow's one in-job retry after
-  10 min — a single 06:00 API blip retries silently; only a persistent outage pages.
+  The one-shot runners that call an API (soil check, zandbak, weerbriefing, grasmaai) pass
+  `fail_threshold=2`, paired with their workflow's one in-job retry after 10 min — a single API blip
+  retries silently; only a persistent outage pages. (`verwarming` calls no API and keeps default 1.)
 - **`gist_io.py`** — shared **read-only** Gist helpers (`read_file` raises, `read_json` is graceful).
   Gist *writes* deliberately stay per-project (see ground rule on Gist write logic).
 - **`http_util.py`** — `get_json(url, params, timeout=, label=)`: the one GET→JSON transport with

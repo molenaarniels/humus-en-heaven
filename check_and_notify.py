@@ -18,13 +18,12 @@ Benodigde env vars (in GitHub Secrets):
 import json
 import os
 import smtplib
-import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
 from gist_io import read_json as gist_read_json
-from notify import sanitize_error, send_telegram
+from notify import run_guarded, sanitize_error, send_telegram
 from soil_model import (SOIL_FC, SOIL_WP, apply_et0_and_balance, assess_status,
                         build_full_dataset, build_monthly_totals_from_days,
                         fetch_open_meteo_archive)
@@ -87,7 +86,7 @@ def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
     try:
         series = fetch_open_meteo_archive(start_date, end_date)
     except Exception as e:
-        print(f"[bootstrap] archive fetch mislukt: {e}")
+        print(f"[bootstrap] archive fetch mislukt: {sanitize_error(e)}")
         return {}
 
     apply_et0_and_balance(series, irrigations_raw)
@@ -130,7 +129,7 @@ def send_email(subject: str, body_html: str) -> bool:
         print("[email] ✓ verzonden")
         return True
     except Exception as e:
-        print(f"[email] fout: {e}")
+        print(f"[email] fout: {sanitize_error(e)}")
         return False
 
 
@@ -248,7 +247,7 @@ def main():
         # Ga toch door met Open-Meteo only
     force = os.getenv("FORCE_NOTIFY", "").lower() in ("1", "true", "yes")
 
-    print(f"→ Irrigaties laden uit Gist...")
+    print("→ Irrigaties laden uit Gist...")
     irrigations_raw = load_irrigations_from_gist()
 
     # Bootstrap maandtotalen als er nog geen koude opslag is
@@ -310,15 +309,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        # sanitize_error: een requests-exceptie bevat de volledige URL incl.
-        # apiKey — GitHub maskeert dat in de Actions-log, Telegram niet.
-        err = sanitize_error(e)
-        print(f"FATAL: {err}")
-        try:
-            send_telegram(f"⚠ <b>Humus &amp; Heaven</b> check mislukt:\n<code>{err}</code>")
-        except Exception as te:
-            print(f"FATAL: failure-notificatie zelf mislukt: {sanitize_error(te)}", file=sys.stderr)
-        sys.exit(1)
+    run_guarded(main, "Humus & Heaven check")

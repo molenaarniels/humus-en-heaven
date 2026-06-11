@@ -9,6 +9,12 @@ on:
 permissions:
   contents: write
 
+# Eén run tegelijk: een handmatige dispatch tijdens de 07:00-cron zou anders
+# tegelijk met die run mowing_data.json + mowing_state.json committen.
+concurrency:
+  group: mowing-notify
+  cancel-in-progress: false
+
 jobs:
   advise:
     runs-on: ubuntu-latest
@@ -21,7 +27,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
 
       - name: Run mowing advisor
         env:
@@ -41,7 +47,17 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "data: mowing advisor refresh $(date -u +%Y-%m-%d) [skip ci]"
-            # Soil workflow may have pushed in the same window — rebase before push.
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
+            # De soil-run (06:00) en de window/airflow-loops committen de hele
+            # dag door naar main — rebase vóór push. De artefacten worden elke
+            # run volledig opnieuw gegenereerd, dus bij conflict wint onze
+            # verse versie (-X theirs). Dit draait één keer per dag: falen
+            # moet hard en zichtbaar zijn (exit 1), niet stil via `|| true`.
+            git rebase --abort 2>/dev/null || true
+            if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+              git push
+            else
+              git rebase --abort 2>/dev/null || true
+              echo "::error::rebase failed, mowing data not pushed"
+              exit 1
+            fi
           fi

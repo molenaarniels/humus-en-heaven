@@ -57,6 +57,19 @@ function forgetCredentials() {
   alert("Verwijderd. Je krijgt opnieuw de prompt zodra je iets opslaat.");
 }
 
+// Cache-bust: de data-JSONs worden door Actions ververst en GitHub Pages
+// cachet agressief — altijd een verse timestamp aan de URL (zie CLAUDE.md).
+function bust(url) {
+  return url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+}
+
+// Geparsede JSON uit de Gist, of fallback als het bestand ontbreekt/leeg is.
+// Lege string telt als ontbrekend (zelfde semantiek als gist_io.read_json).
+async function gistReadJSON(filename, fallback = null) {
+  const content = await gistReadFileContent(filename, null);
+  return content ? JSON.parse(content) : fallback;
+}
+
 // Content van één bestand uit de Gist (string), of fallback als het ontbreekt.
 async function gistReadFileContent(filename, fallback = null) {
   const r = await fetch(`https://api.github.com/gists/${CONFIG.gistId}`,

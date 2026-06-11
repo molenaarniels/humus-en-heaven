@@ -31,16 +31,13 @@ import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple
 
 import requests
 
 from notify import sanitize_error, send_telegram
+from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ
 
-UTRECHT_LAT = 52.0907
-UTRECHT_LON = 5.1214
-TZ = ZoneInfo("Europe/Amsterdam")
 UTC = timezone.utc
 
 # Stratificatie-grenzen

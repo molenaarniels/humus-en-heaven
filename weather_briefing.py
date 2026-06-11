@@ -12,26 +12,29 @@ only UV info is reported.
 """
 
 import os
-import sys
 import math
 import requests
-from datetime import datetime, date
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from notify import send_telegram
+import shared_const
+from http_util import get_json
+from notify import run_guarded, send_telegram
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
+# Waar ik nú ben — bewust hand-aanpasbaar (vakantiemodus): mag afwijken van
+# de vaste thuislocatie (HOME_COORDS) waartegen is_home() vergelijkt.
 LOCATION = {
-    "lat": 52.0907,
-    "lon": 5.1214,
+    "lat": shared_const.LATITUDE,
+    "lon": shared_const.LONGITUDE,
     "label": "Utrecht",
     "timezone": "Europe/Amsterdam",
 }
 
-HOME_COORDS = (52.0907, 5.1214)
+HOME_COORDS = (shared_const.LATITUDE, shared_const.LONGITUDE)
 HOME_RADIUS_KM = 10.0
 
 # Blocks for regular weekdays (Mon–Thu). weekdays: 0=Mon … 6=Sun
@@ -110,9 +113,7 @@ def fetch_forecast(location):
         "timezone":     location["timezone"],
         "forecast_days": 1,
     }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return get_json(url, params, timeout=20, label="open-meteo")
 
 
 def cloud_corrected_uv(uv_clear_sky, cloud_cover_pct):
@@ -351,9 +352,7 @@ def fetch_pollen(location):
         "forecast_days": 1,
     }
     try:
-        r = requests.get(POLLEN_API_URL, params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return get_json(POLLEN_API_URL, params, timeout=20, label="pollen")
     except requests.RequestException:
         return None
 
@@ -463,4 +462,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_guarded(main, "weerbriefing", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"))

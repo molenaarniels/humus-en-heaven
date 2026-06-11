@@ -32,13 +32,14 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import gist_io
-from notify import sanitize_error, send_telegram
+from http_util import get_json
+from notify import run_guarded, sanitize_error, send_telegram
 
 import requests
 
+import shared_const
 from wu_bias import correct_temp
 
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
@@ -119,9 +120,9 @@ PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken
 HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
 
 # ── Locatie (Utrecht) ──────────────────────────────────────────────────────────
-LATITUDE  = 52.0907
-LONGITUDE = 5.1214
-TZ        = ZoneInfo("Europe/Amsterdam")
+LATITUDE  = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
+TZ        = shared_const.TZ
 
 # ── tado endpoints ──────────────────────────────────────────────────────────────
 # Publieke device-flow client-id van de tado-app (algemeen bekend, geen geheim).
@@ -166,6 +167,39 @@ def gist_write_files(files: dict[str, str]) -> None:
 
 # ── tado auth (refresh-token flow, met rotatie-persistentie) ──────────────────────
 
+# Retry-schema voor het persisteren van de geroteerde refresh token. tado herroept
+# de oude token bij rotatie, dus één mislukte Gist-PATCH = keten gebroken =
+# handmatige re-bootstrap. De PATCH is idempotent → agressief retryen mag.
+TOKEN_PERSIST_DELAYS = (2, 4, 8, 16, 32)  # s — ~6 pogingen, ~62s worst case
+
+
+def _persist_rotated_token(new_refresh: str) -> None:
+    """Schrijf de geroteerde refresh token naar de Gist, met retry/backoff.
+
+    Bij definitief falen: Telegram-alert (de keten is dan mogelijk gebroken) en
+    doorgaan — de access token van déze run is nog geldig, dus advies + dashboard
+    kloppen nog. NOOIT de token zelf printen of doorsturen (publieke logs)."""
+    last_err: Exception | None = None
+    for attempt, delay in enumerate((0, *TOKEN_PERSIST_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            gist_write_files({TOKEN_FILE: json.dumps({"refresh_token": new_refresh}, indent=2)})
+            if attempt > 1:
+                print(f"[tado] token-persist gelukt op poging {attempt}")
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[tado] token-persist poging {attempt} mislukt: {sanitize_error(e)}")
+    send_telegram(
+        "⚠️ *tado window advisor*: kon de geroteerde refresh token niet opslaan — "
+        "token-keten mogelijk gebroken. Re-run `tado_auth_bootstrap.py` als de "
+        "volgende runs op 401 stuklopen.\n"
+        f"Laatste fout: {sanitize_error(last_err)}",
+        chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"), parse_mode="Markdown",
+    )
+
+
 def get_access_token() -> str:
     """Wissel de opgeslagen refresh token in voor een access token en schrijf de
     (geroteerde) refresh token meteen terug naar de Gist."""
@@ -203,7 +237,7 @@ def get_access_token() -> str:
 
     # Rotatie: bewaar de nieuwe refresh token onmiddellijk (de oude is herroepen).
     new_refresh = tok.get("refresh_token", refresh_token)
-    gist_write_files({TOKEN_FILE: json.dumps({"refresh_token": new_refresh}, indent=2)})
+    _persist_rotated_token(new_refresh)
 
     return tok["access_token"]
 
@@ -297,19 +331,8 @@ def fetch_open_meteo() -> dict:
         "timezone":     "Europe/Amsterdam",
         "forecast_days": 2,
     }
-    data = None
-    for attempt, delay in [(1, 0), (2, 3), (3, 8)]:
-        if delay:
-            time.sleep(delay)
-        try:
-            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            break
-        except requests.exceptions.RequestException as e:
-            print(f"[open-meteo] poging {attempt}/3 mislukt: {e}")
-            if attempt == 3:
-                raise
+    data = get_json("https://api.open-meteo.com/v1/forecast", params,
+                    timeout=20, label="open-meteo")
     cur = data.get("current") or {}
     current = cur.get("temperature_2m")
     h = data.get("hourly", {})
@@ -913,4 +936,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # fail_threshold=3: kwartierloop — pas alerten bij ~45 min aanhoudende storing.
+    run_guarded(main, "window-advisor", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+                fail_threshold=3)

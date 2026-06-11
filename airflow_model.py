@@ -36,17 +36,17 @@ import math
 import os
 import sys
 import time
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
-import requests
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
+import shared_const
 from gist_io import read_json as gist_read_json
-from wu_bias import correct_temp
-from window_advisor import convert_rh, RH_HARD_CAP, RH_COMFORT, ROOM_COMFORT
+from http_util import get_json
+from notify import run_guarded
+from window_advisor import convert_rh, RH_HARD_CAP, ROOM_COMFORT
 
-TZ = ZoneInfo("Europe/Amsterdam")
+TZ = shared_const.TZ
 
 # ── Bestanden ─────────────────────────────────────────────────────────────────────
 HOUSE_FILE     = os.getenv("HOUSE_MODEL_PATH", "house_model.json")
@@ -1085,19 +1085,8 @@ def fetch_weather() -> dict:
         "timezone": "Europe/Amsterdam",
         "past_days": 3, "forecast_days": 2,
     }
-    data = None
-    for attempt, delay in [(1, 0), (2, 3), (3, 8)]:
-        if delay:
-            time.sleep(delay)
-        try:
-            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=25)
-            r.raise_for_status()
-            data = r.json()
-            break
-        except requests.exceptions.RequestException as e:
-            print(f"[open-meteo] poging {attempt}/3 mislukt: {e}")
-            if attempt == 3:
-                raise
+    data = get_json("https://api.open-meteo.com/v1/forecast", params,
+                    timeout=25, label="open-meteo")
     h = data.get("hourly", {})
     times = [datetime.fromisoformat(t).replace(tzinfo=TZ) for t in h.get("time", [])]
     rows = []
@@ -1147,13 +1136,14 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         sun_az, sun_el = sun_position(lat, lon, t.astimezone(timezone.utc))
         st = openings_at(log, t)            # gerapporteerde toestand op dit moment (incl. zonwering)
         irr = {}
-        for rid, room in house.get("rooms", {}).items():
+        for rid in house.get("rooms", {}):
             tot = 0.0
             for wid, w in house.get("windows", {}).items():
                 if w.get("room") != rid:
                     continue
                 shade = _shade_factor(wid, w, st)
-                I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,
+                # I = invallende straling op het glas (W/m²) — fysica-symbool.
+                I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,  # noqa: E741
                                       wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0),
                                       bool(w.get("diffuse_only", False)))
                 tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
@@ -1380,10 +1370,8 @@ def load_openings_log_cached() -> list[dict]:
     return _OPENINGS_CACHE
 
 
-# kleine datetime-helpers (vermijd timedelta-import-ruis bovenin)
-from datetime import timedelta as _td
 def _timedelta_h(h: float):
-    return _td(hours=h)
+    return timedelta(hours=h)
 
 
 def _interp_hourly(rows: list[dict], t: datetime, key: str) -> float:
@@ -1404,8 +1392,9 @@ def _interp_hourly(rows: list[dict], t: datetime, key: str) -> float:
 #  Main
 # ════════════════════════════════════════════════════════════════════════════════════
 
-_LAT = 52.0907
-_LON = 5.1214
+# Defaults; de `location` in house_model.json overschrijft deze in main().
+_LAT = shared_const.LATITUDE
+_LON = shared_const.LONGITUDE
 
 
 def main():
@@ -1500,4 +1489,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # fail_threshold=3: kwartierloop — pas alerten bij ~45 min aanhoudende storing.
+    run_guarded(main, "airflow-twin", fail_threshold=3)

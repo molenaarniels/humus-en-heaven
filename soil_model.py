@@ -4,18 +4,19 @@ Shared between the GitHub Action and the data-builder for the static site.
 """
 import calendar as _calendar
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 
+from http_util import get_json
 from notify import sanitize_error
+from shared_const import LATITUDE, LONGITUDE, TZ
 from wu_bias import bias_estimate, correct_temp
 
 # --- Locatie & bodem ---
-UTRECHT_LAT = 52.0907
-UTRECHT_LON = 5.1214
+UTRECHT_LAT = LATITUDE
+UTRECHT_LON = LONGITUDE
 UTRECHT_ELEV = 5.0
 
 SOIL_FC = 0.20  # ophoogzand met kleicomponent, Utrecht Oost (Schildersbuurt)
@@ -444,7 +445,7 @@ def _today_rain_so_far(hourly: Optional[Dict], today_str: str) -> float:
     hourly-data ontbreekt. Open-Meteo levert tijden in Amsterdam tz."""
     if not hourly or "time" not in hourly or "precipitation" not in hourly:
         return 0.0
-    now_ams = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    now_ams = datetime.now(TZ)
     cutoff = now_ams.strftime("%Y-%m-%dT%H:00")
     total = 0.0
     for t, p in zip(hourly["time"], hourly["precipitation"]):
@@ -464,7 +465,7 @@ def _today_solar_fraction(hourly: Optional[Dict], today_str: str) -> float:
     ontbrekende data of voor zonsopkomst, 1 als de dag voorbij is."""
     if not hourly or "time" not in hourly or "shortwave_radiation" not in hourly:
         return 0.0
-    now_ams = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    now_ams = datetime.now(TZ)
     cutoff = now_ams.strftime("%Y-%m-%dT%H:00")
     so_far = 0.0
     full = 0.0
@@ -538,22 +539,22 @@ def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
 def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_FORECAST]
     hourly_vars = ["precipitation", "shortwave_radiation"] + sm_layer_keys
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
-        f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
-        f"precipitation_probability_max,"
-        f"shortwave_radiation_sum,et0_fao_evapotranspiration"
-        f"&hourly={','.join(hourly_vars)}"
-        f"&past_days={days_past}&forecast_days={days_forecast}"
-        f"&timezone=Europe%2FAmsterdam"
-    )
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    j = r.json()
+    params = {
+        "latitude": UTRECHT_LAT,
+        "longitude": UTRECHT_LON,
+        "daily": ("temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+                  "relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+                  "precipitation_probability_max,"
+                  "shortwave_radiation_sum,et0_fao_evapotranspiration"),
+        "hourly": ",".join(hourly_vars),
+        "past_days": days_past,
+        "forecast_days": days_forecast,
+        "timezone": "Europe/Amsterdam",
+    }
+    j = get_json("https://api.open-meteo.com/v1/forecast", params,
+                 timeout=20, label="open-meteo")
     d = j["daily"]
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
@@ -637,7 +638,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
     """Haalt WU PWS history (afgesloten dagen) + current observatie voor
     today's accumulatieve precip. Probeert range-call eerst, dan per-dag
     fallback voor history."""
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date()
+    today = datetime.now(TZ).date()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
     url = (
@@ -829,9 +830,11 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
                 d["hasWU"] = True
             wu_days = sum(1 for d in om if d.get("hasWU"))
             if wu_days > 0:
-                source_note = f"Wunderground {station_id} ({wu_days}d) + Open-Meteo solar"
+                # Géén station-ID in de publieke data.json — WU_STATION_ID is een secret.
+                source_note = f"Wunderground PWS ({wu_days}d) + Open-Meteo solar"
         except Exception as e:
-            print(f"[WARN] WU merge failed: {e}")
+            # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+            print(f"[WARN] WU merge failed: {sanitize_error(e)}")
 
     apply_et0_and_balance(om, irrigations, seed_theta=seed_theta)
 
@@ -868,19 +871,19 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
 def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
     """Haalt historische data op via de Open-Meteo archive API (ERA5 reanalysis)."""
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_ARCHIVE]
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
-        f"&start_date={start_date}&end_date={end_date}"
-        f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        f"relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
-        f"shortwave_radiation_sum"
-        f"&hourly={','.join(sm_layer_keys)}"
-        f"&timezone=Europe%2FAmsterdam"
-    )
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    j = r.json()
+    params = {
+        "latitude": UTRECHT_LAT,
+        "longitude": UTRECHT_LON,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": ("temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+                  "relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
+                  "shortwave_radiation_sum"),
+        "hourly": ",".join(sm_layer_keys),
+        "timezone": "Europe/Amsterdam",
+    }
+    j = get_json("https://archive-api.open-meteo.com/v1/archive", params,
+                 timeout=30, label="open-meteo-archive")
     d = j["daily"]
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
     out = []
@@ -909,7 +912,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
     kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
     maand wordt nooit bevroren.
     """
-    today = datetime.now(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     raw: Dict[str, Dict] = {}
     for d in days:
         if d.get("forecast") or d["date"] >= today:

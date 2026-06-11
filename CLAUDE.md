@@ -83,11 +83,16 @@ This repo contains three independent automation pipelines, all running on GitHub
 
 ### Frontend conventions
 - Vanilla HTML + Chart.js 4.4 — no frameworks, no build step
-- Cache-bust pattern: `data.json?t=${Date.now()}` — always keep this
+- Cache-bust pattern: `data.json?t=${Date.now()}` — always keep this; on the writer pages use the
+  `bust(url)` helper from shared.js (read-only pages keep it inline; ipad.js has its own `bust()`)
 - **JS layout:** per-page script in `docs/js/<page>.js`; shared Gist/token/workflow-dispatch logic
-  in `docs/js/shared.js` (loaded *before* the page script on index/mowing/airflow — the writer pages).
+  plus `bust()`/`gistReadJSON()` in `docs/js/shared.js` (loaded *before* the page script on
+  index/mowing/airflow — the writer pages).
   CSP `script-src` has **no `unsafe-inline`**: never add inline `<script>` blocks or `onclick=`-style
   attributes — wire events with `addEventListener`/delegation and `data-*` attributes.
+- **CSS layout:** rules shared by the dashboard pages live in `docs/css/shared.css` (linked *before*
+  the page `<style>` block, so page-specific deviations win at equal specificity). ipad.html has its
+  own theme and deliberately doesn't use it.
 - CDN scripts carry SRI `integrity` hashes (computed from the npm tarballs); bump version → recompute.
 - Two zone columns side by side (gauge + recommendation + minutes advice)
 - "Ik heb water gegeven" modal: input in minutes → convert to mm → write to Gist via GitHub API → trigger workflow_dispatch
@@ -362,20 +367,31 @@ Fully isolated: the **only** dependency is the read-only consumption of `docs/wi
 
 ---
 
-## Shared modules: `wu_bias.py`, `notify.py`, `gist_io.py`
+## Shared modules: `wu_bias.py`, `notify.py`, `gist_io.py`, `http_util.py`, `shared_const.py`
 
-Three small cross-project Python modules (everything else is self-contained):
+Five small cross-project Python modules (everything else is self-contained):
 - **`wu_bias.py`** — the WU station's radiative temperature-bias correction — `correct_temp(temp_c, solar_wm2)` and
   `bias_estimate(solar_wm2)` plus the calibrated `SOLAR_BIAS_SLOPE` (°C per W/m², source-agnostic
   driver). Imported by **soil_model.py** (Tmax/Tmean on WU days) and **window_advisor.py** (outside-now
   on WU readings). Calibrated by Project 7. Zero third-party deps. See the soil "WU stralingsbiascorrectie"
   bullet and Project 7 for the full picture.
 - **`notify.py`** — shared Telegram sender (`send_telegram`, transient-failure retry, never raises) plus
-  `sanitize_error(e)`: secret-safe exception rendering (scrubs `apiKey=`/token query params and Telegram
-  bot tokens out of URLs in exception text). **Always** print/forward exceptions from WU/Telegram calls
-  via `sanitize_error` — never raw `{e}` — because the credential sits in the request URL.
+  `sanitize_error(e)`: secret-safe exception rendering (scrubs `apiKey=`/token query params, Telegram
+  bot tokens and Gist-IDs out of URLs in exception text). **Always** print/forward exceptions from
+  WU/Telegram/Gist calls via `sanitize_error` — never raw `{e}` — because the credential sits in the
+  request URL. Also home of **`run_guarded(main, name, ...)`**: the top-level crash guard every runner
+  script uses (sanitized FATAL, Telegram alert, exit 1). The two quarter-hour loop scripts pass
+  `fail_threshold=3` so a transient hiccup doesn't page — only ~45 min of consecutive failures does
+  (counter in `RUNNER_TEMP`, reset on success, alert only on the first crossing; silent under `DRY_RUN=1`).
 - **`gist_io.py`** — shared **read-only** Gist helpers (`read_file` raises, `read_json` is graceful).
   Gist *writes* deliberately stay per-project (see ground rule on Gist write logic).
+- **`http_util.py`** — `get_json(url, params, timeout=, label=)`: the one GET→JSON transport with
+  retry/backoff (3 attempts, 3+8s) and sanitized error logs, used by all six Open-Meteo fetch sites.
+  Transport only — parameter sets and parsing stay at the call sites; exceptions propagate after the
+  last attempt so existing fallback paths keep working. WU fetches deliberately stay outside it
+  (apiKey embedded in the URL string + bespoke partial-failure handling).
+- **`shared_const.py`** — the single source for `LATITUDE`/`LONGITUDE` (Utrecht Oost) and
+  `TZ` (Europe/Amsterdam). Modules re-bind these to their existing local aliases.
 
 ---
 
@@ -403,6 +419,8 @@ Three small cross-project Python modules (everything else is self-contained):
 - **Frontend cache-bust** — always keep `?t=${Date.now()}` on data.json fetch calls
 - All times in UTC in code; display in Europe/Amsterdam on frontend
 - Python 3.11+, no build step for frontend
+- `ruff check .` and `python -m pytest` must stay green (config in `pyproject.toml`; CI runs both on every push)
+- Every runner script wraps `main` in `notify.run_guarded` — keep that when adding a pipeline
 
 ---
 

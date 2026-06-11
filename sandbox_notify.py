@@ -24,16 +24,17 @@ State wordt automatisch bijgewerkt na elk advies.
 import json
 import os
 import sys
-import requests
 from datetime import datetime, timezone
 
-from notify import send_telegram
+import shared_const
+from http_util import get_json
+from notify import run_guarded, send_telegram
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
 
-LATITUDE  = 52.0907
-LONGITUDE = 5.1214
+LATITUDE  = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
 
 RAIN_PROB_THRESHOLD = 30   # % kans → "regen verwacht"
 RAIN_MM_THRESHOLD   = 1.0  # mm → ook "regen verwacht"
@@ -76,9 +77,7 @@ def fetch_forecast() -> list[dict]:
         "forecast_days": 4,
         "timezone":      "Europe/Amsterdam",
     }
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()["daily"]
+    data = get_json(url, params, timeout=10, label="open-meteo")["daily"]
 
     days = []
     for i, d in enumerate(data["time"]):
@@ -306,4 +305,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_guarded(main, "zandbak")

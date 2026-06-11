@@ -34,13 +34,13 @@ Env vars (GitHub Secrets / vars):
 
 import json
 import os
-import sys
 from datetime import date, datetime, timedelta, timezone
 
-import requests
 
+import shared_const
 from gist_io import read_json as gist_read_json
-from notify import send_telegram
+from http_util import get_json
+from notify import run_guarded, send_telegram
 
 # =============================================================================
 # Configuratie — alle tunables staan hier bovenaan.
@@ -91,8 +91,8 @@ MOWING_DATA_PATH = os.getenv("MOWING_DATA_PATH", "docs/mowing_data.json")
 STATE_FILE = os.getenv("MOWING_STATE_FILE", "mowing_state.json")
 SOIL_MAX_AGE_H = 36.0
 
-LATITUDE = 52.0907
-LONGITUDE = 5.1214
+LATITUDE = shared_const.LATITUDE
+LONGITUDE = shared_const.LONGITUDE
 
 NL_DAYS = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
 NL_MONTHS = ["", "jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
@@ -184,9 +184,7 @@ def fetch_gdd_fallback() -> list[dict]:
         "forecast_days": 7,
         "timezone": "Europe/Amsterdam",
     }
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    d = resp.json()["daily"]
+    d = get_json(url, params, timeout=10, label="open-meteo")["daily"]
     today = date.today().isoformat()
     days = []
     for i, day in enumerate(d["time"]):
@@ -654,12 +652,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"FATAL: {e}")
-        try:
-            send_telegram(f"⚠ <b>Grasmaai-adviseur</b> mislukt:\n<code>{e}</code>")
-        except Exception:
-            pass
-        sys.exit(1)
+    run_guarded(main, "Grasmaai-adviseur")

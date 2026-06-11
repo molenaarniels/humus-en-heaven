@@ -26,7 +26,7 @@ async function loadData() {
   document.getElementById("banner-slot").innerHTML = "";
   document.getElementById("source-label").innerHTML = '<span class="pulse">⋯ data laden…</span>';
   try {
-    const res = await fetch(`airflow_data.json?t=${Date.now()}`);
+    const res = await fetch(bust("airflow_data.json"));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
     render();

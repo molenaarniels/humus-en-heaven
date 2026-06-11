@@ -34,8 +34,18 @@
     .ranked-row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed #2a241b22; align-items:baseline; }
     .ranked-windows { font-style:italic; font-size:14px; }
     .ranked-rooms { font-family:"JetBrains Mono",monospace; font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft); }
-    .ranked-score { font-family:"JetBrains Mono",monospace; font-weight:600; }
+    .ranked-effect { font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--ink-soft); white-space:nowrap; }
     .ranked-bar { height:4px; background:var(--moss); margin-top:3px; border-radius:2px; }
+    /* Advies als verander-checklist + uitklapbare volledige stand */
+    .adv-headline { font-style:italic; font-size:15px; }
+    .adv-checklist { list-style:none; margin:8px 0 4px; padding:0; }
+    .adv-checklist li { padding:7px 0; border-bottom:1px dashed #2a241b22; font-family:"Cormorant Garamond",serif; font-size:17px; }
+    .adv-open { color:var(--moss); }
+    .adv-close { color:var(--clay); }
+    .adv-ok { color:var(--moss); font-style:italic; font-size:15px; margin-top:8px; }
+    details.adv-more { margin-top:12px; }
+    details.adv-more summary { cursor:pointer; font-family:"JetBrains Mono",monospace; font-size:10px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-soft); }
+    details.adv-more summary:hover { color:var(--ink); }
     .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
     .grid-rooms { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
     .big-num { font-family: "JetBrains Mono", monospace; font-size: 44px; font-weight: 600; line-height: 1; }

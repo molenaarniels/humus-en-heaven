@@ -68,26 +68,8 @@ function render() {
   </div>`;
 
   // — Suggestie —
-  const sg = d.suggestion || {};
-  html += `<div class="specimen-card"><div class="corner-mark">Passief advies (handel niet verplicht)</div>
-    <div class="card-title">Wat zou koeling geven?</div>
-    <p style="font-style:italic;font-size:15px;">${sg.headline || "—"}</p>`;
-  if (sg.ranked && sg.ranked.length) {
-    const maxScore = Math.max(1, ...sg.ranked.map(r => r.score||0));
-    html += `<div style="margin-top:6px;">`;
-    sg.ranked.forEach(r => {
-      const labs = (r.windows||[]).map(wid => winLabel(wid)).join(" + ") || "alles dicht houden";
-      const rooms = (r.rooms||[]).map(roomLabel).join(" · ");
-      const bw = Math.max(2, Math.round(100*Math.max(0,r.score||0)/maxScore));
-      html += `<div class="ranked-row"><div style="flex:1;">
-          <div class="ranked-windows">${labs}</div>
-          ${rooms?`<div class="ranked-rooms">${rooms}</div>`:""}
-          <div class="ranked-bar" style="width:${bw}%;"></div>
-        </div><div class="ranked-score">${r.score}</div></div>`;
-    });
-    html += `</div>`;
-  }
-  html += `</div></div>`;
+  html += renderAdvice(d);
+  html += `</div>`;
 
   // — Plattegrond —
   html += `<div class="grid" style="grid-template-columns:1fr;"><div class="specimen-card">
@@ -98,7 +80,7 @@ function render() {
       <span style="color:var(--rain)">➜ instroom (koel)</span>
       <span style="color:var(--clay)">➜ uitstroom (warm)</span>
       <span style="color:var(--moss-light)">➜ tussen kamers</span>
-      <span>· · verbinding (deur)</span>
+      <span>deursymbool: doorgang + draairichting</span>
       <span>dikte &amp; snelheid ∝ debiet</span>
     </div>
     <div class="chips" style="margin-top:6px;">
@@ -106,9 +88,10 @@ function render() {
       <span style="color:var(--rain)">❄ warmte eruit</span>
       <span style="color:var(--clay)">🔥 warmte erin (van buiten)</span>
       <span>·</span>
-      <span>rand:
-        <span style="display:inline-block;width:54px;height:9px;vertical-align:middle;border-radius:5px;border:1px solid #2a241b33;background:linear-gradient(90deg,rgb(47,111,176),rgb(150,144,130),rgb(214,51,42));"></span>
-        afkoelend → stabiel → opwarmend</span>
+      <span>chip rechtsonder: trend —
+        <span style="color:rgb(47,111,176)">afkoelend</span> ·
+        <span style="color:rgb(150,144,130)">stabiel</span> ·
+        <span style="color:rgb(214,51,42)">opwarmend</span></span>
     </div>
   </div></div>`;
 
@@ -191,9 +174,108 @@ function render() {
   renderSandbox();
 }
 
+// ===================== ADVIES =====================
+// Het advies als simpele verander-checklist: vergelijk de beste raamstand met de huidige
+// gerapporteerde stand (d.controls) en toon alléén de verschillen. De volledige doelstand
+// en de alternatieven zitten achter een <details>-uitklapper (native, CSP-veilig).
+function shortLabel(s) {
+  if (!s) return s || "";
+  let cut = s.length;
+  [" (", " — "].forEach(sep => { const i = s.indexOf(sep); if (i >= 0 && i < cut) cut = i; });
+  return s.slice(0, cut);
+}
+
+// Doelstand per bedienbaar raam: keep_closed → alles dicht; anders uit instructions[]
+// (bevat óók vast glas → filteren op de bedienbare set); oudere data zonder instructions
+// → de winnaar uit ranked[]. null = geen advies beschikbaar.
+function adviceTarget(d) {
+  const sg = d.suggestion || {};
+  const ops = (d.controls || []).filter(c => c.kind === "window");
+  if (!ops.length) return null;
+  const target = {};
+  if (sg.keep_closed) { ops.forEach(c => target[c.id] = "dicht"); return target; }
+  if (sg.instructions && sg.instructions.length) {
+    const byId = {}; sg.instructions.forEach(i => byId[i.window] = i.action);
+    ops.forEach(c => target[c.id] = byId[c.id] === "open" ? "open" : "dicht");
+    return target;
+  }
+  if (sg.ranked && sg.ranked.length) {
+    const open = new Set(sg.ranked[0].windows || []);
+    ops.forEach(c => target[c.id] = open.has(c.id) ? "open" : "dicht");
+    return target;
+  }
+  return null;
+}
+
+// Verschillen doel ↔ nu. Kiepstand telt als (deels) open: doel open + nu kiep → geen
+// actie, wel een notitie; doel dicht + nu kiep → sluiten.
+function adviceDeltas(d, target) {
+  const deltas = [], notes = [];
+  (d.controls || []).filter(c => c.kind === "window").forEach(c => {
+    const cur = normState(c.state, "window"), want = target[c.id];
+    if (want === "open" && cur === "dicht") deltas.push({ act: "open", c });
+    else if (want === "open" && cur === "tilt") notes.push(`${shortLabel(c.label)} staat op kiep — telt als (deels) open`);
+    else if (want === "dicht" && cur !== "dicht") deltas.push({ act: "sluit", c });
+  });
+  return { deltas, notes };
+}
+
+// De suggest()-score is ≈ watt nuttige koeling (1.2·cp·debiet·ΔT minus kleine straffen).
+function effectText(score) {
+  return (score != null && score > 0) ? `≈ ${Math.round(score)} W koeling` : "geen nuttige koeling";
+}
+
+function renderAdvice(d) {
+  const sg = d.suggestion || {};
+  let html = `<div class="specimen-card"><div class="corner-mark">Passief advies (handel niet verplicht)</div>
+    <div class="card-title">Wat zou koeling geven?</div>
+    <p class="adv-headline">${sg.headline || "—"}</p>`;
+  const target = adviceTarget(d);
+  if (!target) return html + `</div>`;
+  const { deltas, notes } = adviceDeltas(d, target);
+  if (deltas.length) {
+    html += `<ul class="adv-checklist">` + deltas.map(dl =>
+      `<li class="${dl.act === "open" ? "adv-open" : "adv-close"}">▸ ${dl.act === "open" ? "Open" : "Sluit"} <b>${shortLabel(dl.c.label)}</b> <span class="ctl-sub">${roomLabel(dl.c.room)}</span></li>`
+    ).join("") + `</ul>`;
+  } else {
+    html += `<p class="adv-ok">✓ alles staat al goed</p>`;
+  }
+  notes.forEach(n => html += `<div class="ctl-sub" style="margin-top:4px;">◦ ${n}</div>`);
+
+  html += `<details class="adv-more"><summary>Volledige stand &amp; alternatieven</summary>`;
+  html += `<table><thead><tr><th>raam</th><th>doel</th><th>nu</th></tr></thead><tbody>`;
+  (d.controls || []).filter(c => c.kind === "window").forEach(c => {
+    const cur = normState(c.state, "window"), want = target[c.id];
+    const diff = want !== cur && !(want === "open" && cur === "tilt");
+    html += `<tr><td>${shortLabel(c.label)}</td>
+      <td class="num" style="color:${want === "open" ? "var(--moss)" : "var(--ink-soft)"}">${want}</td>
+      <td class="num" style="${diff ? "color:var(--clay);font-weight:600;" : ""}">${cur}</td></tr>`;
+  });
+  html += `</tbody></table>`;
+  if (sg.ranked && sg.ranked.length) {
+    const maxPos = Math.max(0, ...sg.ranked.map(r => r.score || 0));
+    // Bij "alles dicht" hoort de dicht-optie bovenaan; alternatieven zonder nut krijgen geen balk.
+    const rows = sg.keep_closed
+      ? [...sg.ranked].sort((a, b) => ((b.windows || []).length === 0) - ((a.windows || []).length === 0))
+      : sg.ranked;
+    html += `<div class="grp-title">Alternatieven</div>`;
+    rows.forEach(r => {
+      const labs = (r.windows || []).map(wid => shortLabel(winLabel(wid))).join(" + ") || "alles dicht houden";
+      const roomsTxt = (r.rooms || []).map(roomLabel).join(" · ");
+      const bw = maxPos > 0 ? Math.round(100 * Math.max(0, r.score || 0) / maxPos) : 0;
+      html += `<div class="ranked-row"><div style="flex:1;">
+          <div class="ranked-windows">${labs}</div>
+          ${roomsTxt ? `<div class="ranked-rooms">${roomsTxt}</div>` : ""}
+          ${bw > 0 ? `<div class="ranked-bar" style="width:${bw}%;"></div>` : ""}
+        </div><div class="ranked-effect">${effectText(r.score)}</div></div>`;
+    });
+  }
+  html += `</details></div>`;
+  return html;
+}
+
 // ===================== FLOOR PLAN =====================
 const FLOOR_NL = {0:"Begane grond", 1:"1e verdieping", 2:"2e verdieping", 3:"3e"};
-function floorTag(f){ return f===0?"BG":f+"e"; }
 
 function zoneFill(r) {
   if (!r || r.predicted_temp==null) return "rgba(92,79,60,0.06)";        // junctie / geen sensor
@@ -203,9 +285,9 @@ function zoneFill(r) {
   return "rgba(61,90,58,0.13)";
 }
 
-// Randkleur = richting van de temperatuurverandering (trend_c_per_h). Fel rood = opwarmend,
+// Trendkleur = richting van de temperatuurverandering (trend_c_per_h). Fel rood = opwarmend,
 // fel blauw = afkoelend, grijs ertussenin (geen verandering). De vulling toont de toestand
-// (warm/koel t.o.v. comfort); de rand toont waar het naartoe gáát — twee aparte signalen.
+// (warm/koel t.o.v. comfort); de trend-chip rechtsonder toont waar het naartoe gáát.
 const TREND_FULL = 0.8;                       // °C/uur → volle verzadiging van de rand
 const TREND_GRAY = [150,144,130], TREND_WARM = [214,51,42], TREND_COOL = [47,111,176];
 function lerpColor(a, b, t) {
@@ -217,9 +299,7 @@ function outlineColor(trend) {
   const x = Math.max(-1, Math.min(1, trend / TREND_FULL));
   return x>=0 ? lerpColor(TREND_GRAY, TREND_WARM, x) : lerpColor(TREND_GRAY, TREND_COOL, -x);
 }
-function outlineWidth(trend) {
-  return trend==null ? 1.4 : 2.0 + 1.8*Math.min(1, Math.abs(trend)/TREND_FULL);
-}
+function rgbToRgba(c, a) { return c && c.startsWith("rgb(") ? c.replace("rgb(", "rgba(").replace(")", `,${a})`) : c; }
 // Netto warmte-uitwisseling met buiten (W): schil-conductie + ventilatie. − = energie verlaat
 // de kamer (koeling), + = de buitenlucht warmt de kamer op. De tegenhanger van de zonwinst.
 function outsideNet(r) {
@@ -243,6 +323,302 @@ function energyRow(r) {
     </div>`;
 }
 
+// — Architectonische tekenhulpen —
+// De plattegrond is een mini-architectenplan: muren als dubbele inktlijn met échte
+// openingen erin; ramen/roosters/deuren als klassieke plansymbolen. Plaatsing komt uit
+// house_model.json (plan_side + plan_pos per opening, additief); zonder die velden valt
+// de plaatsing terug op gevel-azimut → buitenzijde + gelijkmatige verdeling.
+const FP = { cw: 164, ch: 124, gap: 30, padL: 92, padT: 80, padR: 60, padB: 36 };
+const WALL_T = 5;                              // muurband-dikte (px)
+const PLAN_SIDES = ["top", "bottom", "left", "right"];
+
+function sideGeom(rc, side) {                  // beginpunt + tangent + buitennormaal + lengte
+  switch (side) {
+    case "top":    return { x0: rc.x,        y0: rc.y,        tx: 1, ty: 0, nx: 0,  ny: -1, len: rc.w };
+    case "bottom": return { x0: rc.x,        y0: rc.y + rc.h, tx: 1, ty: 0, nx: 0,  ny: 1,  len: rc.w };
+    case "left":   return { x0: rc.x,        y0: rc.y,        tx: 0, ty: 1, nx: -1, ny: 0,  len: rc.h };
+    default:       return { x0: rc.x + rc.w, y0: rc.y,        tx: 0, ty: 1, nx: 1,  ny: 0,  len: rc.h };
+  }
+}
+function sidePoint(rc, side, t) {
+  const g = sideGeom(rc, side);
+  return { x: g.x0 + g.tx*g.len*t, y: g.y0 + g.ty*g.len*t, nx: g.nx, ny: g.ny, tx: g.tx, ty: g.ty };
+}
+function glyphLen(el, kind) {                  // symboolbreedte langs de muur (px)
+  if (kind === "vent") return 10;
+  if (kind === "skylight") return 16;
+  if (kind === "door") return Math.max(16, Math.min(34, 12 * (el.area_m2 || 1.5)));
+  return Math.max(14, Math.min(56, 18 * Math.sqrt(el.area_m2 || 0.5)));
+}
+
+// Tegenover elkaar liggende randen van twee rastercellen (deuren verbinden over de kier).
+function sharedEdge(rcA, rcB) {
+  const g = FP.gap + 2;
+  const vSpan = () => [Math.max(rcA.y, rcB.y), Math.min(rcA.y + rcA.h, rcB.y + rcB.h)];
+  const hSpan = () => [Math.max(rcA.x, rcB.x), Math.min(rcA.x + rcA.w, rcB.x + rcB.w)];
+  let d = rcB.x - (rcA.x + rcA.w);
+  if (d > -1 && d <= g) { const [lo, hi] = vSpan(); if (hi > lo + 8) return { sideA: "right",  sideB: "left",   lo, hi, vertical: true }; }
+  d = rcA.x - (rcB.x + rcB.w);
+  if (d > -1 && d <= g) { const [lo, hi] = vSpan(); if (hi > lo + 8) return { sideA: "left",   sideB: "right",  lo, hi, vertical: true }; }
+  d = rcB.y - (rcA.y + rcA.h);
+  if (d > -1 && d <= g) { const [lo, hi] = hSpan(); if (hi > lo + 8) return { sideA: "bottom", sideB: "top",    lo, hi, vertical: false }; }
+  d = rcA.y - (rcB.y + rcB.h);
+  if (d > -1 && d <= g) { const [lo, hi] = hSpan(); if (hi > lo + 8) return { sideA: "top",    sideB: "bottom", lo, hi, vertical: false }; }
+  return null;
+}
+
+// Alle openingen op de muren plaatsen: expliciet (plan_side/plan_pos) → fallback (azimut →
+// buitenzijde) → gelijkmatig spreiden + minimale onderlinge afstand. Levert per opening het
+// muurpunt (incl. normaal/tangent, voor glyph én stroompijl) en per kamer de muurgaten.
+function placeOpenings(meta, zones, ids, rectOf, planH) {
+  const occ = new Set();
+  ids.forEach(id => { const [x, y] = zones[id].plan_xy; for (let r = 0; r < planH(id); r++) occ.add(`${x},${y + r}`); });
+  const extSides = id => {
+    const [x, y] = zones[id].plan_xy, h = planH(id), out = [];
+    if (!occ.has(`${x + 1},${y}`)) out.push("right");
+    if (!occ.has(`${x - 1},${y}`)) out.push("left");
+    if (!occ.has(`${x},${y + h}`)) out.push("bottom");
+    if (!occ.has(`${x},${y - 1}`)) out.push("top");
+    return out.length ? out : ["top"];
+  };
+
+  const entries = [];
+  const collect = (els, kind) => Object.entries(els || {}).forEach(([id, el]) => {
+    if (!el.room || !zones[el.room] || !Array.isArray(zones[el.room].plan_xy)) return;
+    const k = el.kind === "skylight" ? "skylight" : kind;
+    entries.push({ id, el, kind: k, room: el.room,
+                   side: PLAN_SIDES.includes(el.plan_side) ? el.plan_side : null,
+                   t: el.plan_pos != null ? el.plan_pos : null, len: glyphLen(el, k) });
+  });
+  collect(meta.windows, "window");
+  collect(meta.vents, "vent");
+
+  // fallback: per kamer krijgt elke nog ongeplaatste gevel-azimut één buitenzijde
+  ids.forEach(room => {
+    const loose = entries.filter(e => e.room === room && !e.side);
+    if (!loose.length) return;
+    const sides = extSides(room); const azSide = {}; let si = 0;
+    loose.forEach(e => {
+      if (e.kind === "skylight") { e.side = "top"; return; }
+      const az = String(e.el.facade_azimuth_deg ?? 0);
+      if (!(az in azSide)) azSide[az] = sides[Math.min(si++, sides.length - 1)];
+      e.side = azSide[az];
+    });
+  });
+
+  // spreiden per (kamer, zijde): expliciete posities blijven, de rest gelijkmatig;
+  // daarna minimale tussenafstand (halve glyphbreedtes + 6 px) afdwingen
+  const groups = {};
+  entries.forEach(e => (groups[`${e.room}|${e.side}`] = groups[`${e.room}|${e.side}`] || []).push(e));
+  Object.values(groups).forEach(g => {
+    const free = g.filter(e => e.t == null);
+    free.forEach((e, i) => e.t = 0.12 + 0.76 * (i + 0.5) / free.length);
+    const L = sideGeom(rectOf(g[0].room), g[0].side).len;
+    g.sort((a, b) => a.t - b.t);
+    for (let i = 1; i < g.length; i++) {
+      const minPx = (g[i - 1].len + g[i].len) / 2 + 6;
+      if ((g[i].t - g[i - 1].t) * L < minPx) g[i].t = g[i - 1].t + minPx / L;
+    }
+    g.forEach(e => e.t = Math.min(0.94, Math.max(0.06, e.t)));
+  });
+
+  const byId = {}, gaps = {};
+  const addGap = (room, side, p0, p1) => {
+    const bySide = gaps[room] = gaps[room] || {};
+    (bySide[side] = bySide[side] || []).push([p0, p1]);
+  };
+  entries.forEach(e => {
+    const rc = rectOf(e.room), L = sideGeom(rc, e.side).len, p = e.t * L;
+    byId[e.id] = { kind: e.kind, room: e.room, side: e.side, t: e.t, len: e.len, pt: sidePoint(rc, e.side, e.t) };
+    if (e.kind !== "skylight") addGap(e.room, e.side, p - e.len / 2, p + e.len / 2);
+  });
+
+  Object.entries(meta.doors || {}).forEach(([id, dr]) => {
+    const [a, b] = dr.between || [];
+    if (!zones[a] || !zones[b] || !Array.isArray(zones[a].plan_xy) || !Array.isArray(zones[b].plan_xy)) return;
+    const se = sharedEdge(rectOf(a), rectOf(b));
+    if (!se) return;
+    const len = glyphLen(dr, "door");
+    const c = se.lo + (dr.plan_pos != null ? dr.plan_pos : 0.5) * (se.hi - se.lo);
+    const gA = sideGeom(rectOf(a), se.sideA), gB = sideGeom(rectOf(b), se.sideB);
+    const tA = (c - (se.vertical ? gA.y0 : gA.x0)) / gA.len;
+    const tB = (c - (se.vertical ? gB.y0 : gB.x0)) / gB.len;
+    byId[id] = { kind: "door", a, b, len, fixed: !!dr.fixed,
+                 ptA: sidePoint(rectOf(a), se.sideA, tA), ptB: sidePoint(rectOf(b), se.sideB, tB) };
+    addGap(a, se.sideA, tA * gA.len - len / 2, tA * gA.len + len / 2);
+    addGap(b, se.sideB, tB * gB.len - len / 2, tB * gB.len + len / 2);
+  });
+
+  return { byId, gaps };
+}
+
+function mergeIntervals(iv, len) {
+  const cl = iv.map(([a, b]) => [Math.max(1, Math.min(a, b)), Math.min(len - 1, Math.max(a, b))])
+               .filter(([a, b]) => b > a).sort((p, q) => p[0] - q[0]);
+  const out = [];
+  cl.forEach(([a, b]) => {
+    if (out.length && a <= out[out.length - 1][1] + 1) out[out.length - 1][1] = Math.max(out[out.length - 1][1], b);
+    else out.push([a, b]);
+  });
+  return out;
+}
+
+// Muur als dubbele inktlijn (buitenlijn op de celrand, binnenlijn WALL_T naar binnen),
+// onderbroken bij openingen, met neggen (dagkant-streepjes) aan weerszijden van elk gat.
+function wallBand(rc, sideGaps) {
+  let s = "";
+  PLAN_SIDES.forEach(side => {
+    const g = sideGeom(rc, side);
+    const at = (p, inset) => [g.x0 + g.tx * p - g.nx * inset, g.y0 + g.ty * p - g.ny * inset];
+    const line = (p0, p1, inset, w) => {
+      const [x1, y1] = at(p0, inset), [x2, y2] = at(p1, inset);
+      return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="${w}"/>`;
+    };
+    const jamb = p => {
+      const [x1, y1] = at(p, 0), [x2, y2] = at(p, WALL_T);
+      return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="1"/>`;
+    };
+    const seg = (p0, p1) => {
+      let t = line(p0, p1, 0, 1.1);
+      const i0 = Math.max(p0, WALL_T), i1 = Math.min(p1, g.len - WALL_T);
+      if (i1 - i0 > 0.5) t += line(i0, i1, WALL_T, 1.1);
+      return t;
+    };
+    let prev = 0;
+    mergeIntervals(sideGaps[side] || [], g.len).forEach(([a, b]) => {
+      if (a - prev > 0.5) s += seg(prev, a);
+      s += jamb(a) + jamb(b);
+      prev = b;
+    });
+    if (g.len - prev > 0.5) s += seg(prev, g.len);
+  });
+  return s;
+}
+
+// Plansymbolen in het muurgat.
+function windowGlyph(rc, side, t, len) {       // glas: dunne dubbele lijn in de muurband
+  const g = sideGeom(rc, side), p = t * g.len, a = p - len / 2, b = p + len / 2;
+  const at = (pp, inset) => [g.x0 + g.tx * pp - g.nx * inset, g.y0 + g.ty * pp - g.ny * inset];
+  let s = "";
+  [WALL_T * 0.32, WALL_T * 0.68].forEach(ins => {
+    const [x1, y1] = at(a, ins), [x2, y2] = at(b, ins);
+    s += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="0.9"/>`;
+  });
+  return s;
+}
+function ventGlyph(rc, side, t, len) {         // rooster: gestreepte sleuf + tikjes naar buiten
+  const g = sideGeom(rc, side), p = t * g.len, a = p - len / 2, b = p + len / 2;
+  const at = (pp, inset) => [g.x0 + g.tx * pp - g.nx * inset, g.y0 + g.ty * pp - g.ny * inset];
+  const [x1, y1] = at(a, WALL_T / 2), [x2, y2] = at(b, WALL_T / 2);
+  let s = `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${COLORS.inkSoft}" stroke-width="3" stroke-dasharray="2 1.6"/>`;
+  [p - len / 4, p + len / 4].forEach(pp => {
+    const [tx1, ty1] = at(pp, 0);
+    s += `<line x1="${tx1.toFixed(1)}" y1="${ty1.toFixed(1)}" x2="${(tx1 + g.nx * 4).toFixed(1)}" y2="${(ty1 + g.ny * 4).toFixed(1)}" stroke="${COLORS.inkSoft}" stroke-width="1"/>`;
+  });
+  return s;
+}
+function skylightGlyph(rc, side, t) {          // plat dakraam: vierkantje met kruis óp de muur
+  const p = sidePoint(rc, side, t), h = 8, x = p.x - h, y = p.y - h;
+  return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="16" height="16" rx="2" fill="${COLORS.parchment}" stroke="${COLORS.ink}" stroke-width="1.1"/>`
+    + `<line x1="${x.toFixed(1)}" y1="${y.toFixed(1)}" x2="${(x + 16).toFixed(1)}" y2="${(y + 16).toFixed(1)}" stroke="${COLORS.ink}" stroke-width="0.8" opacity="0.7"/>`
+    + `<line x1="${(x + 16).toFixed(1)}" y1="${y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${(y + 16).toFixed(1)}" stroke="${COLORS.ink}" stroke-width="0.8" opacity="0.7"/>`;
+}
+function doorGlyph(pl) {                       // doorgang over de rasterkier + draaisymbool
+  const { ptA, ptB, len } = pl;
+  const jamb = (pt, sgn) => [pt.x + pt.tx * sgn * len / 2, pt.y + pt.ty * sgn * len / 2];
+  const [a1x, a1y] = jamb(ptA, -1), [a2x, a2y] = jamb(ptA, 1);
+  const [b1x, b1y] = jamb(ptB, -1), [b2x, b2y] = jamb(ptB, 1);
+  let s = `<line x1="${a1x.toFixed(1)}" y1="${a1y.toFixed(1)}" x2="${b1x.toFixed(1)}" y2="${b1y.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="0.8" opacity="0.3"/>`
+        + `<line x1="${a2x.toFixed(1)}" y1="${a2y.toFixed(1)}" x2="${b2x.toFixed(1)}" y2="${b2y.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="0.8" opacity="0.3"/>`;
+  if (!pl.fixed) {
+    // deurblad vanaf de negge de kamer in + kwartcirkel (quadratisch benaderd)
+    const inx = -ptA.nx, iny = -ptA.ny;
+    const lx = a1x + inx * len, ly = a1y + iny * len;
+    const cx = a1x + (ptA.tx + inx) * len, cy = a1y + (ptA.ty + iny) * len;
+    s += `<line x1="${a1x.toFixed(1)}" y1="${a1y.toFixed(1)}" x2="${lx.toFixed(1)}" y2="${ly.toFixed(1)}" stroke="${COLORS.ink}" stroke-width="1" opacity="0.55"/>`;
+    s += `<path d="M ${a2x.toFixed(1)} ${a2y.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)}" fill="none" stroke="${COLORS.ink}" stroke-width="0.7" opacity="0.4" stroke-dasharray="2 2"/>`;
+  }
+  return s;
+}
+
+// Kamerinhoud op een vast tekstraster binnen de muren.
+function roomContent(rc, r, z, tall, live) {
+  const x = rc.x, y = rc.y, ix = x + WALL_T + 8;
+  let s = `<rect x="${x + WALL_T}" y="${y + WALL_T}" width="${rc.w - 2 * WALL_T}" height="17" fill="#2a241b08"/>`;
+  // geen verdieping-tag per kamer: de banden in de linkermarge tonen de verdieping al
+  s += `<text x="${ix}" y="${y + WALL_T + 13}" font-size="11" font-family="'Cormorant Garamond',serif" font-style="italic" fill="${COLORS.ink}">${z.label || ""}</text>`;
+  if (r.predicted_temp != null) {
+    s += `<text x="${ix}" y="${y + 52}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
+    s += `<text x="${ix}" y="${y + 70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp != null ? ' · tado ' + fmt(r.actual_temp) + '°' : ''}</text>`;
+    s += `<text x="${ix}" y="${y + 86}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach, 1)}${r.humidity != null ? ' · RV ' + fmt(r.humidity, 0) + '%' : ''}</text>`;
+    if (r.solar_w > 40) s += `<text x="${x + rc.w - WALL_T - 8}" y="${y + 52}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w, 0)}W</text>`;
+    if (live) {
+      // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
+      // + = buitenlucht warmt 'm op. Drempel bewust laag (~8 W): in mild weer met dichte
+      // ramen verliest een kamer maar tientallen W.
+      const net = outsideNet(r);
+      if (net != null && net < -8) s += `<text x="${ix}" y="${y + 103}" font-size="9" fill="${COLORS.rain}">❄ ${fmt(-net, 0)} W eruit</text>`;
+      else if (net != null && net > 8) s += `<text x="${ix}" y="${y + 103}" font-size="9" fill="${COLORS.clay}">🔥 ${fmt(net, 0)} W erin</text>`;
+      s += trendChip(rc, r.trend_c_per_h);
+    }
+  } else {
+    s += `<text x="${ix}" y="${y + 54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
+  }
+  // hoge zone (trap): label in het lege middendeel, weg van energietekst en trend-chip
+  if (tall) s += `<text x="${x + rc.w / 2}" y="${y + rc.h / 2}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
+  return s;
+}
+
+// Trend als chip rechtsonder (verving de gekleurde kamerrand — de muur blijft inkt).
+function trendChip(rc, trend) {
+  if (trend == null || isNaN(trend)) return "";
+  const oc = outlineColor(trend) || COLORS.inkSoft;
+  const w = 58, h = 14, x = rc.x + rc.w - WALL_T - w - 4, y = rc.y + rc.h - WALL_T - h - 4;
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${rgbToRgba(oc, 0.13)}" stroke="${oc}" stroke-width="0.8"/>`
+    + `<text x="${x + w / 2}" y="${y + 10}" font-size="8.5" font-weight="600" fill="${oc}" text-anchor="middle">${trendText(trend)}</text>`;
+}
+
+// Wind + zon in één omkaderd cartouche rechtsboven (i.p.v. los zwevende glyphs).
+function cartouche(w, W) {
+  const bw = 184, bh = 56, x0 = W - bw - 8, y0 = 6;
+  let s = `<rect x="${x0}" y="${y0}" width="${bw}" height="${bh}" rx="4" fill="#2a241b06" stroke="${COLORS.ink}" stroke-width="0.8"/>`;
+  const cx = x0 + 28, cy = y0 + bh / 2, R = 14;
+  s += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${COLORS.inkSoft}" stroke-width="1" opacity="0.5"/>`;
+  s += `<text x="${cx}" y="${cy - R - 2}" font-size="6.5" fill="${COLORS.inkSoft}" text-anchor="middle">N</text>`;
+  if (w.wind_dir != null) {
+    const toRad = ((w.wind_dir + 180) % 360) * Math.PI / 180, R2 = R - 3;   // waarheen de wind waait
+    const tx = cx + Math.sin(toRad) * R2, ty = cy - Math.cos(toRad) * R2;
+    const fx = cx - Math.sin(toRad) * R2, fy = cy + Math.cos(toRad) * R2;
+    s += flowArrow(fx, fy, tx, ty, 2.2, Math.max(0.6, Math.min(2, 6 / Math.max(1, w.wind_speed || 1))), COLORS.rain);
+  }
+  const txx = x0 + 52;
+  s += `<text x="${txx}" y="${y0 + 22}" font-size="9" fill="${COLORS.ink}">wind ${fmt(w.wind_speed, 1)} m/s ${dirName(w.wind_dir)}</text>`;
+  if (w.sun_el != null && w.sun_el > 0) {
+    s += `<text x="${txx}" y="${y0 + 40}" font-size="9" fill="${COLORS.inkSoft}">zon az ${fmt(w.sun_az, 0)}° · h ${fmt(w.sun_el, 0)}°</text>`;
+    const sx = x0 + bw - 22, sy = y0 + bh / 2;
+    s += `<circle cx="${sx}" cy="${sy}" r="13" fill="url(#sunhalo)"/>`;
+    s += `<circle cx="${sx}" cy="${sy}" r="5" fill="${COLORS.sun}"/>`;
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      s += `<line x1="${(sx + Math.cos(a) * 7).toFixed(1)}" y1="${(sy + Math.sin(a) * 7).toFixed(1)}" x2="${(sx + Math.cos(a) * 10.5).toFixed(1)}" y2="${(sy + Math.sin(a) * 10.5).toFixed(1)}" stroke="${COLORS.sun}" stroke-width="1.3"/>`;
+    }
+  } else {
+    s += `<text x="${txx}" y="${y0 + 40}" font-size="9" fill="${COLORS.inkSoft}">nacht</text>`;
+    s += `<text x="${x0 + bw - 22}" y="${y0 + bh / 2 + 5}" font-size="13" text-anchor="middle">🌙</text>`;
+  }
+  return s;
+}
+
+// Gebogen stroompijl (kwadratische Bézier) — zelfde dash/duur-regels als flowArrow,
+// pijlkop uit de eindtangent. Gebruikt om stromen dóór een muuropening te rijgen.
+function flowArrowCurved(x0, y0, cx, cy, x1, y1, w, dur, col) {
+  const ang = Math.atan2(y1 - cy, x1 - cx), ah = 6 + w;
+  const head = `M ${x1} ${y1} L ${x1 - Math.cos(ang - 0.42) * ah} ${y1 - Math.sin(ang - 0.42) * ah} M ${x1} ${y1} L ${x1 - Math.cos(ang + 0.42) * ah} ${y1 - Math.sin(ang + 0.42) * ah}`;
+  const dash = `${Math.max(4, w * 1.4).toFixed(0)} ${Math.max(7, w * 3).toFixed(0)}`;
+  return `<path class="flowline airy" d="M ${x0} ${y0} Q ${cx} ${cy} ${x1} ${y1}" fill="none" stroke="${col}" stroke-width="${w.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${dash}" style="animation-duration:${dur.toFixed(2)}s,3.5s"/>`
+    + `<path class="airy" d="${head}" stroke="${col}" stroke-width="${w.toFixed(1)}" fill="none" stroke-linecap="round"/>`;
+}
+
 function floorPlanSVG(d, opts={}) {
   const live = opts.live !== false;           // false = speeltuin: temp/energie niet herrekend
   const meta = d.house_meta || {};
@@ -251,7 +627,7 @@ function floorPlanSVG(d, opts={}) {
   if (!ids.length) return '<div class="ctl-sub">Geen plattegrond — vul plan_xy in house_model.json.</div>';
   let minx=99,miny=99,maxx=-99,maxy=-99;
   ids.forEach(id => { const [x,y]=zones[id].plan_xy; minx=Math.min(minx,x); maxx=Math.max(maxx,x); miny=Math.min(miny,y); maxy=Math.max(maxy,y); });
-  const cw=164, ch=124, gap=30, padL=92, padT=58, padR=54, padB=30;
+  const { cw, ch, gap, padL, padT, padR, padB } = FP;
   const cols=maxx-minx+1, rowsN=maxy-miny+1;
   const W=padL+padR+cols*cw+(cols-1)*gap, H=padT+padB+rowsN*ch+(rowsN-1)*gap;
   const planH = id => zones[id].plan_h || 1;                       // hoeveel rijen hoog (trap = 3)
@@ -261,6 +637,7 @@ function floorPlanSVG(d, opts={}) {
   const border = (id, tx, ty) => { const r=rectOf(id);            // punt op de rand richting (tx,ty)
     return [Math.max(r.x, Math.min(r.x+r.w, tx)), Math.max(r.y, Math.min(r.y+r.h, ty))]; };
   const td  = id => (d.rooms||{})[id] || {};
+  const placed = placeOpenings(meta, zones, ids, rectOf, planH);
 
   let defs = `<defs>
     <radialGradient id="sunhalo" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="${COLORS.sun}" stop-opacity="0.9"/><stop offset="100%" stop-color="${COLORS.sun}" stop-opacity="0"/></radialGradient>
@@ -277,77 +654,64 @@ function floorPlanSVG(d, opts={}) {
     s += `<text x="16" y="${y+(ch+gap)/2}" font-size="9" fill="${COLORS.inkSoft}" letter-spacing="1" transform="rotate(-90 16 ${y+(ch+gap)/2})" text-anchor="middle">${(FLOOR_NL[floorsByRow[yrow]]||'').toUpperCase()}</text>`;
   });
 
-  // Deur-skelet: een vage stippellijn voor élke deur (toont de verbindingen, óók dicht).
-  (Object.values(meta.doors||{})).forEach(door => {
-    const [a,b]=door.between||[]; if(!zones[a]||!zones[b]) return;
-    const [ax,ay]=ctr(a),[bx,by]=ctr(b);
-    const [pax,pay]=border(a,bx,by), [pbx,pby]=border(b,ax,ay);
-    s += `<line x1="${pax}" y1="${pay}" x2="${pbx}" y2="${pby}" stroke="${COLORS.ink}" stroke-width="1" stroke-dasharray="2 5" opacity="0.18"/>`;
-  });
-
-  // Zones (kamers + junctie/trap), getint op temperatuur.
+  // Zones: comfort-tint als "vloerafwerking" bínnen de muren; de muren als dubbele
+  // architectenlijn met échte openingen erin (wallBand + glyphs hieronder).
   ids.forEach(id => {
-    const r=td(id), z=zones[id], rc=rectOf(id), x=rc.x, y=rc.y, tall=planH(id)>1;
-    // Rand = richting van de temperatuurverandering (rood opwarmend ↔ blauw afkoelend);
-    // in de speeltuin niet herrekend → standaard rand.
-    const oc = live ? outlineColor(r.trend_c_per_h) : null;
-    s += `<rect class="zone-rect" x="${x}" y="${y}" width="${rc.w}" height="${rc.h}" rx="7" fill="${zoneFill(r)}" stroke="${oc||COLORS.ink}" stroke-width="${oc?outlineWidth(r.trend_c_per_h).toFixed(1):'1.4'}"/>`;
-    s += `<rect x="${x}" y="${y}" width="${rc.w}" height="20" rx="7" fill="#2a241b08"/>`;
-    s += `<text x="${x+12}" y="${y+14}" font-size="11" font-family="'Cormorant Garamond',serif" font-style="italic" fill="${COLORS.ink}">${z.label||id}</text>`;
-    s += `<text x="${x+rc.w-8}" y="${y+14}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="end">${tall?'bg→2e':floorTag(z.floor??0)}</text>`;
-    if (r.predicted_temp!=null) {
-      s += `<text x="${x+12}" y="${y+50}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
-      s += `<text x="${x+12}" y="${y+70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp!=null?' · tado '+fmt(r.actual_temp)+'°':''}</text>`;
-      s += `<text x="${x+12}" y="${y+88}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach,1)}${r.ach>=1?' 🌬':''}</text>`;
-      if (r.solar_w>40) s += `<text x="${x+rc.w-10}" y="${y+50}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w,0)}W</text>`;
-      if (live) {
-        // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
-        // + = buitenlucht warmt 'm op. De tegenhanger van de zon-instroom hierboven. Drempel
-        // bewust laag (~8 W): in mild weer met dichte ramen verliest een kamer maar tientallen
-        // W, dus een hoge drempel (zoals de zon) zou bijna alles verbergen.
-        const net = outsideNet(r);
-        if (net!=null && net<-8)
-          s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.rain}">❄ ${fmt(-net,0)} W naar buiten</text>`;
-        else if (net!=null && net>8)
-          s += `<text x="${x+12}" y="${y+106}" font-size="9" fill="${COLORS.clay}">🔥 ${fmt(net,0)} W van buiten</text>`;
-        // Trend-uitlezing rechtsonder, in dezelfde kleur als de rand.
-        if (r.trend_c_per_h!=null)
-          s += `<text x="${x+rc.w-10}" y="${y+106}" font-size="9" fill="${oc||COLORS.inkSoft}" text-anchor="end">${trendText(r.trend_c_per_h)}</text>`;
-      }
-    } else {
-      s += `<text x="${x+12}" y="${y+54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
-    }
-    if (tall) s += `<text x="${x+rc.w/2}" y="${y+rc.h-12}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
+    const r=td(id), z=zones[id], rc=rectOf(id), tall=planH(id)>1;
+    s += `<rect class="zone-rect" x="${rc.x+WALL_T}" y="${rc.y+WALL_T}" width="${rc.w-2*WALL_T}" height="${rc.h-2*WALL_T}" fill="${zoneFill(r)}"/>`;
+    s += wallBand(rc, placed.gaps[id] || {});
+    s += roomContent(rc, r, z, tall, live);
   });
 
-  // Stromen: geanimeerde, luchtige pijlen (dikte ∝ debiet, snelheid ∝ debiet).
-  const wins = meta.windows||{};
-  const vnts = meta.vents||{};
+  // Openingen: raam-/rooster-/dakraam-/deursymbolen in de muur.
+  Object.values(placed.byId).forEach(pl => {
+    if (pl.kind === "door") s += doorGlyph(pl);
+    else if (pl.kind === "skylight") s += skylightGlyph(rectOf(pl.room), pl.side, pl.t);
+    else if (pl.kind === "vent") s += ventGlyph(rectOf(pl.room), pl.side, pl.t, pl.len);
+    else s += windowGlyph(rectOf(pl.room), pl.side, pl.t, pl.len);
+  });
+
+  // Stromen: geanimeerde, luchtige pijlen (dikte ∝ debiet, snelheid ∝ debiet) die door
+  // de muuropening rijgen. Element zonder plaatsing → oude centrum-azimut-projectie.
   (d.flows||[]).forEach(f => {
     const q=Math.abs(f.flow_m3s); if (q<0.0025) return;     // verwaarloosbaar → niet tekenen
     const wd=Math.max(1.6, Math.min(8, q*15));
     const dur=Math.max(0.5, Math.min(2.6, 0.16/q));
+    const pl = placed.byId[f.id];
     if (f.b==="outside") {
-      const win=wins[f.id]||vnts[f.id]; const zid = (win&&win.room)||f.a; if(!zones[zid]) return;
-      const rc=rectOf(zid); const into = f.flow_m3s < 0; const col = into?COLORS.rain:COLORS.clay;
-      let edgeX, edgeY, outX, outY;
-      if (win && win.kind==="skylight") {            // plat dakraam → bovenaan, pijl omhoog
-        edgeX=rc.x+rc.w/2; edgeY=rc.y+5; outX=edgeX; outY=edgeY-26;
+      const into = f.flow_m3s < 0, col = into?COLORS.rain:COLORS.clay;
+      if (pl && pl.pt) {
+        const p = pl.pt;
+        const ox = p.x + p.nx*28 + p.tx*7, oy = p.y + p.ny*28 + p.ty*7;   // buiten
+        const ixx = p.x - p.nx*19 - p.tx*6, iyy = p.y - p.ny*19 - p.ty*6; // binnen
+        s += into ? flowArrowCurved(ox,oy,p.x,p.y,ixx,iyy,wd,dur,col)
+                  : flowArrowCurved(ixx,iyy,p.x,p.y,ox,oy,wd,dur,col);
       } else {
+        const win=(meta.windows||{})[f.id]||(meta.vents||{})[f.id]; const zid=(win&&win.room)||f.a; if(!zones[zid]) return;
+        const rc=rectOf(zid);
         const az=((win?win.facade_azimuth_deg:0)||0)*Math.PI/180, ux=Math.sin(az), uy=-Math.cos(az);
-        edgeX=rc.x+rc.w/2+ux*(rc.w/2-4); edgeY=rc.y+rc.h/2+uy*(Math.min(rc.h,ch)/2-4);
-        outX=edgeX+ux*26; outY=edgeY+uy*26;
-        s += `<rect x="${edgeX-6}" y="${edgeY-4}" width="12" height="8" rx="2" fill="${COLORS.moss}" stroke="${COLORS.ink}" stroke-width="1" transform="rotate(${(win?win.facade_azimuth_deg:0)||0} ${edgeX} ${edgeY})"/>`;
+        const edgeX=rc.x+rc.w/2+ux*(rc.w/2-4), edgeY=rc.y+rc.h/2+uy*(Math.min(rc.h,ch)/2-4);
+        const outX=edgeX+ux*26, outY=edgeY+uy*26;
+        s += into ? flowArrow(outX,outY,edgeX,edgeY,wd,dur,col) : flowArrow(edgeX,edgeY,outX,outY,wd,dur,col);
       }
-      s += into ? flowArrow(outX,outY,edgeX,edgeY,wd,dur,col) : flowArrow(edgeX,edgeY,outX,outY,wd,dur,col);
     } else if (zones[f.a] && zones[f.b]) {
-      const [ax,ay]=ctr(f.a),[bx,by]=ctr(f.b);
-      const [pax,pay]=border(f.a,bx,by), [pbx,pby]=border(f.b,ax,ay); const fwd=f.flow_m3s>=0;
-      s += flowArrow(fwd?pax:pbx, fwd?pay:pby, fwd?pbx:pax, fwd?pby:pay, wd, dur, COLORS.mossLight);
+      const fwd = f.flow_m3s>=0;
+      if (pl && pl.ptA) {
+        const pa = pl.ptA, pb = pl.ptB;
+        const ax = pa.x - pa.nx*18, ay = pa.y - pa.ny*18;   // binnen kamer a
+        const bx = pb.x - pb.nx*18, by = pb.y - pb.ny*18;   // binnen kamer b
+        const mx = (pa.x+pb.x)/2, my = (pa.y+pb.y)/2;       // midden in de deuropening
+        s += fwd ? flowArrowCurved(ax,ay,mx,my,bx,by,wd,dur,COLORS.mossLight)
+                 : flowArrowCurved(bx,by,mx,my,ax,ay,wd,dur,COLORS.mossLight);
+      } else {
+        const [ax,ay]=ctr(f.a),[bx,by]=ctr(f.b);
+        const [pax,pay]=border(f.a,bx,by), [pbx,pby]=border(f.b,ax,ay);
+        s += flowArrow(fwd?pax:pbx, fwd?pay:pby, fwd?pbx:pax, fwd?pby:pay, wd, dur, COLORS.mossLight);
+      }
     }
   });
 
-  s += compassSun(d.weather||{}, W, padT);
+  s += cartouche(d.weather||{}, W);
   s += `</svg>`;
   return s;
 }
@@ -358,35 +722,6 @@ function flowArrow(x1,y1,x2,y2,w,dur,col) {
   const dash=`${Math.max(4,w*1.4).toFixed(0)} ${Math.max(7,w*3).toFixed(0)}`;
   return `<line class="flowline airy" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${w.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${dash}" style="animation-duration:${dur.toFixed(2)}s,3.5s"/>`+
     `<path class="airy" d="${head}" stroke="${col}" stroke-width="${w.toFixed(1)}" fill="none" stroke-linecap="round"/>`;
-}
-
-function compassSun(w, W, padT) {
-  let s="";
-  // Windroos rechtsboven.
-  if (w.wind_dir!=null) {
-    const cxp=W-46, cyp=padT-14, R=18;
-    const toRad=((w.wind_dir+180)%360)*Math.PI/180;     // waarheen de wind waait
-    const tx=cxp+Math.sin(toRad)*R, ty=cyp-Math.cos(toRad)*R;
-    const fx=cxp-Math.sin(toRad)*R, fy=cyp+Math.cos(toRad)*R;
-    s += `<circle cx="${cxp}" cy="${cyp}" r="${R}" fill="none" stroke="${COLORS.inkSoft}" stroke-width="1" opacity="0.4"/>`;
-    s += `<text x="${cxp}" y="${cyp-R-3}" font-size="7" fill="${COLORS.inkSoft}" text-anchor="middle">N</text>`;
-    s += flowArrow(fx,fy,tx,ty,3,Math.max(0.6,Math.min(2,6/Math.max(1,w.wind_speed||1))),COLORS.rain);
-    s += `<text x="${cxp}" y="${cyp+R+12}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">${fmt(w.wind_speed,1)} m/s ${dirName(w.wind_dir)}</text>`;
-  }
-  // Zon linksboven.
-  if (w.sun_el!=null) {
-    const sx=44, sy=padT-16;
-    if (w.sun_el>0) {
-      s += `<circle cx="${sx}" cy="${sy}" r="16" fill="url(#sunhalo)"/>`;
-      s += `<circle cx="${sx}" cy="${sy}" r="6" fill="${COLORS.sun}"/>`;
-      for (let i=0;i<8;i++){ const a=i*Math.PI/4; s+=`<line x1="${sx+Math.cos(a)*8}" y1="${sy+Math.sin(a)*8}" x2="${sx+Math.cos(a)*12}" y2="${sy+Math.sin(a)*12}" stroke="${COLORS.sun}" stroke-width="1.4"/>`; }
-      s += `<text x="${sx}" y="${sy+30}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">az ${fmt(w.sun_az,0)}° h ${fmt(w.sun_el,0)}°</text>`;
-    } else {
-      s += `<text x="${sx}" y="${sy+4}" font-size="14" text-anchor="middle">🌙</text>`;
-      s += `<text x="${sx}" y="${sy+20}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">nacht</text>`;
-    }
-  }
-  return s;
 }
 
 // ===================== CHARTS =====================

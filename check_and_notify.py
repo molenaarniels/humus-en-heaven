@@ -309,4 +309,7 @@ def main():
 
 
 if __name__ == "__main__":
-    run_guarded(main, "Humus & Heaven check")
+    # fail_threshold=2: de workflow doet bij falen één herkansing na 10 min
+    # (zelfde job, dus zelfde RUNNER_TEMP-teller) — alleen als die óók faalt
+    # is de dag echt verloren en komt er één alert.
+    run_guarded(main, "Humus & Heaven check", fail_threshold=2)

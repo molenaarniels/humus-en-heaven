@@ -24,8 +24,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     # API-calls + commit duren normaal <5 min; zonder cap houdt een hangende
-    # HTTP-call de runner 6 uur (GitHub-default) vast.
-    timeout-minutes: 15
+    # HTTP-call de runner 6 uur (GitHub-default) vast. De cap dekt ook de
+    # in-job herkansing (10 min slaap + tweede poging) bij een API-storing.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
 
@@ -46,7 +47,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GIST_TOKEN }}
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
           FORCE_NOTIFY: ${{ github.event.inputs.force_notify }}
-        run: python check_and_notify.py
+        # Eén herkansing na 10 min: een transiente Open-Meteo-hapering om
+        # 06:00 kost dan geen dag data. run_guarded telt mee in RUNNER_TEMP
+        # (zelfde job) en alert pas bij de 2e mislukking (fail_threshold=2).
+        run: |
+          python check_and_notify.py || {
+            echo "::warning::eerste poging mislukt — herkansing over 10 min"
+            sleep 600
+            python check_and_notify.py
+          }
 
       - name: Commit updated data
         run: |

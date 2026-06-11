@@ -1492,5 +1492,7 @@ def main():
 
 
 if __name__ == "__main__":
-    # fail_threshold=3: kwartierloop — pas alerten bij ~45 min aanhoudende storing.
-    run_guarded(main, "airflow-twin", fail_threshold=3)
+    # fail_threshold=6: kwartierloop — pas alerten bij ~1,5 uur aanhoudende
+    # storing. Een gemiste iteratie is onschuldig (de volgende haalt bij);
+    # alleen een echte outage is een bericht waard.
+    run_guarded(main, "airflow-twin", fail_threshold=6)

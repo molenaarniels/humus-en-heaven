@@ -248,6 +248,35 @@ def test_calibrate_reduces_error():
     assert rmse2 <= rmse1 + 1e-6
 
 
+def test_h_am_is_learnable():
+    # `h_am` (lucht↔massa-koppeling) leert nu per kamer mee, zodat `c_air` niet de enige knop
+    # is voor de respons-snelheid van de luchtknoop (anders satureerde `c_air` op zijn grens).
+    assert "h_am" in am.PER_ROOM_PARAMS
+    assert ("a", "h_am") in am._param_keys(["a"])
+
+
+def test_regularization_pulls_insensitive_param_to_prior():
+    # De Tikhonov-ridge naar de priors moet een zwak-/niet-identificeerbare richting terug naar
+    # zijn prior trekken i.p.v. 'm op een grens te laten staan. Met irr=0 heeft `solar_gain`
+    # géén effect op de simulatie (nul gradient): zónder regularisatie zou hij op zijn
+    # bovengrens (3.0) blijven plakken; mét regularisatie zakt hij richting de prior (1.0).
+    house = _toy_house()
+    tl = _const_timeline(14.0, hours=12, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    truth = am.default_params(house)
+    sim = am.simulate(house, truth, tl, seed, calib_only_rooms=set(house["rooms"]))
+    actual = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+
+    start = am.default_params(house)
+    for rid in house["rooms"]:
+        start[rid]["solar_gain"] = am.BOUNDS["solar_gain"][1]   # gerailed op de bovengrens
+    new, _ = am.calibrate(house, start, tl, seed, actual, max_iter=4, time_budget_s=5)
+    for rid in house["rooms"]:
+        assert new[rid]["solar_gain"] < start[rid]["solar_gain"] - 0.4   # aantoonbaar losgetrokken
+        assert new[rid]["solar_gain"] < 2.5                              # richting de prior (1.0)
+
+
 def test_sensor_outdoor_bias_blend():
     # Een sensor op de buitenmuur leest een lineaire blend richting buiten. frac=0 en
     # ontbrekende waarden zijn no-ops (mirror van wu_bias: vaste meetcorrectie).

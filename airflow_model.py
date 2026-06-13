@@ -62,10 +62,24 @@ P_ATM  = 101325.0   # Pa
 R_AIR  = 287.05     # J/(kg·K)
 
 # Kalibratievenster + integratie.
-CALIB_WINDOW_H = 30.0    # uur historie waarover we de fout minimaliseren
+CALIB_WINDOW_H = 48.0    # uur historie waarover we de fout minimaliseren (~2 dag-nacht-cycli;
+                         # window_data houdt ~48u tado-historie → traag-veranderende termen
+                         # ua_party/q_int/c_mass worden identificeerbaar i.p.v. naar hun grens
+                         # te driften op een half-daags venster)
+WARMUP_H       = 24.0    # uur sim-only aanloop vóór het residu-venster: de trage massaknoop
+                         # equilibreert zodat zijn beginwaarde geen vrije laagfrequente bias is.
+                         # Drivers reiken ver genoeg terug via Open-Meteo past_days; residuen
+                         # tellen alleen waar tado-samples bestaan (≤CALIB_WINDOW_H terug)
 SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabiliteit)
 RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
+# Tikhonov-regularisatie: trek elke leerbare schaal zacht naar zijn prior (1.0, cp_shelter 0.5)
+# zodat zwak-identificeerbare parameters (milde-weer-degeneratie tussen ua_env/ua_party/q_int)
+# naar hun prior teruggetrokken worden i.p.v. naar hun grens te driften. Levenberg-λ dempt
+# alleen de stapgrootte, niet de absolute drift; deze ridge wel. Klein t.o.v. de data-Hessiaan
+# zodat sterk-bepaalde parameters (grote ∂fout/∂param) vrij blijven en alleen platte richtingen
+# naar de prior gaan.
+REG_WEIGHT     = 3.0
 
 # ── Tussenwoning-fysica: buren + interne warmtelast ─────────────────────────────────
 # Dit is een jaren-'20 rijtjeshuis (tussenwoning): woningscheidende (party) muren grenzen
@@ -84,18 +98,29 @@ INTERNAL_GAIN_WM3        = 1.5   # W per m³ kamervolume bij profiel = 1.0 (prio
 INTERNAL_DAY_START       = 7     # lokaal uur: profiel → dag (wakker)
 INTERNAL_NIGHT_START     = 23    # lokaal uur: profiel → nacht (slapend)
 INTERNAL_NIGHT_FRACTION  = 0.5   # nacht-aandeel van de dag-last
+INTERNAL_RAMP_H          = 1.0   # uur — duur van de soepele dag/nacht-overgang (geen sprong)
+
+
+def _ramp(x: float, center: float, width: float) -> float:
+    """Stijgende lineaire ramp 0→1 over [center−width/2, center+width/2], daarbuiten geklemd."""
+    if width <= 0:
+        return 1.0 if x >= center else 0.0
+    return max(0.0, min(1.0, (x - center) / width + 0.5))
 
 
 def internal_gain_profile(t) -> float:
-    """Dag/nacht-schaalfactor (0..1) voor de interne warmtelast op tijdstip `t` (lokaal).
-    Wakker (INTERNAL_DAY_START..NIGHT_START) = 1.0, slapend = INTERNAL_NIGHT_FRACTION.
-    Robuust tegen een t zonder .hour (→ 1.0)."""
+    """Dag/nacht-schaalfactor (0..1) voor de interne warmtelast op tijdstip `t` (lokaal):
+    wakker (INTERNAL_DAY_START..NIGHT_START) → 1.0, slapend → INTERNAL_NIGHT_FRACTION, met een
+    soepele ~INTERNAL_RAMP_H overgang i.p.v. een harde sprong (een stap injecteert een knik in
+    de voorspelde temp precies op 07/23u, die als residu terugkomt en de diurnale RMSE-swing
+    voedt). Robuust tegen een t zonder .hour (→ 1.0)."""
     try:
-        hr = t.hour
+        hr = t.hour + t.minute / 60.0
     except AttributeError:
         return 1.0
-    awake = INTERNAL_DAY_START <= hr < INTERNAL_NIGHT_START
-    return 1.0 if awake else INTERNAL_NIGHT_FRACTION
+    awake = min(_ramp(hr, INTERNAL_DAY_START, INTERNAL_RAMP_H),
+                1.0 - _ramp(hr, INTERNAL_NIGHT_START, INTERNAL_RAMP_H))
+    return INTERNAL_NIGHT_FRACTION + (1.0 - INTERNAL_NIGHT_FRACTION) * awake
 
 # ── Robuust leren: bescherming tegen niet-gerapporteerde raamwijzigingen ─────────────
 # Als de werkelijke openingen afwijken van de gerapporteerde log (b.v. iemand zet thuis
@@ -171,9 +196,11 @@ BOUNDS = {
     "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.0, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0),
 }
-# Welke parameters per kamer leren (h_am/ua_mass blijven op hun prior — minder vrijheid,
-# stabieler leren). De rest is globaal.
-PER_ROOM_PARAMS = ["c_air", "c_mass", "ua_env", "solar_gain", "ua_party", "q_int"]
+# Welke parameters per kamer leren. `h_am` (lucht↔massa-koppeling) leert mee zodat `c_air`
+# niet langer de énige knop is die bepaalt hoe snel de luchtknoop de drivers volgt — zonder een
+# vrije `h_am` satureerde `c_air` op zijn bovengrens in álle kamers (degeneratie). `ua_mass`
+# blijft op zijn prior (minder vrijheid, stabieler). De rest is globaal.
+PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int"]
 GLOBAL_PARAMS   = ["cp_shelter", "cd", "vent_eff"]
 
 
@@ -665,7 +692,10 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     rho_cp = 1.2 * CP_AIR
 
     Ta = {z: seed.get(z, timeline[0]["T_out"]) for z in zones}
-    Tm = dict(Ta)
+    # Massaknoop richting een warme blend (NEIGHBOR_TEMP) i.p.v. = luchtknoop: met de sim-only
+    # WARMUP_H aanloop equilibreert hij ruim vóór het residu-venster (massa-tijdconstante ~uren),
+    # zodat zijn beginwaarde geen vrije laagfrequente bias meer is die de fit scheeftrekt.
+    Tm = {z: 0.5 * (Ta[z] + NEIGHBOR_TEMP) for z in zones}
     out = {rid: [] for rid in rooms if (calib_only_rooms is None or rid in calib_only_rooms)}
 
     n = len(zones)
@@ -844,10 +874,10 @@ def _wcost(res: list[float]) -> float:
 
 
 def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
-              time_budget_s: float = 25.0) -> tuple[dict, float]:
-    """Minimaliseer Σ(voorspeld−werkelijk)² over het venster met gedempte Gauss-Newton.
-    Online: schuif maar LEARN_RATE naar het optimum (stabiel, convergeert over runs).
-    Geeft (nieuwe params, RMSE-na)."""
+              time_budget_s: float = 40.0) -> tuple[dict, float]:
+    """Minimaliseer Σ(voorspeld−werkelijk)² + Tikhonov-ridge naar de priors over het venster
+    met gedempte Gauss-Newton. Online: schuif maar LEARN_RATE naar het optimum (stabiel,
+    convergeert over runs). Geeft (nieuwe params, RMSE-na)."""
     rooms = [rid for rid in actual if actual[rid]]
     if not rooms:
         return params, float("nan")
@@ -855,11 +885,18 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     keys = _param_keys(rooms)
     x = params_to_vec(params, keys)
     base = params
+    prior_vec = [PRIORS[name] for _, name in keys]   # ridge-anker per parameter
+
+    def _total_cost(res: list[float], xv: list[float]) -> float:
+        """Huber-datakosten + Tikhonov-ridge naar de priors. Dezelfde schaal als de
+        normaalvergelijkingen (de factor 2 valt consistent aan beide kanten weg)."""
+        pen = REG_WEIGHT * sum((xv[k] - prior_vec[k]) ** 2 for k in range(len(keys)))
+        return _wcost(res) + pen
 
     r0 = _residuals(house, params, timeline, seed, actual, rooms_set)
     if not r0:
         return params, float("nan")
-    best_cost = _wcost(r0)          # Huber-gewogen kosten sturen accept/reject
+    best_cost = _total_cost(r0, x)   # Huber-data + ridge sturen accept/reject
 
     t_start = time.time()
     lam = 1e-3
@@ -886,14 +923,23 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         # Gewogen normaalvergelijkingen (JᵀWJ + λI) δ = −JᵀWr.
         nk = len(keys)
         JtJ = [[sum(w[i] * J[i][a] * J[i][b] for i in range(m)) for b in range(nk)] for a in range(nk)]
+        Jtr = [sum(w[i] * J[i][a] * r[i] for i in range(m)) for a in range(nk)]
+        # Tikhonov-ridge naar de priors: Gauss-Newton-Hessiaan (+REG_WEIGHT op de diagonaal)
+        # en gradient (+REG_WEIGHT·(x−prior)) van de penalty. Een platte (zwak-bepaalde)
+        # richting heeft een kleine data-Hessiaan, dus de ridge domineert en trekt 'm naar de
+        # prior; een sterk-bepaalde richting heeft een grote data-Hessiaan en blijft vrij.
+        for a in range(nk):
+            JtJ[a][a] += REG_WEIGHT
+            Jtr[a] += REG_WEIGHT * (x[a] - prior_vec[a])
+        # Levenberg-demping op de (geregulariseerde) diagonaal.
         for a in range(nk):
             JtJ[a][a] += lam * (JtJ[a][a] + 1.0)
-        Jtr = [sum(w[i] * J[i][a] * r[i] for i in range(m)) for a in range(nk)]
         delta = solve_linear(JtJ, [-v for v in Jtr])
         if delta is None:
             break
         x_new = [x[j] + delta[j] for j in range(nk)]
-        new_cost = _wcost(_residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set))
+        new_cost = _total_cost(
+            _residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set), x_new)
         if math.isnan(new_cost) or new_cost >= best_cost:
             lam *= 4.0                      # geen verbetering → meer demping
             if lam > 1e6:
@@ -1083,7 +1129,9 @@ def fetch_weather() -> dict:
                     "wind_direction_10m,wind_gusts_10m,shortwave_radiation,direct_radiation"),
         "wind_speed_unit": "ms",
         "timezone": "Europe/Amsterdam",
-        "past_days": 3, "forecast_days": 2,
+        # Genoeg verleden voor het residu-venster (CALIB_WINDOW_H) plus de sim-only WARMUP_H
+        # aanloop van de massaknoop, met marge.
+        "past_days": 4, "forecast_days": 2,
     }
     data = get_json("https://api.open-meteo.com/v1/forecast", params,
                     timeout=25, label="open-meteo")
@@ -1251,8 +1299,11 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * int_profile_now, 0),
             "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
             "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
+            # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
+            # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
             "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
-                                 for t, v in sens_series],
+                                 for t, v in sens_series
+                                 if t >= now - _timedelta_h(CALIB_WINDOW_H)],
             "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
             "params": params.get(rid, {}),
         }
@@ -1428,7 +1479,9 @@ def main():
 
     since = now - _timedelta_h(CALIB_WINDOW_H)
     actual = collect_actual(house, wd, since)
-    timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H)
+    # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
+    # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
+    timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H)
     if not timeline:
         print("[airflow_model] Geen weerdata → kan niet simuleren. Stop.")
         sys.exit(1)

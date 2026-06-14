@@ -94,6 +94,54 @@ def test_facade_irradiance_diffuse_only_drops_beam():
     assert night_full == pytest.approx(night_diff, abs=1e-12)
 
 
+def test_facade_irradiance_horizon_blocks_low_sun():
+    # Overburen (+ boom) vóór de NW-gevel: staat de zon lager dan de obstakel-elevatie, dan
+    # valt de directe beam weg en blijft enkel diffuus over — als diffuse_only, maar
+    # elevatie-afhankelijk i.p.v. permanent.
+    az = 309.0
+    above = am.facade_irradiance(az, az, 20.0, 700.0, 120.0, 90.0, False, 14.0)  # 20° > obstakel
+    below = am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False, 14.0)   # 8° < obstakel
+    assert below == pytest.approx(120.0 * 0.5, abs=1e-9)   # enkel diffuus (verticaal → sky_view 0.5)
+    assert below < above
+    # horizon_deg default 0 → identiek aan geen-obstakel, en die ziet de 8°-zon nog wél als beam.
+    no_obstacle = am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False)
+    assert no_obstacle == pytest.approx(
+        am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False, 0.0), abs=1e-12)
+    assert no_obstacle > below
+
+
+def test_build_timeline_averages_solar_over_step():
+    # build_timeline middelt de instraling over elke 15-min stap (SOLAR_SUBSTEPS sub-samples op
+    # de midden-regel) i.p.v. één punt-sample aan de stap-rand → dempt de avond-aliasing van de
+    # snel-draaiende lage NW-zon. Verifieer dat de geraster-irr exact dat sub-sample-gemiddelde is.
+    house = {
+        "rooms": {"r": {}},
+        "windows": {"w": {"room": "r", "facade_azimuth_deg": 309.0,
+                          "glass_m2": 1.0, "tilt_deg": 90.0}},
+    }
+    base = datetime(2026, 6, 14, 17, 0, tzinfo=timezone.utc)
+    rows = [{"dt": base + timedelta(hours=h), "T_out": 16.0, "direct": 600.0, "diffuse": 100.0,
+             "wind_speed": 3.0, "wind_dir": 309.0, "gust": 5.0, "precip": 0.0, "rh": 60.0}
+            for h in range(0, 5)]
+    now = base + timedelta(hours=2)        # 19:00 UTC — lage avondzon in het NW
+    grid = am.build_timeline(house, {"hourly": rows}, [], now, window_h=1.0)
+
+    t = now
+    step = next(s for s in grid if s["t"] == t)
+    expected = 0.0
+    for j in range(am.SOLAR_SUBSTEPS):
+        ts = t + timedelta(hours=0.25 * (j + 0.5) / am.SOLAR_SUBSTEPS)
+        s_az, s_el = am.sun_position(am._LAT, am._LON, ts.astimezone(timezone.utc))
+        expected += 0.7 * am.facade_irradiance(309.0, s_az, s_el, 600.0, 100.0, 90.0, False, 0.0)
+    expected /= am.SOLAR_SUBSTEPS
+    assert step["irr"]["r"] == pytest.approx(expected, abs=1e-9)
+    # De rij bewaart de representatieve zon op het stap-midden (voor het dashboard).
+    mid_az, mid_el = am.sun_position(am._LAT, am._LON,
+                                     (t + timedelta(hours=0.125)).astimezone(timezone.utc))
+    assert step["sun_el"] == pytest.approx(mid_el, abs=1e-9)
+    assert step["sun_az"] == pytest.approx(mid_az, abs=1e-9)
+
+
 def test_wind_pressure_default_unchanged():
     # Zonder tilt_deg-argument blijft de druk identiek aan het verticale-muur-gedrag.
     rho = am.air_density(20.0)

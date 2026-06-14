@@ -71,6 +71,13 @@ WARMUP_H       = 24.0    # uur sim-only aanloop vóór het residu-venster: de tr
                          # Drivers reiken ver genoeg terug via Open-Meteo past_days; residuen
                          # tellen alleen waar tado-samples bestaan (≤CALIB_WINDOW_H terug)
 SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabiliteit)
+SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde van de instraling:
+                         # de lage avondzon draait snel door het NW-gevelvlak (cos-invalshoek-knik),
+                         # waardoor één punt-sample per stap aliast tot zichtbare wiebel in de
+                         # voorspelde temp. Middel de flux over [t, t+dt] op de subinterval-middens
+                         # (300s ≈ SUBSTEP_S) — fysisch de juiste grootheid (gemiddelde flux over de
+                         # stap), niet een momentopname. Behoudt de dag-energie; dempt enkel de
+                         # hoogfrequente aliasing.
 RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 # Tikhonov-regularisatie: trek elke leerbare schaal zacht naar zijn prior (1.0, cp_shelter 0.5)
@@ -267,7 +274,7 @@ def sun_position(lat: float, lon: float, when_utc: datetime) -> tuple[float, flo
 
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
                       direct: float, diffuse: float, tilt_deg: float = 90.0,
-                      diffuse_only: bool = False) -> float:
+                      diffuse_only: bool = False, horizon_deg: float = 0.0) -> float:
     """Instraling (W/m²) op een vlak met azimut `facade_az` en helling `tilt_deg` vanaf
     horizontaal (90 = verticaal raam, 0 = plat dakraam/skylight). Directe component via de
     invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2.
@@ -275,11 +282,18 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
     `diffuse_only`: het raam wordt door een vast obstakel (b.v. een huis ervóór + zonwering)
     permanent uit de directe zonnestraal gehouden, maar ziet nog wél de diffuse hemel. Dan
     valt de beam-term volledig weg en blijft alleen de diffuse view-factor over — anders dan
-    een `shading`/`shade`-factor, die juist béíde componenten gelijk dempt."""
+    een `shading`/`shade`-factor, die juist béíde componenten gelijk dempt.
+
+    `horizon_deg`: schijnbare elevatie (°) van een obstakel vóór de gevel — de gelijk-hoge
+    overburen aan de NW-straatzijde, plus (voor de laagste ramen) een boom. Staat de zon
+    lager dan deze hoek, dan is de directe straal geblokkeerd en blijft enkel diffuus over
+    (dezelfde beam-uit-tak als `diffuse_only`, maar elevatie-afhankelijk i.p.v. permanent).
+    Bewust grof: de diffuse view-factor wordt niet verlaagd voor het weggenomen hemeldeel
+    (tweede-orde), en de boom is een seizoens-/azimut-benadering — verfijn op de echte straat."""
     beta = math.radians(tilt_deg)
     sky_view = (1.0 + math.cos(beta)) / 2.0          # diffuse view factor (0.5 verticaal, 1.0 plat)
     diff_on = (diffuse or 0.0) * sky_view
-    if diffuse_only or sun_el <= 0:
+    if diffuse_only or sun_el <= horizon_deg:
         return max(0.0, diff_on)
     zen = math.radians(90.0 - sun_el)
     daz = math.radians(((sun_az - facade_az + 180.0) % 360.0) - 180.0)
@@ -1191,21 +1205,31 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         T_out = _interp_hourly(rows, t, "T_out")
         wx = {k: _interp_hourly(rows, t, k) for k in
               ("wind_speed", "wind_dir", "gust", "precip", "direct", "diffuse", "rh")}
-        sun_az, sun_el = sun_position(lat, lon, t.astimezone(timezone.utc))
         st = openings_at(log, t)            # gerapporteerde toestand op dit moment (incl. zonwering)
-        irr = {}
-        for rid in house.get("rooms", {}):
-            tot = 0.0
-            for wid, w in house.get("windows", {}).items():
-                if w.get("room") != rid:
-                    continue
-                shade = _shade_factor(wid, w, st)
-                # I = invallende straling op het glas (W/m²) — fysica-symbool.
-                I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,  # noqa: E741
-                                      wx["direct"], wx["diffuse"], w.get("tilt_deg", 90.0),
-                                      bool(w.get("diffuse_only", False)))
-                tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
-            irr[rid] = tot
+        # Representatieve zonpositie op het stap-midden (voor de rij/dashboard; `irr` hieronder
+        # is een tijdsgemiddelde over de stap, geen momentopname).
+        sun_az, sun_el = sun_position(lat, lon, (t + _timedelta_h(0.125)).astimezone(timezone.utc))
+        # Tijdsgemiddelde instraling over [t, t+0.25h] via de midden-regel op SOLAR_SUBSTEPS
+        # subintervallen: dempt de geometrie-aliasing van de snel-draaiende lage avondzon.
+        irr = {rid: 0.0 for rid in house.get("rooms", {})}
+        for j in range(SOLAR_SUBSTEPS):
+            ts = t + _timedelta_h(0.25 * (j + 0.5) / SOLAR_SUBSTEPS)
+            s_az, s_el = sun_position(lat, lon, ts.astimezone(timezone.utc))
+            s_direct = _interp_hourly(rows, ts, "direct")
+            s_diffuse = _interp_hourly(rows, ts, "diffuse")
+            for rid in irr:
+                tot = 0.0
+                for wid, w in house.get("windows", {}).items():
+                    if w.get("room") != rid:
+                        continue
+                    shade = _shade_factor(wid, w, st)
+                    # I = invallende straling op het glas (W/m²) — fysica-symbool.
+                    I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), s_az, s_el,  # noqa: E741
+                                          s_direct, s_diffuse, w.get("tilt_deg", 90.0),
+                                          bool(w.get("diffuse_only", False)),
+                                          w.get("horizon_elevation_deg", 0.0))
+                    tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
+                irr[rid] += tot / SOLAR_SUBSTEPS
         grid.append({"t": t, "T_out": T_out, "irr": irr, "states": st,
                      "weather": wx, "dt": 900.0, "sun_az": sun_az, "sun_el": sun_el})
         t = t + _timedelta_h(0.25)

@@ -676,10 +676,15 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
 
 
 def simulate(house: dict, params: dict, timeline: list[dict],
-             seed: dict, calib_only_rooms: set | None = None) -> dict:
+             seed: dict, calib_only_rooms: set | None = None,
+             snapshot_t: datetime | None = None) -> dict:
     """Integreer het 2-knoops thermische model over `timeline` (lijst stappen met drivers).
     Elke stap: {"t", "T_out", "irr": {room: W}, "states", "weather", "dt"}. `seed` =
     {zone: T_start °C}. Geeft per sensorkamer de voorspelde luchttemp-reeks terug.
+
+    `snapshot_t` (optioneel): legt de volledige zone-toestand (álle zones, incl. junctions)
+    vast op het eerste tijdstip ≥ `snapshot_t` — `Ta_now`/`Tm_now`. Zo kan het dashboard de
+    snapshot (ACH, flows, voorspelde temp) op "nu" tonen i.p.v. op de eind-/vooruitblikstap.
 
     De integratie is *impliciet* (backward Euler): per substap wordt het gekoppelde
     lineaire stelsel voor alle lucht- + massaknopen ineens opgelost (solve_linear). Dat
@@ -701,6 +706,7 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     n = len(zones)
     zi = {z: k for k, z in enumerate(zones)}
     P_warm = None
+    Ta_snap = Tm_snap = None
 
     for step in timeline:
         T_out = step["T_out"]
@@ -754,7 +760,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 Tm[z] = x[2 * k + 1]
         for rid in out:
             out[rid].append((step["t"], Ta[rid]))
-    return {"series": out, "Ta": dict(Ta), "Tm": dict(Tm)}
+        if snapshot_t is not None and Ta_snap is None and step["t"] >= snapshot_t:
+            Ta_snap, Tm_snap = dict(Ta), dict(Tm)
+    return {"series": out, "Ta": dict(Ta), "Tm": dict(Tm),
+            "Ta_now": Ta_snap if Ta_snap is not None else dict(Ta),
+            "Tm_now": Tm_snap if Tm_snap is not None else dict(Tm)}
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1239,7 +1249,20 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     states_now = openings_at(load_openings_log_cached(), now)
 
     rooms_out = {}
+    # De snapshot (kamertabellen + plattegrond) toont "nu", niet de 2u-vooruitblik: kies de
+    # laatste timeline-stap ≤ now en pak de bijbehorende, op now vastgelegde zone-temps
+    # (sim["Ta_now"]). De vooruitblik blijft alleen voor de projectie-reeks + trend.
     last_step = timeline[-1] if timeline else None
+    now_step = None
+    for s in (timeline or []):
+        if s["t"] <= now:
+            now_step = s
+        else:
+            break
+    if now_step is None:
+        now_step = last_step
+    ta_all = sim.get("Ta_now", sim["Ta"])
+    tm_all = sim.get("Tm_now", sim["Tm"])
     zpar = _zone_thermal_params(house, params)
     int_profile_now = internal_gain_profile(now)
     veff = params.get("vent_eff", 1.0)
@@ -1248,19 +1271,19 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         wd_key = room.get("from_window_data")
         rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
         pred_series = sim["series"].get(rid, [])
-        ta_now = sim["Ta"].get(rid)            # échte (debiased) luchttemp van het model
+        ta_now = ta_all.get(rid)               # échte (debiased) luchttemp van het model, op nu
         frac = room.get("sensor_outdoor_frac", 0.0)
-        t_out_now = last_step["T_out"] if last_step else None
+        t_out_now = now_step["T_out"] if now_step else None
         pred_now = _sensor_temp(ta_now, t_out_now, frac)   # wat de sensor leest → vergelijkbaar met tado
         act_now = rd.get("inside")
         err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
         fresh_ach = None
         env_w = vent_w = None        # warmtestroom naar/uit buiten (W, + = winst, − = verlies)
-        if last_step is not None:
-            ops = build_openings(house, last_step["states"], last_step["weather"], params,
-                                 sim["Ta"], last_step["T_out"])
+        if now_step is not None:
+            ops = build_openings(house, now_step["states"], now_step["weather"], params,
+                                 ta_all, now_step["T_out"])
             net = solve_network(list(house["rooms"]) + list(house.get("junctions", {})),
-                                ops, sim["Ta"], last_step["T_out"])
+                                ops, ta_all, now_step["T_out"])
             vol = room.get("volume_m3", 40.0)
             fresh_m3s = net["fresh"].get(rid, 0.0)
             fresh_ach = round(fresh_m3s * 3600.0 / vol, 2)
@@ -1281,11 +1304,11 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             # Debiased wáre luchttemp (vóór de buitenmuur-sensorbias); == predicted_temp als frac=0.
             "predicted_air_temp": round(ta_now, 2) if ta_now is not None else None,
             "sensor_outdoor_frac": frac,
-            "predicted_mass_temp": round(sim["Tm"].get(rid), 2) if sim["Tm"].get(rid) is not None else None,
+            "predicted_mass_temp": round(tm_all.get(rid), 2) if tm_all.get(rid) is not None else None,
             "error": round(err, 2) if err is not None else None,
             "humidity": rd.get("humidity"),
             "ach": fresh_ach,
-            "solar_w": round(last_step["irr"].get(rid, 0.0), 0) if last_step else None,
+            "solar_w": round(now_step["irr"].get(rid, 0.0), 0) if now_step else None,
             # Energie naar buiten (W, signed): schil-conductie + ventilatie-uitwisseling.
             # − = de kamer verliest warmte (koelt af) langs deze weg; tegenhanger van solar_w.
             "env_w": env_w,
@@ -1327,7 +1350,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "openings": states_now,
         "controls": _controls(house, states_now),
         "rooms": rooms_out,
-        "flows": _flow_summary(house, params, sim, timeline),
+        "flows": _flow_summary(house, params, sim, timeline, now),
         "suggestion": sugg,
         "learned": {"params": params, "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                     "rmse_history": rmse_hist, "held": bool(learning_held),
@@ -1402,13 +1425,20 @@ def _controls(house: dict, states_now: dict) -> list[dict]:
     return out
 
 
-def _flow_summary(house, params, sim, timeline) -> list[dict]:
+def _flow_summary(house, params, sim, timeline, now) -> list[dict]:
     if not timeline:
         return []
-    last = timeline[-1]
+    # Plattegrond toont "nu": de laatste stap ≤ now + de op now vastgelegde zone-temps.
+    step = timeline[-1]
+    for s in timeline:
+        if s["t"] <= now:
+            step = s
+        else:
+            break
+    ta = sim.get("Ta_now", sim["Ta"])
     zones = list(house["rooms"]) + list(house.get("junctions", {}))
-    ops = build_openings(house, last["states"], last["weather"], params, sim["Ta"], last["T_out"])
-    net = solve_network(zones, ops, sim["Ta"], last["T_out"])
+    ops = build_openings(house, step["states"], step["weather"], params, ta, step["T_out"])
+    net = solve_network(zones, ops, ta, step["T_out"])
     out = []
     for op, q in zip(ops, net["flows"]):
         if op["id"].startswith("_leak_"):
@@ -1518,7 +1548,8 @@ def main():
 
     # Voorspelling met de (geleerde) params over het volledige venster + vooruitblik.
     sim = simulate(house, params, timeline, seed,
-                   calib_only_rooms=set(house.get("rooms", {}).keys()))
+                   calib_only_rooms=set(house.get("rooms", {}).keys()),
+                   snapshot_t=now)
 
     # Passieve suggestie op basis van nú.
     cur = weather["current"]

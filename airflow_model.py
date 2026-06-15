@@ -87,6 +87,18 @@ LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum p
 # zodat sterk-bepaalde parameters (grote ∂fout/∂param) vrij blijven en alleen platte richtingen
 # naar de prior gaan.
 REG_WEIGHT     = 3.0
+# Per-parameter ridge-override (sterker dan REG_WEIGHT). `solar_gain` wil op een mild/bewolkt
+# venster (of bij een iets te ruim ingeschatte zon-magnitude) naar ~0 zakken — dan kan de twin
+# géén zonwinst meer voorstellen, juist op de hete zonnige dagen waarvoor hij bedoeld is. Een
+# sterkere ankering naar de prior (1.0) houdt 'm overeind tenzij de data écht het tegendeel
+# bewijst; alle andere parameters houden REG_WEIGHT.
+REG_WEIGHT_BY_PARAM = {"solar_gain": 6.0}
+
+
+def reg_weight(name: str) -> float:
+    """Ridge-gewicht voor parameter `name`: de per-parameter-override of de globale REG_WEIGHT."""
+    return REG_WEIGHT_BY_PARAM.get(name, REG_WEIGHT)
+
 
 # ── Tussenwoning-fysica: buren + interne warmtelast ─────────────────────────────────
 # Dit is een jaren-'20 rijtjeshuis (tussenwoning): woningscheidende (party) muren grenzen
@@ -94,9 +106,18 @@ REG_WEIGHT     = 3.0
 # trekken elke kamer naar NEIGHBOR_TEMP i.p.v. naar de (koude) buitenlucht — een grote,
 # bijna-constante warmtebuffer die het model zónder deze term structureel mist (waardoor
 # het de kamers te koud voorspelt en de kalibratie álle knoppen naar hun grens duwt om
-# warmte vast te houden). Vaste constante (geen buur-sensor); de geleerde per-kamer
-# `ua_party` vangt de geleiding-grootte op.
+# warmte vast te houden). De geleerde per-kamer `ua_party` vangt de geleiding-grootte op.
+#
+# NEIGHBOR_TEMP is niet langer een vaste constante: de buren (jaren-'20 tussenwoning, zónder
+# airco) stoken 's winters tot ~kamertemp maar zweven 's zomers mee met buiten — op een
+# hittegolf zitten ze eerder op 24–26°C dan op 20°C. Een vaste 20°C zou de party-muren de
+# kamers dan onterecht naar beneden trékken, juist als de twin telt. We schatten daarom per run
+# een traag, gedempt buur-anker (`neighbor_temp_estimate`): de winter-stookvloer, opgetild met
+# het 3-daags buitengemiddelde. De módule-default blijft 20.0 (back-compat voor directe
+# simulate-tests); main() herbindt `_NEIGHBOR_TEMP` aan de run-schatting, net als _LAT/_LON.
 NEIGHBOR_TEMP = 20.0
+NEIGHBOR_WINTER_FLOOR = 19.5   # °C — buren stoken 's winters minstens tot ~deze temp
+_NEIGHBOR_TEMP = NEIGHBOR_TEMP  # run-gebonden buur-anker; herbonden in main()
 
 # Interne warmtelast (mensen, koken, apparaten, verlichting): nominale dichtheid (W/m³
 # kamervolume) × de geleerde per-kamer `q_int` × een dag/nacht-profiel. Overdag (wakker)
@@ -106,6 +127,20 @@ INTERNAL_DAY_START       = 7     # lokaal uur: profiel → dag (wakker)
 INTERNAL_NIGHT_START     = 23    # lokaal uur: profiel → nacht (slapend)
 INTERNAL_NIGHT_FRACTION  = 0.5   # nacht-aandeel van de dag-last
 INTERNAL_RAMP_H          = 1.0   # uur — duur van de soepele dag/nacht-overgang (geen sprong)
+
+
+def neighbor_temp_estimate(rows: list[dict], now: datetime, lookback_h: float = 72.0) -> float:
+    """Traag, gedempt buur-anker voor de party-muren: de winter-stookvloer, opgetild met het
+    gemiddelde buitentemp over de laatste `lookback_h` (default 3 dagen). 's Winters domineert
+    de stookvloer (~19.5°C); 's zomers volgt het anker het buitengemiddelde mee omhoog
+    (hittegolf → ~24°C) zodat de party-muren de kamers niet onterecht naar 20°C koelen.
+    Valt terug op NEIGHBOR_TEMP als er geen bruikbare historie is."""
+    since = now - timedelta(hours=lookback_h)
+    temps = [r["T_out"] for r in rows
+             if r.get("T_out") is not None and since <= r["dt"] <= now]
+    if not temps:
+        return NEIGHBOR_TEMP
+    return max(NEIGHBOR_WINTER_FLOOR, sum(temps) / len(temps))
 
 
 def _ramp(x: float, center: float, width: float) -> float:
@@ -179,6 +214,18 @@ def _huber_weights(residuals: list[float], delta: float = HUBER_DELTA) -> list[f
 # en is fysisch reëel (kieren). m² effectief lekoppervlak.
 LEAK_AREA = 0.004
 
+# ── Dak (zolder/bovenste verdieping) — sol-air-term ─────────────────────────────────
+# De bovenste verdieping (office, trap) wisselt warmte uit via een groot dakvlak met een
+# sterke middag-zonlast én 's nachts hemel-stralingskoeling — een gerichte, tijd-variërende
+# driver die een platte schil-UA niet kan vatten (waardoor `office.ua_env` op zijn grens
+# satureerde). We modelleren 'm als een sol-air-koppeling op de massaknoop: het dak "ziet" een
+# effectieve buitentemp T_solair = T_out + ROOF_SOLAR_GAIN·I_horizontaal − ROOF_SKY_COOLING
+# ('s nachts). Alleen actief voor kamers met `roof_m2 > 0`; de geleerde `ua_roof` schaalt de
+# grootte. Bewust grof: priors die de kalibratie verder bijstelt.
+ROOF_U          = 1.5   # W/(m²·K) — dak-schil-conductie-basis (1920s, deels na-geïsoleerd)
+ROOF_SOLAR_GAIN = 0.025  # °C per W/m² horizontale instraling (≈ donkere dakabsorptie / h_out)
+ROOF_SKY_COOLING = 3.0   # °C — nachtelijke hemel-stralings-depressie ('s nachts, helder)
+
 # ── Prior-parameters (vertrekpunt vóór het leren) ───────────────────────────────────
 # Alles is een dimensieloze schaal × een fysische basis, zodat het leren rond 1.0 speelt
 # en geclamped blijft in een fysiek plausibele band.
@@ -195,20 +242,31 @@ PRIORS = {
     "solar_gain":  1.0,   # zonwinst dóór het glas
     "ua_party":    1.0,   # geleiding naar de buur (woningscheidende muren → NEIGHBOR_TEMP)
     "q_int":       1.0,   # interne warmtelast (mensen/koken/apparaten), dag/nacht-profiel
+    "ua_roof":     1.0,   # dak-sol-air-koppeling (alleen actief bij roof_m2 > 0)
 }
 # Clamp-banden voor de leerbare schalen (ondergrens, bovengrens).
+# `vent_eff`-ondergrens verlaagd 0.3→0.1: nu `cd` op zijn fysische waarde vastligt (zie CD),
+#   moet `vent_eff` de écht-lage meng-koppeling van dit huis kunnen bereiken zónder te railen.
+# `solar_gain`-ondergrens opgetild 0.0→0.25: een fysieke vloer (er komt áltijd wat zon binnen)
+#   zodat de twin nooit volledig "zon-uit" leert op een mild/bewolkt venster.
 BOUNDS = {
-    "cp_shelter": (0.1, 1.2), "cd": (0.3, 0.9), "vent_eff": (0.3, 2.0),
+    "cp_shelter": (0.1, 1.2), "cd": (0.3, 0.9), "vent_eff": (0.1, 2.0),
     "c_air": (0.3, 8.0), "c_mass": (0.2, 10.0), "h_am": (0.2, 5.0),
-    "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.0, 3.0),
-    "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0),
+    "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.25, 3.0),
+    "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
 }
 # Welke parameters per kamer leren. `h_am` (lucht↔massa-koppeling) leert mee zodat `c_air`
 # niet langer de énige knop is die bepaalt hoe snel de luchtknoop de drivers volgt — zonder een
-# vrije `h_am` satureerde `c_air` op zijn bovengrens in álle kamers (degeneratie). `ua_mass`
-# blijft op zijn prior (minder vrijheid, stabieler). De rest is globaal.
-PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int"]
-GLOBAL_PARAMS   = ["cp_shelter", "cd", "vent_eff"]
+# vrije `h_am` satureerde `c_air` op zijn bovengrens in álle kamers (degeneratie). `ua_roof`
+# leert mee maar heeft basis 0 (→ geen effect, nul-gradient, ridge parkeert 'm op de prior) voor
+# kamers zónder `roof_m2`. `ua_mass` blijft op zijn prior (minder vrijheid, stabieler).
+PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int", "ua_roof"]
+# `cd` is geen leerbare globale parameter meer: het is een fysische orifice-constante (~0.62) die
+# óók de volumetrische ACH/flows (dashboard + suggest) zet. De thermische fit railde 'm naar zijn
+# vloer (degenereert met `vent_eff` in de meng-koppeling ∝ cd·vent_eff), wat de getoonde airflow
+# corrumpeert. Nu vast op CD; `vent_eff` draagt de meng-koppeling alleen.
+GLOBAL_PARAMS   = ["cp_shelter", "vent_eff"]
+CD = PRIORS["cd"]   # vaste ontladingscoëfficiënt (niet geleerd)
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -592,7 +650,7 @@ def build_openings(house: dict, states: dict, weather: dict, params: dict,
                    zone_temps: dict, outside_temp: float) -> list[dict]:
     """Bouw de openingenlijst voor het netwerk uit de huidige toestanden + wind."""
     shelter = params["cp_shelter"]
-    cd = params["cd"]
+    cd = CD                       # vaste fysische ontladingscoëfficiënt (niet geleerd)
     rho_out = air_density(outside_temp)
     wind_s, wind_d = weather.get("wind_speed", 0.0), weather.get("wind_dir", 0.0)
     ops = []
@@ -652,9 +710,10 @@ def room_base_capacitances(room: dict) -> tuple[float, float, float]:
     schiloppervlak."""
     vol = room.get("volume_m3", 40.0)
     wall = room.get("exterior_wall_m2", 0.4 * vol)
+    roof = room.get("roof_m2", 0.0)             # bovenste verdieping: dakvlak (anders 0)
     c_air = vol * 1.2 * CP_AIR * 3.0          # ×3: effectieve binnenlucht + lichte inboedel
-    c_mass = wall * 90000.0                     # J/K per m² wand (baksteen/pleister, ~slow)
-    ua = wall * 1.0                             # W/K (matig geïsoleerde schil)
+    c_mass = (wall + roof) * 90000.0            # J/K per m² schil (baksteen/pleister + dak, ~slow)
+    ua = wall * 1.0                             # W/K (matig geïsoleerde gevel; dak via UA_roof)
     return c_air, c_mass, ua
 
 
@@ -679,13 +738,16 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
             "UA_party": ua0 * p.get("ua_party", 1.0),
             # Interne warmtelast (W) bij profiel = 1.0; het dag/nacht-profiel schaalt 'm per stap.
             "Q_int_base": vol * INTERNAL_GAIN_WM3 * p.get("q_int", 1.0),
+            # Dak-sol-air-koppeling (W/K) op de massaknoop. Basis 0 (→ inactief) tenzij de kamer
+            # een `roof_m2` heeft; de geleerde `ua_roof` schaalt de grootte.
+            "UA_roof": r.get("roof_m2", 0.0) * ROOF_U * p.get("ua_roof", 1.0),
         }
     for jid, j in house.get("junctions", {}).items():
         vol = j.get("volume_m3", 15.0)
         c_air0 = vol * 1.2 * CP_AIR * 3.0
         par[jid] = {"C_a": c_air0, "C_m": c_air0 * 2.0, "H_am": 15.0,
                     "UA_env": 3.0, "UA_mass": 1.0, "solar": 0.0, "f_air": 1.0,
-                    "UA_party": 0.0, "Q_int_base": 0.0}
+                    "UA_party": 0.0, "Q_int_base": 0.0, "UA_roof": 0.0}
     return par
 
 
@@ -714,7 +776,7 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     # Massaknoop richting een warme blend (NEIGHBOR_TEMP) i.p.v. = luchtknoop: met de sim-only
     # WARMUP_H aanloop equilibreert hij ruim vóór het residu-venster (massa-tijdconstante ~uren),
     # zodat zijn beginwaarde geen vrije laagfrequente bias meer is die de fit scheeftrekt.
-    Tm = {z: 0.5 * (Ta[z] + NEIGHBOR_TEMP) for z in zones}
+    Tm = {z: 0.5 * (Ta[z] + _NEIGHBOR_TEMP) for z in zones}
     out = {rid: [] for rid in rooms if (calib_only_rooms is None or rid in calib_only_rooms)}
 
     n = len(zones)
@@ -735,6 +797,13 @@ def simulate(house: dict, params: dict, timeline: list[dict],
 
         nsub = max(1, int(math.ceil(step["dt"] / SUBSTEP_S)))
         h = step["dt"] / nsub
+        # Dak-sol-air-effectieve buitentemp per kamer (alleen relevant waar UA_roof > 0): de
+        # horizontale instraling tilt 'm overdag op, 's nachts (zon onder de horizon) trekt de
+        # heldere-hemel-straling 'm omlaag. Per stap (de instraling is al stap-gemiddeld).
+        irr_roof = step.get("irr_roof", {})
+        night = step.get("sun_el", 90.0) <= 0.0
+        t_solair = {z: T_out + ROOF_SOLAR_GAIN * irr_roof.get(z, 0.0)
+                    - (ROOF_SKY_COOLING if night else 0.0) for z in zones}
         for _ in range(nsub):
             # Bouw het 2N-stelsel A·x = b, x = [Ta_z0, Tm_z0, Ta_z1, Tm_z1, ...].
             A = [[0.0] * (2 * n) for _ in range(2 * n)]
@@ -753,11 +822,13 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 A[ia][ia] += pa["C_a"] / h + gvent[z] + pa["UA_env"] + pa["H_am"] + ua_party
                 A[ia][im] += -pa["H_am"]
                 b[ia] += (pa["C_a"] / h * Ta[z] + gvent[z] * T_out + pa["UA_env"] * T_out
-                          + pa["f_air"] * q_solar + ua_party * NEIGHBOR_TEMP + q_int)
-                # Massaknoop.
-                A[im][im] += pa["C_m"] / h + pa["H_am"] + pa["UA_mass"]
+                          + pa["f_air"] * q_solar + ua_party * _NEIGHBOR_TEMP + q_int)
+                # Massaknoop (+ dak-sol-air-koppeling naar de effectieve dak-buitentemp).
+                ua_roof = pa.get("UA_roof", 0.0)
+                A[im][im] += pa["C_m"] / h + pa["H_am"] + pa["UA_mass"] + ua_roof
                 A[im][ia] += -pa["H_am"]
-                b[im] += pa["C_m"] / h * Tm[z] + pa["UA_mass"] * T_out + (1.0 - pa["f_air"]) * q_solar
+                b[im] += (pa["C_m"] / h * Tm[z] + pa["UA_mass"] * T_out
+                          + (1.0 - pa["f_air"]) * q_solar + ua_roof * t_solair[z])
             # Deur-koppeling (advectief, impliciet).
             for (za, zb), g in gdoor.items():
                 ka, kb = zi[za], zi[zb]
@@ -910,11 +981,12 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     x = params_to_vec(params, keys)
     base = params
     prior_vec = [PRIORS[name] for _, name in keys]   # ridge-anker per parameter
+    reg_vec = [reg_weight(name) for _, name in keys]  # per-parameter ridge-gewicht
 
     def _total_cost(res: list[float], xv: list[float]) -> float:
         """Huber-datakosten + Tikhonov-ridge naar de priors. Dezelfde schaal als de
         normaalvergelijkingen (de factor 2 valt consistent aan beide kanten weg)."""
-        pen = REG_WEIGHT * sum((xv[k] - prior_vec[k]) ** 2 for k in range(len(keys)))
+        pen = sum(reg_vec[k] * (xv[k] - prior_vec[k]) ** 2 for k in range(len(keys)))
         return _wcost(res) + pen
 
     r0 = _residuals(house, params, timeline, seed, actual, rooms_set)
@@ -948,13 +1020,14 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         nk = len(keys)
         JtJ = [[sum(w[i] * J[i][a] * J[i][b] for i in range(m)) for b in range(nk)] for a in range(nk)]
         Jtr = [sum(w[i] * J[i][a] * r[i] for i in range(m)) for a in range(nk)]
-        # Tikhonov-ridge naar de priors: Gauss-Newton-Hessiaan (+REG_WEIGHT op de diagonaal)
-        # en gradient (+REG_WEIGHT·(x−prior)) van de penalty. Een platte (zwak-bepaalde)
-        # richting heeft een kleine data-Hessiaan, dus de ridge domineert en trekt 'm naar de
-        # prior; een sterk-bepaalde richting heeft een grote data-Hessiaan en blijft vrij.
+        # Tikhonov-ridge naar de priors: Gauss-Newton-Hessiaan (+ridge op de diagonaal) en
+        # gradient (+ridge·(x−prior)) van de penalty. Een platte (zwak-bepaalde) richting heeft
+        # een kleine data-Hessiaan, dus de ridge domineert en trekt 'm naar de prior; een
+        # sterk-bepaalde richting heeft een grote data-Hessiaan en blijft vrij. Het ridge-gewicht
+        # is per parameter (reg_vec): `solar_gain` krijgt een sterkere ankering (zie reg_weight).
         for a in range(nk):
-            JtJ[a][a] += REG_WEIGHT
-            Jtr[a] += REG_WEIGHT * (x[a] - prior_vec[a])
+            JtJ[a][a] += reg_vec[a]
+            Jtr[a] += reg_vec[a] * (x[a] - prior_vec[a])
         # Levenberg-demping op de (geregulariseerde) diagonaal.
         for a in range(nk):
             JtJ[a][a] += lam * (JtJ[a][a] + 1.0)
@@ -1212,6 +1285,10 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         # Tijdsgemiddelde instraling over [t, t+0.25h] via de midden-regel op SOLAR_SUBSTEPS
         # subintervallen: dempt de geometrie-aliasing van de snel-draaiende lage avondzon.
         irr = {rid: 0.0 for rid in house.get("rooms", {})}
+        # Horizontale dak-instraling (W/m², onbeschaduwd, opake conductie — de absorptie zit in
+        # ROOF_SOLAR_GAIN, niet in een glas-transmissie) voor de bovenste-verdieping-kamers.
+        roof_rooms = [rid for rid, r in house.get("rooms", {}).items() if r.get("roof_m2", 0.0) > 0.0]
+        irr_roof = {rid: 0.0 for rid in roof_rooms}
         for j in range(SOLAR_SUBSTEPS):
             ts = t + _timedelta_h(0.25 * (j + 0.5) / SOLAR_SUBSTEPS)
             s_az, s_el = sun_position(lat, lon, ts.astimezone(timezone.utc))
@@ -1230,7 +1307,12 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                                           w.get("horizon_elevation_deg", 0.0))
                     tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
                 irr[rid] += tot / SOLAR_SUBSTEPS
-        grid.append({"t": t, "T_out": T_out, "irr": irr, "states": st,
+            if roof_rooms:
+                # Plat dak (tilt 0) → azimut-onafhankelijk; één waarde voor alle dak-kamers.
+                roof_i = facade_irradiance(0.0, s_az, s_el, s_direct, s_diffuse, 0.0)
+                for rid in roof_rooms:
+                    irr_roof[rid] += roof_i / SOLAR_SUBSTEPS
+        grid.append({"t": t, "T_out": T_out, "irr": irr, "irr_roof": irr_roof, "states": st,
                      "weather": wx, "dt": 900.0, "sun_az": sun_az, "sun_el": sun_el})
         t = t + _timedelta_h(0.25)
     return grid
@@ -1370,6 +1452,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "wind_speed": cur.get("wind_speed_10m"), "wind_dir": cur.get("wind_direction_10m"),
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
+            "neighbor_temp": round(_NEIGHBOR_TEMP, 1),
         },
         "openings": states_now,
         "controls": _controls(house, states_now),
@@ -1506,7 +1589,7 @@ _LON = shared_const.LONGITUDE
 
 
 def main():
-    global _LAT, _LON, _OPENINGS_CACHE
+    global _LAT, _LON, _OPENINGS_CACHE, _NEIGHBOR_TEMP
     now = datetime.now(TZ)
     print(f"[airflow_model] Start — {now.isoformat()}")
 
@@ -1519,6 +1602,10 @@ def main():
     weather = fetch_weather()
     log = load_openings_log()
     _OPENINGS_CACHE = log
+
+    # Buur-anker voor de party-muren: traag, gedempt (zie neighbor_temp_estimate).
+    _NEIGHBOR_TEMP = neighbor_temp_estimate(weather.get("hourly", []), now)
+    print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C")
 
     learned = load_learned()
     params = learned.get("params") or default_params(house)

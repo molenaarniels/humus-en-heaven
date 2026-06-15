@@ -500,6 +500,140 @@ def test_calibrate_robust_to_single_outlier():
     assert abs(p_pois["a"]["solar_gain"] - p_clean["a"]["solar_gain"]) < 0.4
 
 
+# ── 8. cd vastgezet, vent_eff vrijgemaakt ────────────────────────────────────────────
+
+def test_cd_is_fixed_not_learnable():
+    # `cd` is geen leerbare globale parameter meer (railde naar zijn vloer + corrumpeerde de
+    # getoonde ACH/flows). Het is nu de vaste fysische constante CD; `vent_eff` draagt de
+    # meng-koppeling, met een verlaagde ondergrens zodat hij niet alsnog railt.
+    assert "cd" not in am.GLOBAL_PARAMS
+    assert am.CD == am.PRIORS["cd"]
+    assert am.BOUNDS["vent_eff"][0] == 0.1
+    # default_params bevat geen `cd` meer in de geleerde vector.
+    assert "cd" not in am.default_params(_toy_house())
+
+
+def test_build_openings_uses_fixed_cd():
+    # build_openings negeert een (verouderde, gerailde) `cd` in params en gebruikt altijd CD.
+    house = _toy_house()
+    params = am.default_params(house)
+    params["cd"] = 0.30   # stale/gerailde waarde uit oude airflow_learned.json
+    zt = {z: 22.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    ops = am.build_openings(house, {"a_win": "open"}, {"wind_speed": 4.0, "wind_dir": 200.0},
+                            params, zt, 18.0)
+    assert ops and all(op["Cd"] == am.CD for op in ops)
+
+
+# ── 9. Dynamisch buur-anker (party-muren) ────────────────────────────────────────────
+
+def test_neighbor_temp_estimate_winter_floor_and_summer_track():
+    now = datetime(2026, 1, 15, 12, 0, tzinfo=am.TZ)
+    winter = [{"dt": now - timedelta(hours=h), "T_out": 3.0} for h in range(72)]
+    # 's Winters domineert de stookvloer.
+    assert am.neighbor_temp_estimate(winter, now) == pytest.approx(am.NEIGHBOR_WINTER_FLOOR)
+    # 's Zomers volgt het anker het 3-daags buitengemiddelde mee omhoog.
+    summer = [{"dt": now - timedelta(hours=h), "T_out": 24.0} for h in range(72)]
+    assert am.neighbor_temp_estimate(summer, now) == pytest.approx(24.0)
+    # Geen bruikbare historie → terugval op de module-default.
+    assert am.neighbor_temp_estimate([], now) == pytest.approx(am.NEIGHBOR_TEMP)
+
+
+def test_simulate_honours_neighbor_temp_global():
+    # Een warmer buur-anker tilt een dichte, zon-loze kamer (via de party-muren) hoger op.
+    house = _toy_house()
+    params = am.default_params(house)
+    for rid in house["rooms"]:
+        params[rid]["q_int"] = 0.0          # isoleer de party-term
+    tl = _const_timeline(16.0, hours=240, irr=0.0)
+    seed = {z: 16.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    saved = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = 20.0
+        cool = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+        am._NEIGHBOR_TEMP = 26.0
+        warm = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am._NEIGHBOR_TEMP = saved
+    for rid in house["rooms"]:
+        assert warm["Ta"][rid] > cool["Ta"][rid] + 1.0
+
+
+# ── 10. solar_gain beschermd tegen instorten ─────────────────────────────────────────
+
+def test_solar_gain_floor_and_per_param_ridge():
+    assert am.BOUNDS["solar_gain"][0] == 0.25                 # fysieke vloer
+    assert am.reg_weight("solar_gain") > am.reg_weight("ua_env")  # sterkere ankering
+    assert am.reg_weight("ua_env") == am.REG_WEIGHT
+
+
+def test_solar_gain_cannot_collapse_to_zero():
+    # Zelfs als de data naar een lage zonwinst trekt, houdt de vloer (+ ridge) solar_gain
+    # ≥ 0.25 — de twin blijft enige zonrespons houden voor de hete zonnige dagen.
+    house = _toy_house()
+    tl = _varying_timeline(hours=24)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    truth = am.default_params(house)
+    for rid in house["rooms"]:
+        truth[rid]["solar_gain"] = 0.0   # "waarheid" zonder zonwinst (geclamped naar de vloer)
+    sim = am.simulate(house, truth, tl, seed, calib_only_rooms=set(house["rooms"]))
+    actual = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+    new, _ = am.calibrate(house, am.default_params(house), tl, seed, actual, max_iter=5, time_budget_s=20)
+    for rid in house["rooms"]:
+        assert new[rid]["solar_gain"] >= 0.25
+
+
+# ── 11. Dak-sol-air-term (bovenste verdieping) ───────────────────────────────────────
+
+def _roof_house(roof_m2: float) -> dict:
+    return {
+        "location": {"lat": 52.09, "lon": 5.12},
+        "rooms": {"r": {"from_window_data": "office", "volume_m3": 30,
+                        "exterior_wall_m2": 10, "roof_m2": roof_m2}},
+        "junctions": {}, "windows": {}, "vents": {}, "doors": {},
+    }
+
+
+def _roof_timeline(T_out: float, hours: int, irr_roof: float, sun_el: float) -> list[dict]:
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
+    grid = []
+    for i in range(hours * 4 + 1):
+        t = t0 + timedelta(minutes=15 * i)
+        grid.append({"t": t, "T_out": T_out, "irr": {"r": 0.0}, "irr_roof": {"r": irr_roof},
+                     "sun_el": sun_el, "states": {},
+                     "weather": {"wind_speed": 1.0, "wind_dir": 200.0, "gust": 2.0, "precip": 0.0,
+                                 "direct": 0.0, "diffuse": 0.0, "rh": 60}, "dt": 900.0})
+    return grid
+
+
+def test_roof_term_warms_by_day_cools_by_night():
+    params_with = am.default_params(_roof_house(20.0))
+    params_no = am.default_params(_roof_house(0.0))
+    seed = {"r": 20.0}
+    # Overdag: zon op het dak → de dak-kamer warmer dan zonder dak.
+    day_with = am.simulate(_roof_house(20.0), params_with,
+                           _roof_timeline(20.0, 48, 700.0, 45.0), seed, calib_only_rooms={"r"})
+    day_no = am.simulate(_roof_house(0.0), params_no,
+                         _roof_timeline(20.0, 48, 700.0, 45.0), seed, calib_only_rooms={"r"})
+    assert day_with["Ta"]["r"] > day_no["Ta"]["r"] + 0.3
+    # 's Nachts: hemel-stralingskoeling → de dak-kamer kouder dan zonder dak.
+    night_with = am.simulate(_roof_house(20.0), params_with,
+                             _roof_timeline(20.0, 48, 0.0, -5.0), seed, calib_only_rooms={"r"})
+    night_no = am.simulate(_roof_house(0.0), params_no,
+                           _roof_timeline(20.0, 48, 0.0, -5.0), seed, calib_only_rooms={"r"})
+    assert night_with["Ta"]["r"] < night_no["Ta"]["r"] - 0.1
+
+
+def test_roofless_room_unchanged_by_roof_term():
+    # Een kamer zónder roof_m2 (UA_roof basis 0) is identiek aan het oude gedrag, ongeacht
+    # of er een irr_roof in de stap staat.
+    house = _roof_house(0.0)
+    params = am.default_params(house)
+    seed = {"r": 18.0}
+    a = am.simulate(house, params, _roof_timeline(24.0, 12, 800.0, 50.0), seed, calib_only_rooms={"r"})
+    b = am.simulate(house, params, _roof_timeline(24.0, 12, 0.0, 50.0), seed, calib_only_rooms={"r"})
+    assert a["Ta"]["r"] == pytest.approx(b["Ta"]["r"], abs=1e-12)
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ════════════════════════════════════════════════════════════════════════════════════

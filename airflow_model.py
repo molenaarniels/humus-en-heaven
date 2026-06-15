@@ -34,6 +34,7 @@ Pure stdlib + requests, geen numpy.
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -243,6 +244,11 @@ PRIORS = {
     "ua_party":    1.0,   # geleiding naar de buur (woningscheidende muren → NEIGHBOR_TEMP)
     "q_int":       1.0,   # interne warmtelast (mensen/koken/apparaten), dag/nacht-profiel
     "ua_roof":     1.0,   # dak-sol-air-koppeling (alleen actief bij roof_m2 > 0)
+    # f_air is géén dimensieloze schaal maar een absolute fractie (0..1): het deel van de
+    # zonwinst dat direct op de snelle luchtknoop landt i.p.v. op de trage massaknoop. Leerbaar
+    # zodat het model de midday-piek-timing kan vinden (te hoog → spikes die de fit dan met een
+    # lage solar_gain probeerde te onderdrukken).
+    "f_air":       0.4,   # fractie zonwinst → luchtknoop (rest → massaknoop)
 }
 # Clamp-banden voor de leerbare schalen (ondergrens, bovengrens).
 # `vent_eff`-ondergrens verlaagd 0.3→0.1: nu `cd` op zijn fysische waarde vastligt (zie CD),
@@ -254,13 +260,16 @@ BOUNDS = {
     "c_air": (0.3, 8.0), "c_mass": (0.2, 10.0), "h_am": (0.2, 5.0),
     "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.25, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
+    "f_air": (0.1, 0.9),   # absolute fractie zonwinst → luchtknoop (fysiek 0..1, marge gehouden)
 }
 # Welke parameters per kamer leren. `h_am` (lucht↔massa-koppeling) leert mee zodat `c_air`
 # niet langer de énige knop is die bepaalt hoe snel de luchtknoop de drivers volgt — zonder een
 # vrije `h_am` satureerde `c_air` op zijn bovengrens in álle kamers (degeneratie). `ua_roof`
 # leert mee maar heeft basis 0 (→ geen effect, nul-gradient, ridge parkeert 'm op de prior) voor
-# kamers zónder `roof_m2`. `ua_mass` blijft op zijn prior (minder vrijheid, stabieler).
-PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int", "ua_roof"]
+# kamers zónder `roof_m2`. `f_air` (zon-split lucht/massa) leert mee zodat het model de midday-piek-
+# timing kan vinden i.p.v. die met een te lage `solar_gain` weg te drukken. `ua_mass` blijft op
+# zijn prior (minder vrijheid, stabieler).
+PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int", "ua_roof", "f_air"]
 # `cd` is geen leerbare globale parameter meer: het is een fysische orifice-constante (~0.62) die
 # óók de volumetrische ACH/flows (dashboard + suggest) zet. De thermische fit railde 'm naar zijn
 # vloer (degenereert met `vent_eff` in de meng-koppeling ∝ cd·vent_eff), wat de getoonde airflow
@@ -731,7 +740,7 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
             "H_am": ua0 * 8.0 * p.get("h_am", 1.0),
             "UA_env": ua0 * 0.5 * p.get("ua_env", 1.0),
             "UA_mass": ua0 * 0.5 * p.get("ua_mass", 1.0),
-            "solar": p.get("solar_gain", 1.0), "f_air": 0.4,
+            "solar": p.get("solar_gain", 1.0), "f_air": p.get("f_air", 0.4),
             # Buur-geleiding via de woningscheidende muren → NEIGHBOR_TEMP. Basis ~ schil-UA
             # (party-muur-oppervlak is van dezelfde orde als de gevel); de geleerde schaal
             # vangt de werkelijke grootte. Een hoekkamer met minder buren leert 'm lager.
@@ -1172,6 +1181,30 @@ def _wd_key(house: dict, room_id: str) -> str:
 #  I/O — huismodel, window_data.json, Gist-openingenlog, geleerde params, weer
 # ════════════════════════════════════════════════════════════════════════════════════
 
+_MODEL_VERSION = None
+
+
+def model_version() -> str:
+    """Korte code-versie (git short-SHA) van de draaiende runner, zodat elk RMSE-punt aan een
+    codeversie te koppelen is — "heeft iteratie N de fout echt verbeterd?" wordt dan een
+    correlatie op de data zelf, geen git-archeologie. Prefereert `GITHUB_SHA` (gezet in de
+    Action), valt terug op `git rev-parse`, dan 'unknown'. Gecachet per proces."""
+    global _MODEL_VERSION
+    if _MODEL_VERSION is not None:
+        return _MODEL_VERSION
+    sha = os.getenv("GITHUB_SHA")
+    if sha:
+        _MODEL_VERSION = sha[:7]
+        return _MODEL_VERSION
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        _MODEL_VERSION = out.stdout.strip() if (out.returncode == 0 and out.stdout.strip()) else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        _MODEL_VERSION = "unknown"
+    return _MODEL_VERSION
+
+
 def load_house() -> dict:
     with open(HOUSE_FILE, encoding="utf-8") as f:
         return json.load(f)
@@ -1440,13 +1473,14 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     rmse_hist = (learned.get("rmse_history") or [])[:]
     if rmse_now == rmse_now:   # niet-NaN
         rmse_hist.append({"t": now.isoformat(), "rmse": round(rmse_now, 3),
-                          "held": bool(learning_held)})
+                          "held": bool(learning_held), "version": model_version()})
     rmse_hist = rmse_hist[-RMSE_HISTORY_KEEP:]
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "as_of_local": now.isoformat(),
         "source": "airflow_model",
+        "model_version": model_version(),
         "weather": {
             "outside_temp": out_t, "outside_humidity": out_rh,
             "wind_speed": cur.get("wind_speed_10m"), "wind_dir": cur.get("wind_direction_10m"),
@@ -1679,7 +1713,8 @@ def main():
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)
     with open(LEARNED_FILE, "w", encoding="utf-8") as f:
-        json.dump({"updated_at": now.isoformat(), "params": params,
+        json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
+                   "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "rmse_history": dash["learned"]["rmse_history"]},
                   f, ensure_ascii=False, indent=2)

@@ -634,6 +634,53 @@ def test_roofless_room_unchanged_by_roof_term():
     assert a["Ta"]["r"] == pytest.approx(b["Ta"]["r"], abs=1e-12)
 
 
+# ── 12. f_air leerbaar (zon-split lucht/massa) ───────────────────────────────────────
+
+def test_f_air_is_learnable():
+    assert "f_air" in am.PER_ROOM_PARAMS
+    assert ("a", "f_air") in am._param_keys(["a"])
+    assert am.BOUNDS["f_air"] == (0.1, 0.9)
+    assert am.default_params(_toy_house())["a"]["f_air"] == am.PRIORS["f_air"]
+
+
+def test_f_air_splits_solar_air_vs_mass():
+    # Meer zon naar de luchtknoop (hoger f_air) → de luchtknoop reageert op korte termijn
+    # sterker op een zonpuls dan met een lage f_air (die de zon vooral in de trage massa stopt).
+    house = {
+        "location": {"lat": 52.09, "lon": 5.12},
+        "rooms": {"r": {"volume_m3": 30, "exterior_wall_m2": 10}},
+        "junctions": {}, "windows": {}, "vents": {}, "doors": {},
+    }
+    t0 = datetime(2026, 6, 15, 12, 0, tzinfo=am.TZ)
+    tl = [{"t": t0 + timedelta(minutes=15 * i), "T_out": 18.0, "irr": {"r": 1500.0},
+           "states": {}, "weather": {"wind_speed": 0.5, "wind_dir": 200.0, "gust": 1.0,
+                                     "precip": 0.0, "direct": 0.0, "diffuse": 0.0, "rh": 50},
+           "dt": 900.0} for i in range(9)]   # ~2u zonpuls
+    seed = {"r": 18.0}
+    lo = am.default_params(house)
+    lo["r"]["f_air"] = 0.2
+    hi = am.default_params(house)
+    hi["r"]["f_air"] = 0.8
+    sim_lo = am.simulate(house, lo, tl, seed, calib_only_rooms={"r"})
+    sim_hi = am.simulate(house, hi, tl, seed, calib_only_rooms={"r"})
+    assert sim_hi["Ta"]["r"] > sim_lo["Ta"]["r"] + 0.2
+
+
+# ── 13. model_version-stempel (RMSE ↔ codeversie) ────────────────────────────────────
+
+def test_model_version_prefers_github_sha(monkeypatch):
+    monkeypatch.setattr(am, "_MODEL_VERSION", None)
+    monkeypatch.setenv("GITHUB_SHA", "abcdef1234567890")
+    assert am.model_version() == "abcdef1"   # short-SHA (7 tekens)
+
+
+def test_model_version_always_nonempty(monkeypatch):
+    monkeypatch.setattr(am, "_MODEL_VERSION", None)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    v = am.model_version()
+    assert isinstance(v, str) and v   # git short-SHA of 'unknown', nooit leeg
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ════════════════════════════════════════════════════════════════════════════════════

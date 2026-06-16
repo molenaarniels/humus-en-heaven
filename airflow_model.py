@@ -22,10 +22,15 @@ docs/data.json leest), haalt zélf wind + zon + buitenweer bij Open-Meteo, en ni
 anders hangt van dit project af. Geen tado-auth → geen conflict met de roterende
 tado-token van Project 6.
 
+De buiten-nu temp + RH worden — net als soil/window — verfijnd met het eigen WU-station
+(lokaler dan het Open-Meteo-grid), met de wu_bias-stralingscorrectie op de temp. Wind en
+de zon-instraling voor de glasfysica blijven Open-Meteo (WU meet wind onbetrouwbaar; de
+fysica heeft de direct/diffuus-split nodig die WU niet levert).
+
 Bronnen / env:
   GIST_ID, GIST_TOKEN        — leest de gerapporteerde raam/rooster/deur-log
                                (`house_openings.json`) read-only uit de niet-geheime Gist
-  WU_STATION_ID, WU_API_KEY  — optionele buiten-nu-verfijning (biascorrectie)
+  WU_STATION_ID, WU_API_KEY  — buiten-nu temp + RH (biasgecorrigeerd) van het eigen station
   DRY_RUN=1                  — schrijf artefacten maar doe verder niets bijzonders
 
 Pure stdlib + requests, geen numpy.
@@ -45,7 +50,9 @@ import shared_const
 from gist_io import read_json as gist_read_json
 from http_util import get_json
 from notify import run_guarded
-from window_advisor import convert_rh, RH_HARD_CAP, ROOM_COMFORT
+from wu_bias import correct_temp
+from window_advisor import (convert_rh, RH_HARD_CAP, ROOM_COMFORT,
+                            fetch_wu_current_temp)
 
 TZ = shared_const.TZ
 
@@ -1483,6 +1490,9 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "model_version": model_version(),
         "weather": {
             "outside_temp": out_t, "outside_humidity": out_rh,
+            # Bron van de buiten-nu temp/RH: "wu" (eigen station, biasgecorrigeerd) of
+            # "open-meteo" (grid-fallback). Wind/instraling komen altijd van Open-Meteo.
+            "outside_source": cur.get("outside_source", "open-meteo"),
             "wind_speed": cur.get("wind_speed_10m"), "wind_dir": cur.get("wind_direction_10m"),
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
@@ -1634,6 +1644,32 @@ def main():
 
     wd = load_window_data()
     weather = fetch_weather()
+    # Buiten-nu verfijnen met het eigen WU-station (zoals soil/window): de station-temp
+    # + RH zijn lokaler dan het Open-Meteo-grid (dat te warm leek op het dashboard). De
+    # temp krijgt de wu_bias-stralingscorrectie (driver = eigen pyranometer, Open-Meteo-
+    # zon als fallback). Bewust NIET overgenomen van WU: wind (snelheid/richting — het
+    # station meet die onbetrouwbaar, blijft Open-Meteo) en de zon-instraling voor de
+    # glasfysica (die heeft de direct/diffuus-split nodig die WU niet levert; WU-zon dient
+    # hier enkel als bias-driver). Alleen de "nu"-uitlezing wordt verfijnd — de historische
+    # timeline die de kalibratie voedt blijft Open-Meteo (WU levert geen uur-historie en de
+    # ground truth zijn de tado-kamertemps).
+    cur = weather.get("current", {}) or {}
+    out_rh_temp = cur.get("temperature_2m")   # rauwe temp bij de gebruikte RH (één sensorpaar)
+    wu_temp, wu_solar, wu_humid = fetch_wu_current_temp()
+    if wu_temp is not None:
+        solar_now = wu_solar if wu_solar is not None else cur.get("shortwave_radiation")
+        src = "wu" if wu_solar is not None else "om"
+        cur["temperature_2m"] = round(correct_temp(wu_temp, solar_now), 1)
+        cur["outside_source"] = "wu"
+        out_rh_temp = wu_temp                 # rauwe WU-temp hoort bij de WU-RH (Magnus-paar)
+        if wu_humid is not None:
+            cur["relative_humidity_2m"] = wu_humid
+        print(f"[buiten] WU: {wu_temp}°C → gecorrigeerd {cur['temperature_2m']}°C "
+              f"(zon {solar_now} W/m², bron {src}); RH {wu_humid}%")
+    else:
+        cur["outside_source"] = "open-meteo"
+        print("[buiten] WU niet beschikbaar → Open-Meteo buiten-nu.")
+    weather["current"] = cur
     log = load_openings_log()
     _OPENINGS_CACHE = log
 
@@ -1704,7 +1740,8 @@ def main():
                 for room in house.get("rooms", {}).values()}
     wx_now = {"wind_speed": cur.get("wind_speed_10m", 0.0), "wind_dir": cur.get("wind_direction_10m", 0.0),
               "gust": cur.get("wind_gusts_10m", 0.0), "precip": 0.0}
-    sugg = suggest(house, params, wx_now, room_now, out_t, out_rh, out_t)
+    # out_rh_temp = de rauwe temp horend bij out_rh (WU-paar indien beschikbaar) voor convert_rh.
+    sugg = suggest(house, params, wx_now, room_now, out_t, out_rh, out_rh_temp)
     print(f"[suggestie] {sugg['headline']}")
 
     dash = build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,

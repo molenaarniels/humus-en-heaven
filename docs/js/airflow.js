@@ -54,7 +54,7 @@ function render() {
   html += `<div class="specimen-card"><div class="corner-mark">Buiten &amp; hemel</div>
     <div class="card-title">Wind, zon &amp; buitenlucht</div>
     <div class="chips">
-      <span class="chip-strong num">${fmt(w.outside_temp)}°C</span> buiten
+      <span class="chip-strong num">${fmt(w.outside_temp)}°C</span> buiten <span class="ctl-sub">(${w.outside_source === "wu" ? "station" : "model"})</span>
       <span>·</span> <span class="num">${fmt(w.outside_humidity,0)}%</span> RV
       <span>·</span> wind <span class="num">${bftText(w.wind_speed)}</span> ${windArrow(w.wind_dir)} ${dirName(w.wind_dir)}
       <span>·</span> zon ${sunGlyph(w.sun_el)} az <span class="num">${fmt(w.sun_az,0)}°</span> h <span class="num">${fmt(w.sun_el,0)}°</span>

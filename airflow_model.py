@@ -1382,6 +1382,82 @@ def collect_actual(house: dict, wd: dict, since: datetime) -> dict:
     return actual
 
 
+def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
+                        actual, now, ctx) -> dict:
+    """Bouw één kamer-rij voor airflow_data.json.
+
+    `ctx` bundelt de run-brede grootheden die elke kamer deelt: de zone-thermische
+    params (`zpar`), de op-nu vastgelegde lucht-/massatemps (`ta_all`/`tm_all`), de
+    laatste timeline-stap ≤ now (`now_step`), het interne-gain-profiel nu, en de
+    ventilatie-/dichtheidsconstanten (`veff`/`rho_cp`)."""
+    zpar = ctx["zpar"]
+    ta_all = ctx["ta_all"]
+    tm_all = ctx["tm_all"]
+    now_step = ctx["now_step"]
+    wd_key = room.get("from_window_data")
+    rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
+    pred_series = sim["series"].get(rid, [])
+    ta_now = ta_all.get(rid)               # échte (debiased) luchttemp van het model, op nu
+    frac = room.get("sensor_outdoor_frac", 0.0)
+    t_out_now = now_step["T_out"] if now_step else None
+    pred_now = _sensor_temp(ta_now, t_out_now, frac)   # wat de sensor leest → vergelijkbaar met tado
+    act_now = rd.get("inside")
+    err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
+    fresh_ach = None
+    env_w = vent_w = None        # warmtestroom naar/uit buiten (W, + = winst, − = verlies)
+    if now_step is not None:
+        ops = build_openings(house, now_step["states"], now_step["weather"], params,
+                             ta_all, now_step["T_out"])
+        net = solve_network(list(house["rooms"]) + list(house.get("junctions", {})),
+                            ops, ta_all, now_step["T_out"])
+        vol = room.get("volume_m3", 40.0)
+        fresh_m3s = net["fresh"].get(rid, 0.0)
+        fresh_ach = round(fresh_m3s * 3600.0 / vol, 2)
+        # De twee "naar buiten"-termen, de tegenhanger van de zonwinst: schil-conductie
+        # en ventilatie-uitwisseling met de buitenlucht. Negatief = energie verlaat de
+        # kamer (koeling/warmteverlies). Zelfde tekens als in simulate()'s luchtknoop.
+        if ta_now is not None and t_out_now is not None:
+            ua_env = zpar.get(rid, {}).get("UA_env", 0.0)
+            env_w = round(ua_env * (t_out_now - ta_now), 0)
+            vent_w = round(ctx["rho_cp"] * ctx["veff"] * fresh_m3s * (t_out_now - ta_now), 0)
+    sens_series = _to_sensor_series(house, timeline, rid, pred_series)
+    trend = _series_trend(sens_series, since=now)
+    return {
+        "label": room.get("label", rid),
+        "from_window_data": wd_key,
+        "actual_temp": act_now,
+        "predicted_temp": round(pred_now, 2) if pred_now is not None else None,
+        # Debiased wáre luchttemp (vóór de buitenmuur-sensorbias); == predicted_temp als frac=0.
+        "predicted_air_temp": round(ta_now, 2) if ta_now is not None else None,
+        "sensor_outdoor_frac": frac,
+        "predicted_mass_temp": round(tm_all.get(rid), 2) if tm_all.get(rid) is not None else None,
+        "error": round(err, 2) if err is not None else None,
+        "humidity": rd.get("humidity"),
+        "ach": fresh_ach,
+        "solar_w": round(now_step["irr"].get(rid, 0.0), 0) if now_step else None,
+        # Energie naar buiten (W, signed): schil-conductie + ventilatie-uitwisseling.
+        # − = de kamer verliest warmte (koelt af) langs deze weg; tegenhanger van solar_w.
+        "env_w": env_w,
+        "vent_w": vent_w,
+        # Richting van de temperatuurverandering (°C/uur): + opwarmend, − afkoelend.
+        "trend_c_per_h": round(trend, 2) if trend is not None else None,
+        # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
+        # twee tussenwoning-termen, voor inzicht op het dashboard.
+        "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - ta_now), 0)
+                    if ta_now is not None else None),
+        "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * ctx["int_profile_now"], 0),
+        "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
+        "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
+        # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
+        # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
+        "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
+                             for t, v in sens_series
+                             if t >= now - _timedelta_h(CALIB_WINDOW_H)],
+        "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
+        "params": params.get(rid, {}),
+    }
+
+
 def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     actual, now, rmse_now, learning_held=False, baseline=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
@@ -1395,7 +1471,6 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     # die toont wat écht open/dicht staat i.p.v. de defaults.
     states_now = openings_at(load_openings_log_cached(), now)
 
-    rooms_out = {}
     # De snapshot (kamertabellen + plattegrond) toont "nu", niet de 2u-vooruitblik: kies de
     # laatste timeline-stap ≤ now en pak de bijbehorende, op now vastgelegde zone-temps
     # (sim["Ta_now"]). De vooruitblik blijft alleen voor de projectie-reeks + trend.
@@ -1410,73 +1485,15 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         now_step = last_step
     ta_all = sim.get("Ta_now", sim["Ta"])
     tm_all = sim.get("Tm_now", sim["Tm"])
-    zpar = _zone_thermal_params(house, params)
-    int_profile_now = internal_gain_profile(now)
-    veff = params.get("vent_eff", 1.0)
-    rho_cp = 1.2 * CP_AIR
-    for rid, room in house.get("rooms", {}).items():
-        wd_key = room.get("from_window_data")
-        rd = wd.get("rooms", {}).get(wd_key, {}) if wd_key else {}
-        pred_series = sim["series"].get(rid, [])
-        ta_now = ta_all.get(rid)               # échte (debiased) luchttemp van het model, op nu
-        frac = room.get("sensor_outdoor_frac", 0.0)
-        t_out_now = now_step["T_out"] if now_step else None
-        pred_now = _sensor_temp(ta_now, t_out_now, frac)   # wat de sensor leest → vergelijkbaar met tado
-        act_now = rd.get("inside")
-        err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
-        fresh_ach = None
-        env_w = vent_w = None        # warmtestroom naar/uit buiten (W, + = winst, − = verlies)
-        if now_step is not None:
-            ops = build_openings(house, now_step["states"], now_step["weather"], params,
-                                 ta_all, now_step["T_out"])
-            net = solve_network(list(house["rooms"]) + list(house.get("junctions", {})),
-                                ops, ta_all, now_step["T_out"])
-            vol = room.get("volume_m3", 40.0)
-            fresh_m3s = net["fresh"].get(rid, 0.0)
-            fresh_ach = round(fresh_m3s * 3600.0 / vol, 2)
-            # De twee "naar buiten"-termen, de tegenhanger van de zonwinst: schil-conductie
-            # en ventilatie-uitwisseling met de buitenlucht. Negatief = energie verlaat de
-            # kamer (koeling/warmteverlies). Zelfde tekens als in simulate()'s luchtknoop.
-            if ta_now is not None and t_out_now is not None:
-                ua_env = zpar.get(rid, {}).get("UA_env", 0.0)
-                env_w = round(ua_env * (t_out_now - ta_now), 0)
-                vent_w = round(rho_cp * veff * fresh_m3s * (t_out_now - ta_now), 0)
-        sens_series = _to_sensor_series(house, timeline, rid, pred_series)
-        trend = _series_trend(sens_series, since=now)
-        rooms_out[rid] = {
-            "label": room.get("label", rid),
-            "from_window_data": wd_key,
-            "actual_temp": act_now,
-            "predicted_temp": round(pred_now, 2) if pred_now is not None else None,
-            # Debiased wáre luchttemp (vóór de buitenmuur-sensorbias); == predicted_temp als frac=0.
-            "predicted_air_temp": round(ta_now, 2) if ta_now is not None else None,
-            "sensor_outdoor_frac": frac,
-            "predicted_mass_temp": round(tm_all.get(rid), 2) if tm_all.get(rid) is not None else None,
-            "error": round(err, 2) if err is not None else None,
-            "humidity": rd.get("humidity"),
-            "ach": fresh_ach,
-            "solar_w": round(now_step["irr"].get(rid, 0.0), 0) if now_step else None,
-            # Energie naar buiten (W, signed): schil-conductie + ventilatie-uitwisseling.
-            # − = de kamer verliest warmte (koelt af) langs deze weg; tegenhanger van solar_w.
-            "env_w": env_w,
-            "vent_w": vent_w,
-            # Richting van de temperatuurverandering (°C/uur): + opwarmend, − afkoelend.
-            "trend_c_per_h": round(trend, 2) if trend is not None else None,
-            # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
-            # twee tussenwoning-termen, voor inzicht op het dashboard.
-            "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - ta_now), 0)
-                        if ta_now is not None else None),
-            "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * int_profile_now, 0),
-            "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
-            "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
-            # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
-            # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
-            "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
-                                 for t, v in sens_series
-                                 if t >= now - _timedelta_h(CALIB_WINDOW_H)],
-            "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
-            "params": params.get(rid, {}),
-        }
+    ctx = {
+        "zpar": _zone_thermal_params(house, params),
+        "ta_all": ta_all, "tm_all": tm_all, "now_step": now_step,
+        "int_profile_now": internal_gain_profile(now),
+        "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
+    }
+    rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
+                                          actual, now, ctx)
+                 for rid, room in house.get("rooms", {}).items()}
 
     rmse_hist = (learned.get("rmse_history") or [])[:]
     if rmse_now == rmse_now:   # niet-NaN

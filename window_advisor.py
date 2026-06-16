@@ -633,6 +633,77 @@ def write_dashboard(payload: dict) -> None:
     print(f"[dashboard] Geschreven → {DASHBOARD_FILE}")
 
 
+def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
+                        now: datetime, ctx: dict) -> dict:
+    """Bouw één kamer-rij voor het dashboard-artefact.
+
+    `ctx` bundelt de run-brede context die elke kamer deelt: `od` (beslis-temp),
+    `prev_rooms` (vorige adviezen), `warm_ahead`, het buiten-RH-sensorpaar, en de
+    forecast (`fc` + ruwe `hourly`)."""
+    d = rooms_data.get(room) or {}
+    inside   = d.get("inside")
+    humidity = d.get("humidity")
+    od = ctx["od"]
+
+    prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
+    hist = prev_hist
+    if inside is not None:
+        sample = {"t": now.isoformat(), "temp": round(inside, 1)}
+        if humidity is not None:
+            sample["hum"] = round(humidity)  # binnen-RH → vochttrend op het scatterplot
+        hist = _append_trim(prev_hist, sample)
+
+    low, high = comfort_band(room)
+    slope  = room_trend(hist, now)
+    hum_slope = room_trend(hist, now, "hum", RH_TREND_MAX)
+    vent_rh = convert_rh(ctx["outside_rh"], ctx["outside_rh_temp"], inside)
+    rh_off = humidity_offset(vent_rh)
+    reopen_soon = reopen_is_brief(ctx["hourly"], inside, now)
+    advice = decide(inside, od, ctx["prev_rooms"].get(room, "dicht"),
+                    low, high, bank_cooling=ctx["warm_ahead"],
+                    vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
+    # De vooruit-voorspeller verschuift de open-drempel mee met de huidige vochtstraf
+    # (per-uur RH-forecast valt buiten scope → huidige offset als statische benadering).
+    intervals, proj = predict_open_intervals(ctx["fc"], inside, slope, now, high + rh_off)
+
+    open_now = open_desire(inside, od, low, high, vent_rh, humidity)
+    predicted_open = intervals[0]["start"] if intervals else None
+
+    rh_veto = vent_rh is not None and vent_rh >= RH_HARD_CAP
+    dryout = bool(open_now and not (inside is not None and od is not None
+                  and inside > high + rh_off and od <= inside - OPEN_MARGIN))
+
+    if inside is None:
+        status_text = "Geen meting"
+    elif open_now:
+        end = intervals[0]["end"] if intervals else None
+        status_text = f"Nu open tot ~{end}" if end else "Nu open"
+    elif predicted_open:
+        status_text = f"Open rond {predicted_open}"
+    else:
+        status_text = "Vandaag dicht houden"
+
+    return {
+        "inside":         round(inside, 1) if inside is not None else None,
+        "humidity":       round(humidity) if humidity is not None else None,
+        "vent_rh":        round(vent_rh) if vent_rh is not None else None,
+        "rh_offset":      round(rh_off, 2),
+        "rh_veto":        rh_veto,
+        "dryout":         dryout,
+        "advice":         advice,
+        "comfort_low":    low,
+        "comfort_high":   high,
+        "trend":          round(slope, 2) if slope is not None else None,
+        "hum_trend":      round(hum_slope, 2) if hum_slope is not None else None,
+        "open_now":       open_now,
+        "predicted_open": predicted_open,
+        "open_intervals": intervals,
+        "status_text":    status_text,
+        "history":        hist,
+        "proj":           proj,
+    }
+
+
 def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | None,
                     outside_source: str, dmax: float | None, prev_rooms: dict,
                     gated: bool, gate_reason: str, warm_ahead: bool = False,
@@ -685,69 +756,13 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX
 
-    rooms_out: dict[str, dict] = {}
-    for room in ROOMS:
-        d = rooms_data.get(room) or {}
-        inside   = d.get("inside")
-        humidity = d.get("humidity")
-
-        prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
-        hist = prev_hist
-        if inside is not None:
-            sample = {"t": now.isoformat(), "temp": round(inside, 1)}
-            if humidity is not None:
-                sample["hum"] = round(humidity)  # binnen-RH → vochttrend op het scatterplot
-            hist = _append_trim(prev_hist, sample)
-
-        low, high = comfort_band(room)
-        slope  = room_trend(hist, now)
-        hum_slope = room_trend(hist, now, "hum", RH_TREND_MAX)
-        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
-        rh_off = humidity_offset(vent_rh)
-        reopen_soon = reopen_is_brief(om["hourly"], inside, now)
-        advice = decide(inside, od, prev_rooms.get(room, "dicht"),
-                        low, high, bank_cooling=warm_ahead,
-                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
-        # De vooruit-voorspeller verschuift de open-drempel mee met de huidige vochtstraf
-        # (per-uur RH-forecast valt buiten scope → huidige offset als statische benadering).
-        intervals, proj = predict_open_intervals(fc, inside, slope, now, high + rh_off)
-
-        open_now = open_desire(inside, od, low, high, vent_rh, humidity)
-        predicted_open = intervals[0]["start"] if intervals else None
-
-        rh_veto = vent_rh is not None and vent_rh >= RH_HARD_CAP
-        dryout = bool(open_now and not (inside is not None and od is not None
-                      and inside > high + rh_off and od <= inside - OPEN_MARGIN))
-
-        if inside is None:
-            status_text = "Geen meting"
-        elif open_now:
-            end = intervals[0]["end"] if intervals else None
-            status_text = f"Nu open tot ~{end}" if end else "Nu open"
-        elif predicted_open:
-            status_text = f"Open rond {predicted_open}"
-        else:
-            status_text = "Vandaag dicht houden"
-
-        rooms_out[room] = {
-            "inside":         round(inside, 1) if inside is not None else None,
-            "humidity":       round(humidity) if humidity is not None else None,
-            "vent_rh":        round(vent_rh) if vent_rh is not None else None,
-            "rh_offset":      round(rh_off, 2),
-            "rh_veto":        rh_veto,
-            "dryout":         dryout,
-            "advice":         advice,
-            "comfort_low":    low,
-            "comfort_high":   high,
-            "trend":          round(slope, 2) if slope is not None else None,
-            "hum_trend":      round(hum_slope, 2) if hum_slope is not None else None,
-            "open_now":       open_now,
-            "predicted_open": predicted_open,
-            "open_intervals": intervals,
-            "status_text":    status_text,
-            "history":        hist,
-            "proj":           proj,
-        }
+    ctx = {
+        "od": od, "prev_rooms": prev_rooms, "warm_ahead": warm_ahead,
+        "outside_rh": outside_rh, "outside_rh_temp": outside_rh_temp,
+        "fc": fc, "hourly": om["hourly"],
+    }
+    rooms_out = {room: _room_dashboard_row(room, rooms_data, prev_room_dash, now, ctx)
+                 for room in ROOMS}
 
     return {
         "generated_at":   utc_now_iso(),

@@ -549,7 +549,7 @@ function doorGlyph(pl) {                       // doorgang over de rasterkier + 
 }
 
 // Kamerinhoud op een vast tekstraster binnen de muren.
-function roomContent(rc, r, z, tall, live) {
+function roomContent(rc, r, z, stack, live) {
   const x = rc.x, y = rc.y, ix = x + WALL_T + 8;
   let s = `<rect x="${x + WALL_T}" y="${y + WALL_T}" width="${rc.w - 2 * WALL_T}" height="17" fill="#2a241b08"/>`;
   // geen verdieping-tag per kamer: de banden in de linkermarge tonen de verdieping al
@@ -571,8 +571,8 @@ function roomContent(rc, r, z, tall, live) {
   } else {
     s += `<text x="${ix}" y="${y + 54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
   }
-  // hoge zone (trap): label in het lege middendeel, weg van energietekst en trend-chip
-  if (tall) s += `<text x="${x + rc.w / 2}" y="${y + rc.h / 2}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
+  // verticale koker (trap): label in het lege middendeel, weg van energietekst en trend-chip
+  if (stack) s += `<text x="${x + rc.w / 2}" y="${y + rc.h / 2}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
   return s;
 }
 
@@ -668,10 +668,16 @@ function floorPlanSVG(d, opts={}) {
   // Zones: comfort-tint als "vloerafwerking" bínnen de muren; de muren als dubbele
   // architectenlijn met échte openingen erin (wallBand + glyphs hieronder).
   ids.forEach(id => {
-    const r=td(id), z=zones[id], rc=rectOf(id), tall=planH(id)>1;
+    const r=td(id), z=zones[id], rc=rectOf(id);
+    // "schoorsteen"-label alleen voor een echte verticale koker: een hoge cel die méér dan één
+    // verdieping overspant (de trap). Een cel die alleen lager is doorgetrokken voor de
+    // plattegrond-uitlijning (zoals de woonkamer, alles op de begane grond) is géén schoorsteen.
+    const h=planH(id), [, py]=zones[id].plan_xy, fl=new Set();
+    if (h>1) for (let rr=0; rr<h; rr++) if (floorsByRow[py+rr]!=null) fl.add(floorsByRow[py+rr]);
+    const stack = fl.size>1;
     s += `<rect class="zone-rect" x="${rc.x+WALL_T}" y="${rc.y+WALL_T}" width="${rc.w-2*WALL_T}" height="${rc.h-2*WALL_T}" fill="${zoneFill(r)}"/>`;
     s += wallBand(rc, placed.gaps[id] || {});
-    s += roomContent(rc, r, z, tall, live);
+    s += roomContent(rc, r, z, stack, live);
   });
 
   // Openingen: raam-/rooster-/dakraam-/deursymbolen in de muur.

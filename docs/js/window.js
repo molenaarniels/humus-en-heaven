@@ -1,5 +1,5 @@
 // ===================== CONFIG =====================
-const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", rain:"#4a6b8a", sun:"#d4a017", dry:"#a0421a", sand:"#c9a978" };
+// COLORS-palet komt uit js/theme.js (geladen vóór dit script).
 const ROOM_COLORS = [COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight];
 const state = { data: null, chart: null };
 

@@ -38,6 +38,7 @@ from datetime import date, datetime, timedelta, timezone
 
 
 import shared_const
+from shared_const import parse_date, utc_now_iso
 from gist_io import read_json as gist_read_json
 from http_util import get_json
 from notify import run_guarded, send_telegram
@@ -236,8 +237,8 @@ def last_mow_date(mowings: dict, today: date) -> tuple[date, bool]:
 
     Geeft (datum, assumed) terug.
     """
-    past = [datetime.strptime(d, "%Y-%m-%d").date()
-            for d in mowings if datetime.strptime(d, "%Y-%m-%d").date() <= today]
+    past = [parse_date(d)
+            for d in mowings if parse_date(d) <= today]
     if past:
         return max(past), False
     return today - timedelta(days=COLD_START_ASSUMED_INTERVAL_DAYS), True
@@ -274,7 +275,7 @@ def effective_threshold(mowings: dict, days: list[dict], source: str) -> tuple[f
     """Bepaal de maairijp-drempel; leer hem uit het eigen ritme indien mogelijk."""
     if not SELF_CALIBRATE:
         return READY_GU, False
-    mow_dates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in mowings)
+    mow_dates = sorted(parse_date(d) for d in mowings)
     if len(mow_dates) < CALIBRATE_MIN_MOWS + 1:
         return READY_GU, False
 
@@ -407,7 +408,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    state["last_updated"] = utc_now_iso()
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
     print(f"[state] opgeslagen: {state}")
@@ -456,7 +457,7 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
         body = (
             "✂️ <b>Het gras is maairijp</b>, maar vandaag is geen goede maaidag "
             f"({describe_day(today_day)}).\n"
-            f"🌤️ Beste dag: <b>{_format_date_nl(datetime.strptime(opt['date'], '%Y-%m-%d').date())}</b> "
+            f"🌤️ Beste dag: <b>{_format_date_nl(parse_date(opt['date']))}</b> "
             f"({opt['reason']}).\n"
             f"{len_line}"
         )
@@ -464,7 +465,7 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
         when = ""
         if optimal:
             when = (f"\n🌤️ Eerstvolgende goede dag: "
-                    f"<b>{_format_date_nl(datetime.strptime(optimal['date'], '%Y-%m-%d').date())}</b> "
+                    f"<b>{_format_date_nl(parse_date(optimal['date']))}</b> "
                     f"({optimal['reason']}).")
         body = (
             f"⚠️ <b>Gras staat lang</b> — al {days_since} dagen niet gemaaid.\n"
@@ -625,7 +626,7 @@ def main():
             should_send = True
         elif state.get("last_notified_date"):
             try:
-                prev = datetime.strptime(state["last_notified_date"], "%Y-%m-%d").date()
+                prev = parse_date(state["last_notified_date"])
                 should_send = (today - prev).days >= RENUDGE_DAYS
             except ValueError:
                 should_send = True

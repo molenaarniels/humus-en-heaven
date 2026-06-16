@@ -35,8 +35,9 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from http_util import get_json
 from notify import sanitize_error, send_telegram
-from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ
+from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ, local_today
 
 UTC = timezone.utc
 
@@ -59,7 +60,7 @@ def fetch_wu_hourly(station_id: str, api_key: str, days: int) -> Dict[str, dict]
     """WU PWS uur-historie, per dag opgehaald. Returnt {utc_hour_key: {...}}
     met utc_hour_key = 'YYYY-MM-DDTHH'. Velden: temp (°C), wind (km/h @10m),
     rh (%), solar (W/m², kan None zijn als station geen zonsensor heeft)."""
-    today = datetime.now(TZ).date()
+    today = local_today()
     out: Dict[str, dict] = {}
     for i in range(days, 0, -1):
         d = today - timedelta(days=i)
@@ -98,16 +99,17 @@ def fetch_wu_hourly(station_id: str, api_key: str, days: int) -> Dict[str, dict]
 def fetch_om_archive_hourly(start: str, end: str) -> Dict[str, dict]:
     """Open-Meteo ERA5-archief, uurlijks, in UTC. Returnt {utc_hour_key: {...}}
     met temp (°C), solar (shortwave W/m²), cloud (%), wind (km/h @10m)."""
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude={UTRECHT_LAT}&longitude={UTRECHT_LON}"
-        f"&start_date={start}&end_date={end}"
-        "&hourly=temperature_2m,shortwave_radiation,cloud_cover,wind_speed_10m"
-        "&timezone=UTC"
-    )
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    h = r.json().get("hourly", {})
+    params = {
+        "latitude": UTRECHT_LAT,
+        "longitude": UTRECHT_LON,
+        "start_date": start,
+        "end_date": end,
+        "hourly": "temperature_2m,shortwave_radiation,cloud_cover,wind_speed_10m",
+        "timezone": "UTC",
+    }
+    j = get_json("https://archive-api.open-meteo.com/v1/archive", params,
+                 timeout=30, label="om-archive")
+    h = j.get("hourly", {})
     times = h.get("time", [])
     temp = h.get("temperature_2m", [])
     solar = h.get("shortwave_radiation", [])
@@ -377,7 +379,7 @@ def main() -> None:
         raise SystemExit("WU_STATION_ID en WU_API_KEY zijn vereist.")
     days = int(os.environ.get("ACCURACY_DAYS", "30"))
 
-    today = datetime.now(TZ).date()
+    today = local_today()
     start, end = today - timedelta(days=days), today - timedelta(days=1)
 
     wu = fetch_wu_hourly(station_id, api_key, days)

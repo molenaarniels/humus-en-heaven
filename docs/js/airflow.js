@@ -1,7 +1,7 @@
 // ===================== CONFIG =====================
 // (CONFIG + Gist/token-logica komen uit js/shared.js)
 const OPENINGS_FILE = "house_openings.json";
-const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", sun:"#d4a017", dry:"#a0421a", rain:"#4a6b8a" };
+// COLORS-palet komt uit js/theme.js (geladen vóór dit script).
 const state = { data: null, tempChart: null, rmseChart: null, pending: {} };
 
 document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ventilatie`;

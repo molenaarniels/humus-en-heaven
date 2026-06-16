@@ -24,9 +24,10 @@ State wordt automatisch bijgewerkt na elk advies.
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 import shared_const
+from shared_const import utc_now_iso
 from http_util import get_json
 from notify import run_guarded, send_telegram
 
@@ -55,7 +56,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    state["last_updated"] = utc_now_iso()
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
     print(f"[state] Opgeslagen: status={state['status']}")
@@ -282,7 +283,7 @@ def main():
         sys.exit(1)
 
     mode = sys.argv[1]
-    print(f"[sandbox_notify] Start — mode={mode} tijd={datetime.now(timezone.utc).isoformat()}")
+    print(f"[sandbox_notify] Start — mode={mode} tijd={utc_now_iso()}")
 
     state    = load_state()
     forecast = fetch_forecast()
@@ -298,7 +299,7 @@ def main():
 
     if bericht:
         send_telegram(bericht)
-        nieuwe_state["last_notification"] = datetime.now(timezone.utc).isoformat()
+        nieuwe_state["last_notification"] = utc_now_iso()
 
     save_state(nieuwe_state)
     print("[sandbox_notify] Klaar")

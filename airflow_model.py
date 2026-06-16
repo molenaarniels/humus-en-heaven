@@ -47,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
 import shared_const
+from shared_const import utc_now_iso
 from gist_io import read_json as gist_read_json
 from http_util import get_json
 from notify import run_guarded
@@ -1484,7 +1485,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
     rmse_hist = rmse_hist[-RMSE_HISTORY_KEEP:]
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": utc_now_iso(),
         "as_of_local": now.isoformat(),
         "source": "airflow_model",
         "model_version": model_version(),

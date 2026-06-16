@@ -11,7 +11,7 @@ import requests
 
 from http_util import get_json
 from notify import sanitize_error
-from shared_const import LATITUDE, LONGITUDE, TZ
+from shared_const import LATITUDE, LONGITUDE, TZ, local_today
 from wu_bias import bias_estimate, correct_temp
 
 # --- Locatie & bodem ---
@@ -554,7 +554,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     j = get_json("https://api.open-meteo.com/v1/forecast", params,
                  timeout=20, label="open-meteo")
     d = j["daily"]
-    today = datetime.now(TZ).date().isoformat()
+    today = local_today().isoformat()
     # Voor "vandaag" gebruiken we alleen de regen die al daadwerkelijk is
     # gevallen (uurlijks). De daily-sum mengt gemeten + voorspeld; dat zou
     # de balans laten lijken alsof de voorspelde regen al verwerkt is.
@@ -638,7 +638,7 @@ def fetch_wunderground(station_id: str, api_key: str, days: int = 30) -> List[Di
     """Haalt WU PWS history (afgesloten dagen) + current observatie voor
     today's accumulatieve precip. Probeert range-call eerst, dan per-dag
     fallback voor history."""
-    today = datetime.now(TZ).date()
+    today = local_today()
     start = today - timedelta(days=days)
     end = today - timedelta(days=1)
     url = (
@@ -912,7 +912,7 @@ def build_monthly_totals_from_days(days: List[Dict]) -> Dict[str, Dict]:
     kalenderdagen aanwezig) én die voor vandaag zijn afgelopen. De huidige
     maand wordt nooit bevroren.
     """
-    today = datetime.now(TZ).date().isoformat()
+    today = local_today().isoformat()
     raw: Dict[str, Dict] = {}
     for d in days:
         if d.get("forecast") or d["date"] >= today:

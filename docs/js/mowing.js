@@ -1,6 +1,5 @@
 // ===================== CONFIG =====================
-// (CONFIG + Gist/token-logica komen uit js/shared.js)
-const COLORS = { parchment:"#f3ecd9", ink:"#2a241b", inkSoft:"#5c4f3c", moss:"#3d5a3a", mossLight:"#6b8562", clay:"#b8532a", sun:"#d4a017", dry:"#a0421a" };
+// (CONFIG + Gist/token-logica komen uit js/shared.js; COLORS uit js/theme.js)
 const NL_DAYS = ["maandag","dinsdag","woensdag","donderdag","vrijdag","zaterdag","zondag"];
 const NL_MONTHS = ["","jan","feb","mrt","apr","mei","jun","jul","aug","sep","okt","nov","dec"];
 const state = { data: null, chart: null, mowings: {}, pickedLen: 40 };

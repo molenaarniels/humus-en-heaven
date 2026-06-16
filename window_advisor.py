@@ -31,7 +31,7 @@ import math
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import gist_io
 from http_util import get_json
@@ -40,6 +40,7 @@ from notify import run_guarded, sanitize_error, send_telegram
 import requests
 
 import shared_const
+from shared_const import utc_now_iso
 from wu_bias import correct_temp
 
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
@@ -749,7 +750,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         }
 
     return {
-        "generated_at":   datetime.now(timezone.utc).isoformat(),
+        "generated_at":   utc_now_iso(),
         "as_of_local":    now.isoformat(),
         "source":         "window_advisor",
         "gated":          gated,

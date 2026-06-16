@@ -1,6 +1,6 @@
 # Humus & Heaven — Project Overview
 
-This repo contains three independent automation pipelines, all running on GitHub Actions and sending notifications via Telegram. They share Telegram secrets but are otherwise fully separate.
+This repo contains eight independent automation pipelines, all running on GitHub Actions (most notify via Telegram; Project 7's Telegram is optional and Project 8 has none). They share Telegram/WU/Gist secrets and a few **deliberate read-only** data hand-offs (Project 5 reads Project 1's `data.json`; Project 8 reads Project 6's `window_data.json`), but are otherwise separate.
 
 ---
 
@@ -87,7 +87,9 @@ This repo contains three independent automation pipelines, all running on GitHub
   `bust(url)` helper from shared.js (read-only pages keep it inline; ipad.js has its own `bust()`)
 - **JS layout:** per-page script in `docs/js/<page>.js`; shared Gist/token/workflow-dispatch logic
   plus `bust()`/`gistReadJSON()` in `docs/js/shared.js` (loaded *before* the page script on
-  index/mowing/airflow — the writer pages).
+  index/mowing/airflow — the writer pages). The shared `COLORS` palette lives in
+  `docs/js/theme.js`, loaded *before* the page script on **every** dashboard (index, model,
+  window, airflow, mowing); ipad.html keeps its own theme and loads neither.
   CSP `script-src` has **no `unsafe-inline`**: never add inline `<script>` blocks or `onclick=`-style
   attributes — wire events with `addEventListener`/delegation and `data-*` attributes.
 - **CSS layout:** rules shared by the dashboard pages live in `docs/css/shared.css` (linked *before*
@@ -397,7 +399,10 @@ Five small cross-project Python modules (everything else is self-contained):
   last attempt so existing fallback paths keep working. WU fetches deliberately stay outside it
   (apiKey embedded in the URL string + bespoke partial-failure handling).
 - **`shared_const.py`** — the single source for `LATITUDE`/`LONGITUDE` (Utrecht Oost) and
-  `TZ` (Europe/Amsterdam). Modules re-bind these to their existing local aliases.
+  `TZ` (Europe/Amsterdam), plus small stdlib date/time helpers that bundle the repeated
+  boilerplate: `utc_now_iso()` (ISO UTC `generated_at` stamp), `local_today()`
+  (`datetime.now(TZ).date()`) and `parse_date()` (`YYYY-MM-DD` → `date`). Modules re-bind
+  the constants to their existing local aliases.
 
 ---
 
@@ -422,10 +427,16 @@ Five small cross-project Python modules (everything else is self-contained):
 - **Never commit secrets** — all credentials live in GitHub Actions secrets
 - **Do not tune soil parameters** (FC, WP, Zr) — those are domain decisions, not code changes
 - **Preserve the data.json schema** — add fields additively, never rename or remove existing ones
-- **Frontend cache-bust** — always keep `?t=${Date.now()}` on data.json fetch calls
-- All times in UTC in code; display in Europe/Amsterdam on frontend
+- **Frontend cache-bust** — always keep the `?t=${Date.now()}` query on JSON fetches
+  (writer pages via the `bust()` helper from shared.js; read-only pages inline)
+- **Times — default to Europe/Amsterdam local time.** Crons use GitHub Actions' native
+  `timezone:` field so DST is handled automatically — UTC crons drifted across DST and
+  caused real timing bugs, hence this policy (a few legacy crons, e.g. soil 06:00 and
+  briefing 01:00, are still pinned in UTC; new ones should be local). In-code day/schedule
+  logic uses `shared_const.TZ` (`local_today()`, `datetime.now(TZ)`). Only machine-readable
+  artifact stamps (`generated_at`) stay UTC/ISO; display in Amsterdam on the frontend
 - Python 3.11+, no build step for frontend
-- `ruff check .` and `python -m pytest` must stay green (config in `pyproject.toml`; CI runs both on every push)
+- `ruff check .` and `python -m pytest` must stay green (ruff config in `pyproject.toml`, pytest import-bootstrap in `conftest.py`; CI runs both on every push)
 - Every runner script wraps `main` in `notify.run_guarded` — keep that when adding a pipeline
 
 ---
@@ -434,7 +445,7 @@ Five small cross-project Python modules (everything else is self-contained):
 
 This repo is **public**. Anyone can read all code, workflow files, and run logs. Keep this in mind for every change.
 
-- **Never add `pull_request` or `pull_request_target` triggers** to any workflow — these allow forks to trigger runs and can expose secrets
+- **Never add `pull_request` or `pull_request_target` triggers** to any workflow — these allow forks to trigger runs and can expose secrets. (Trade-off: `tests.yml` runs on `push` only, so a fork's PR gets no CI until its branch is pushed to this repo — acceptable for a public repo.)
 - **Never log secrets** — no `echo $SECRET`, no debug steps that dump env vars, no error handlers that print environment
 - **GITHUB_TOKEN permissions must be minimal** — workflows that only read code use `permissions: contents: read`; only workflows that commit/push use `contents: write`
 - **No community actions without a pinned commit SHA** — `uses: some-action@v2` is not safe; use `uses: some-action@<full-sha>` for any action outside the `actions/` namespace

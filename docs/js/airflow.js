@@ -56,7 +56,7 @@ function render() {
     <div class="chips">
       <span class="chip-strong num">${fmt(w.outside_temp)}°C</span> buiten
       <span>·</span> <span class="num">${fmt(w.outside_humidity,0)}%</span> RV
-      <span>·</span> wind <span class="num">${fmt(w.wind_speed,1)} m/s</span> ${windArrow(w.wind_dir)} ${dirName(w.wind_dir)}
+      <span>·</span> wind <span class="num">${bftText(w.wind_speed)}</span> ${windArrow(w.wind_dir)} ${dirName(w.wind_dir)}
       <span>·</span> zon ${sunGlyph(w.sun_el)} az <span class="num">${fmt(w.sun_az,0)}°</span> h <span class="num">${fmt(w.sun_el,0)}°</span>
     </div>
     <div style="margin-top:12px;" class="chips">
@@ -332,6 +332,13 @@ const FP = { cw: 164, ch: 124, gap: 30, padL: 92, padT: 80, padR: 60, padB: 36 }
 const WALL_T = 5;                              // muurband-dikte (px)
 const PLAN_SIDES = ["top", "bottom", "left", "right"];
 
+// — Plattegrond-oriëntatie: het plan is GEDRAAID (niet noord-boven). De rechterrand kijkt naar de
+// straat/voorgevel (NW, ~309° — zie house_model.json _README), de linkerrand naar de tuin (ZO, 129°).
+// De kompasroos + windpijl in het cartouche draaien hierin mee, zodat de richting klopt t.o.v. de
+// kamers (pijl naar rechts = wind naar de straatgevel) i.p.v. een losse noord-boven-roos.
+const PLAN_FRONT_AZ = 309;
+const PLAN_ROT = ((90 - PLAN_FRONT_AZ) % 360 + 360) % 360;   // azimut → schermhoek (kloksgewijs vanaf boven)
+
 function sideGeom(rc, side) {                  // beginpunt + tangent + buitennormaal + lengte
   switch (side) {
     case "top":    return { x0: rc.x,        y0: rc.y,        tx: 1, ty: 0, nx: 0,  ny: -1, len: rc.w };
@@ -584,15 +591,19 @@ function cartouche(w, W) {
   let s = `<rect x="${x0}" y="${y0}" width="${bw}" height="${bh}" rx="4" fill="#2a241b06" stroke="${COLORS.ink}" stroke-width="0.8"/>`;
   const cx = x0 + 28, cy = y0 + bh / 2, R = 14;
   s += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${COLORS.inkSoft}" stroke-width="1" opacity="0.5"/>`;
-  s += `<text x="${cx}" y="${cy - R - 2}" font-size="6.5" fill="${COLORS.inkSoft}" text-anchor="middle">N</text>`;
+  // Het plan is gedraaid (rechts = straat), niet noord-boven: zet de N-markering én de windpijl op
+  // de gedraaide oriëntatie (PLAN_ROT), zodat de richting klopt t.o.v. de kamers.
+  const nAng = PLAN_ROT * Math.PI / 180;
+  s += `<line x1="${cx}" y1="${cy}" x2="${(cx + Math.sin(nAng) * R).toFixed(1)}" y2="${(cy - Math.cos(nAng) * R).toFixed(1)}" stroke="${COLORS.inkSoft}" stroke-width="0.8" opacity="0.55"/>`;
+  s += `<text x="${(cx + Math.sin(nAng) * (R + 6)).toFixed(1)}" y="${(cy - Math.cos(nAng) * (R + 6) + 2.5).toFixed(1)}" font-size="6.5" fill="${COLORS.inkSoft}" text-anchor="middle">N</text>`;
   if (w.wind_dir != null) {
-    const toRad = ((w.wind_dir + 180) % 360) * Math.PI / 180, R2 = R - 3;   // waarheen de wind waait
+    const toRad = ((w.wind_dir + 180 + PLAN_ROT) % 360) * Math.PI / 180, R2 = R - 3;   // waarheen de wind waait, gedraaid naar het plan
     const tx = cx + Math.sin(toRad) * R2, ty = cy - Math.cos(toRad) * R2;
     const fx = cx - Math.sin(toRad) * R2, fy = cy + Math.cos(toRad) * R2;
     s += flowArrow(fx, fy, tx, ty, 2.2, Math.max(0.6, Math.min(2, 6 / Math.max(1, w.wind_speed || 1))), COLORS.rain);
   }
   const txx = x0 + 52;
-  s += `<text x="${txx}" y="${y0 + 22}" font-size="9" fill="${COLORS.ink}">wind ${fmt(w.wind_speed, 1)} m/s ${dirName(w.wind_dir)}</text>`;
+  s += `<text x="${txx}" y="${y0 + 22}" font-size="9" fill="${COLORS.ink}">wind ${bftText(w.wind_speed)} ${dirName(w.wind_dir)}</text>`;
   if (w.sun_el != null && w.sun_el > 0) {
     s += `<text x="${txx}" y="${y0 + 40}" font-size="9" fill="${COLORS.inkSoft}">zon az ${fmt(w.sun_az, 0)}° · h ${fmt(w.sun_el, 0)}°</text>`;
     const sx = x0 + bw - 22, sy = y0 + bh / 2;
@@ -1002,12 +1013,13 @@ function renderSandbox() {
   // Omgevings-sliders (wind + buitentemp) zodat je óók het weer kunt variëren.
   const env = document.getElementById("sandbox-env");
   env.innerHTML =
-    sandboxSlider("wind_speed", "Windsnelheid", 0, 12, 0.1) +
+    sandboxSlider("wind_speed", "Windkracht", 0, 12, 1) +
     sandboxSlider("wind_dir", "Windrichting", 0, 360, 5) +
     sandboxSlider("outside_temp", "Buitentemperatuur", 8, 35, 0.5);
   env.querySelectorAll("input[type=range]").forEach(inp => inp.addEventListener("input", e => {
-    const k = e.target.dataset.k;
-    state.sandbox[k] = parseFloat(e.target.value);
+    const k = e.target.dataset.k, raw = parseFloat(e.target.value);
+    // de windslider staat in Beaufort; het model rekent in m/s → terug naar de bandmidden-m/s
+    state.sandbox[k] = k === "wind_speed" ? beaufortToMs(raw) : raw;
     const lab = document.getElementById("sbval-" + k);
     if (lab) lab.textContent = sandboxValTxt(k, state.sandbox[k]);
     sandboxRecompute();
@@ -1044,14 +1056,15 @@ function renderSandbox() {
 
 function sandboxValTxt(k, v) {
   if (k === "wind_dir") return `${Math.round(v)}° ${dirName(v)}`;
-  if (k === "wind_speed") return `${v.toFixed(1)} m/s`;
+  if (k === "wind_speed") return bftText(v);          // v in m/s → Beaufort
   return `${v.toFixed(1)}°C`;
 }
 function sandboxSlider(k, label, min, max, step) {
   const v = state.sandbox[k];
+  const sliderVal = k === "wind_speed" ? beaufort(v) : v;   // windslider draait in Beaufort
   return `<div class="ctl-row"><div><div class="ctl-label">${label}</div>
       <div class="ctl-sub num" id="sbval-${k}">${sandboxValTxt(k, v)}</div></div>
-    <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v}" style="width:160px;max-width:48vw;accent-color:var(--moss);"></div>`;
+    <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${sliderVal}" style="width:160px;max-width:48vw;accent-color:var(--moss);"></div>`;
 }
 
 function sandboxRecompute() {
@@ -1107,6 +1120,20 @@ function winLabel(wid) { const m=state.data.house_meta||{}; return (m.windows&&m
 function roomLabel(rid) { const m=state.data.house_meta||{}; const z=(m.rooms&&m.rooms[rid])||(m.junctions&&m.junctions[rid]); return (z&&z.label)||rid; }
 function dirName(deg) { if (deg==null) return ""; const dirs=["N","NO","O","ZO","Z","ZW","W","NW"]; return dirs[Math.round(((deg%360)/45))%8]; }
 function windArrow(deg) { if (deg==null) return ""; const a=["↓","↙","←","↖","↑","↗","→","↘"]; return a[Math.round(((deg%360)/45))%8]; }
+// Windsnelheid (m/s) → Beaufort (0–12) via de standaard WMO/KNMI-bovengrenzen, en terug naar een
+// representatieve m/s (bandmidden) voor het model. bftText() is de losse weergavehelper ("X Bft").
+const BEAUFORT_MAX_MS = [0.5, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7];
+function beaufort(ms) {
+  if (ms == null || isNaN(ms)) return null;
+  let b = 0; while (b < BEAUFORT_MAX_MS.length && ms >= BEAUFORT_MAX_MS[b]) b++;
+  return b;
+}
+function beaufortToMs(b) {
+  const lo = b <= 0 ? 0 : BEAUFORT_MAX_MS[Math.min(b, BEAUFORT_MAX_MS.length) - 1];
+  const hi = b < BEAUFORT_MAX_MS.length ? BEAUFORT_MAX_MS[b] : 36;
+  return +((lo + hi) / 2).toFixed(1);
+}
+function bftText(ms) { const b = beaufort(ms); return b == null ? "—" : `${b} Bft`; }
 function sunGlyph(el) { return el!=null && el>0 ? "☀" : "🌙"; }
 function learnTrendText(d) {
   const h = (d.learned && d.learned.rmse_history) || [];

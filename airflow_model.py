@@ -109,6 +109,69 @@ def reg_weight(name: str) -> float:
     return REG_WEIGHT_BY_PARAM.get(name, REG_WEIGHT)
 
 
+# ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
+# Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
+# opening-log, een code-deploy die de fit verslechtert, een anomaal venster — ín de opgeslagen
+# toestand bakken, zónder weg terug. Daarom houden we een checkpoint bij van de béste tot nu
+# toe geziene params en vallen we daarop terug als de kwaliteit langdurig wegzakt.
+#
+# Het kwaliteitssignaal is de SKILL t.o.v. een persistentie-baseline (zie `skill_score`),
+# NIET de rauwe RMSE. De skill is weer-genormaliseerd: op een zwoele zonnige dag is élke
+# voorspeller slechter (de kamer beweegt veel), dus de rauwe RMSE stijgt dan vanzelf — dat mag
+# géén fallback triggeren. Alleen een echte modelregressie (skill zakt) doet dat. Bijkomend
+# voordeel: een checkpoint wordt zo bij voorkeur vastgelegd op een informatief (zwaar) venster
+# i.p.v. op een makkelijk mild venster, waar bijna elke param past.
+CKPT_MIN_SKILL_GAIN = 0.01   # checkpoint pas bijwerken als de skill ≥ dit beter is (ruismarge)
+FALLBACK_SKILL_DROP = 0.15   # skill ≥ dit ónder de checkpoint-skill telt als 'verslechterd'
+FALLBACK_AFTER      = 8       # zoveel opeenvolgende verslechterde runs (~2u) → terugvallen
+
+
+def checkpoint_step(ckpt: dict, params: dict, skill: float | None,
+                    rmse_now: float, version: str, now_iso: str) -> tuple[dict, dict, bool]:
+    """Beslis over het beste-params-checkpoint op basis van de (weer-genormaliseerde) skill.
+    Geeft `(params, checkpoint, fell_back)`:
+      • nieuw/eerste skill-optimum → leg de huidige params vast (geen fallback);
+      • skill ≥ FALLBACK_SKILL_DROP ónder het optimum, FALLBACK_AFTER runs lang → geef de
+        checkpoint-params terug en zet `fell_back=True` (de aanroeper hermerged + herberekent
+        dan de RMSE met de teruggezette params);
+      • anders ongewijzigd, teller gereset.
+    Puur: doet zelf geen simulatie. Roep alléén aan op écht-geleerde runs (niet `held`)."""
+    ckpt = dict(ckpt or {})
+    best_skill = ckpt.get("skill")
+    if skill is not None and (best_skill is None or skill >= best_skill + CKPT_MIN_SKILL_GAIN):
+        return params, {"params": json.loads(json.dumps(params)), "skill": skill,
+                        "rmse": round(rmse_now, 3), "version": version, "t": now_iso,
+                        "degraded_runs": 0, "last_fallback": ckpt.get("last_fallback")}, False
+    if (skill is not None and best_skill is not None
+            and skill <= best_skill - FALLBACK_SKILL_DROP):
+        ckpt["degraded_runs"] = int(ckpt.get("degraded_runs", 0)) + 1
+        if ckpt["degraded_runs"] >= FALLBACK_AFTER and ckpt.get("params"):
+            ckpt["degraded_runs"] = 0
+            ckpt["last_fallback"] = now_iso
+            return json.loads(json.dumps(ckpt["params"])), ckpt, True
+        return params, ckpt, False
+    ckpt["degraded_runs"] = 0
+    return params, ckpt, False
+
+
+def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dict:
+    """Compacte weer-context van het residu-venster: dag-max buitentemp + zon-piek/-gemiddelde.
+    Stempelt elk leercurve-punt zodat een RMSE-stijging aan het wéér te koppelen is (een hete
+    zonnige dag) i.p.v. blind als modelregressie gelezen te worden. Lege dict bij geen historie."""
+    since = now - _timedelta_h(window_h)
+    rows = [r for r in weather.get("hourly", [])
+            if r.get("dt") is not None and since <= r["dt"] <= now]
+    temps = [r["T_out"] for r in rows if r.get("T_out") is not None]
+    solar = [r["shortwave"] for r in rows if r.get("shortwave") is not None]
+    out: dict = {}
+    if temps:
+        out["tmax"] = round(max(temps), 1)
+    if solar:
+        out["solar_peak"] = round(max(solar))
+        out["solar_mean"] = round(sum(solar) / len(solar))
+    return out
+
+
 # ── Tussenwoning-fysica: buren + interne warmtelast ─────────────────────────────────
 # Dit is een jaren-'20 rijtjeshuis (tussenwoning): woningscheidende (party) muren grenzen
 # aan álle kamers aan verwarmde buren die ~jaarrond op kamertemperatuur zitten. Die muren
@@ -978,6 +1041,32 @@ def rmse(res: list[float]) -> float:
     return math.sqrt(sum(r * r for r in res) / len(res)) if res else float("nan")
 
 
+def naive_rmse(actual: dict) -> float:
+    """RMSE van een persistentie-baseline: elke kamer blijft op zijn eerste sample in het
+    venster. De 'doet-niets'-voorspeller waar het model tegen moet winnen — over exact dezelfde
+    meetmomenten als de model-RMSE, zodat de skill een eerlijke ratio is. NaN bij geen samples."""
+    sq, n = 0.0, 0
+    for samples in actual.values():
+        if not samples:
+            continue
+        base = samples[0][1]
+        for _, temp in samples:
+            sq += (base - temp) ** 2
+            n += 1
+    return math.sqrt(sq / n) if n else float("nan")
+
+
+def skill_score(rmse_model: float, rmse_baseline: float) -> float | None:
+    """1 − RMSE_model / RMSE_persistentie (afgerond, geklemd op ≤1). >0 = beter dan 'kamer
+    beweegt niet', 0 = even goed, <0 = slechter. Weer-genormaliseerd: op een dag met veel
+    temperatuurbeweging is de baseline óók slecht, dus een hoge RMSE drukt de skill niet
+    vanzelf. None als de baseline onbruikbaar is (vlakke dag → ~0 noemer, of NaN)."""
+    if (rmse_baseline is None or rmse_baseline != rmse_baseline or rmse_baseline < 1e-6
+            or rmse_model is None or rmse_model != rmse_model):
+        return None
+    return round(min(1.0, 1.0 - rmse_model / rmse_baseline), 3)
+
+
 def _wcost(res: list[float]) -> float:
     """Huber-gewogen som van kwadraten — het doel dat de kalibratie minimaliseert (een
     paar uitschieters wegen lineair i.p.v. kwadratisch mee)."""
@@ -1459,7 +1548,9 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
 
 
 def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
-                    actual, now, rmse_now, learning_held=False, baseline=None) -> dict:
+                    actual, now, rmse_now, learning_held=False, baseline=None,
+                    skill=None, rmse_baseline=None, wx=None, checkpoint=None,
+                    fell_back=False) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -1497,8 +1588,19 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
 
     rmse_hist = (learned.get("rmse_history") or [])[:]
     if rmse_now == rmse_now:   # niet-NaN
-        rmse_hist.append({"t": now.isoformat(), "rmse": round(rmse_now, 3),
-                          "held": bool(learning_held), "version": model_version()})
+        entry = {"t": now.isoformat(), "rmse": round(rmse_now, 3),
+                 "held": bool(learning_held), "version": model_version()}
+        # Additieve context per punt: weer-genormaliseerde skill + persistentie-baseline +
+        # weer-samenvatting, zodat de leercurve te lezen is als "model vs. weer".
+        if skill is not None:
+            entry["skill"] = skill
+        if rmse_baseline is not None and rmse_baseline == rmse_baseline:
+            entry["rmse_naive"] = round(rmse_baseline, 3)
+        if wx:
+            entry["wx"] = wx
+        if fell_back:
+            entry["fell_back"] = True
+        rmse_hist.append(entry)
     rmse_hist = rmse_hist[-RMSE_HISTORY_KEEP:]
 
     return {
@@ -1522,8 +1624,17 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "flows": _flow_summary(house, params, sim, timeline, now),
         "suggestion": sugg,
         "learned": {"params": params, "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
+                    "rmse_naive": round(rmse_baseline, 3)
+                    if (rmse_baseline is not None and rmse_baseline == rmse_baseline) else None,
+                    "skill": skill,
                     "rmse_history": rmse_hist, "held": bool(learning_held),
-                    "baseline_rmse": round(baseline, 3) if baseline is not None else None},
+                    "baseline_rmse": round(baseline, 3) if baseline is not None else None,
+                    "wx": wx or None,
+                    "checkpoint": {k: (checkpoint or {}).get(k)
+                                   for k in ("skill", "rmse", "version", "t",
+                                             "degraded_runs", "last_fallback")}
+                    if checkpoint else None,
+                    "fell_back": bool(fell_back)},
         # Volledige geometrie (additief) zodat de browser-speeltuin (airflow.html) hetzelfde
         # luchtstroomnetwerk lokaal kan oplossen: openingsoppervlakken, hoogtes en de
         # roosters/deuren horen er nu óók bij, plus de sim-constanten die Python gebruikt.
@@ -1745,6 +1856,34 @@ def main():
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
 
+    # Weer-context van het venster (stempelt de leercurve) + weer-genormaliseerde skill
+    # t.o.v. een persistentie-baseline — de apples-to-apples kwaliteitsmaat die niet met de
+    # weersmoeilijkheid meebeweegt.
+    wx_summary = window_weather_summary(weather, now, CALIB_WINDOW_H)
+    rmse_baseline = naive_rmse(actual) if actual else float("nan")
+    skill = skill_score(rmse_now, rmse_baseline)
+
+    # Beste-params-checkpoint + auto-fallback (zie checkpoint_step). Alléén op écht-geleerde
+    # runs: een gepauzeerde (held) run veranderde de params niet en moet niet als verslechtering
+    # tellen. Bij een fallback hermergen we priors voor nieuwe keys en herberekenen we de RMSE.
+    ckpt = learned.get("checkpoint") or {}
+    fell_back = False
+    if actual and not learning_held and rmse_now == rmse_now:
+        params, ckpt, fell_back = checkpoint_step(ckpt, params, skill, rmse_now,
+                                                  model_version(), now.isoformat())
+        if fell_back:
+            for rid in house.get("rooms", {}):
+                params.setdefault(rid, default_params(house)[rid])
+                for k in PER_ROOM_PARAMS:
+                    params[rid].setdefault(k, PRIORS[k])
+            rmse_now = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
+            skill = skill_score(rmse_now, rmse_baseline)
+            print(f"[checkpoint] {FALLBACK_AFTER} runs verslechterd → teruggevallen op de "
+                  f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}).")
+        elif ckpt.get("t") == now.isoformat():
+            print(f"[checkpoint] nieuw skill-optimum vastgelegd (skill {skill}, "
+                  f"RMSE {rmse_now:.3f} °C).")
+
     # Voorspelling met de (geleerde) params over het volledige venster + vooruitblik.
     sim = simulate(house, params, timeline, seed,
                    calib_only_rooms=set(house.get("rooms", {}).keys()),
@@ -1763,7 +1902,9 @@ def main():
     print(f"[suggestie] {sugg['headline']}")
 
     dash = build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
-                           actual, now, rmse_now, learning_held=learning_held, baseline=baseline)
+                           actual, now, rmse_now, learning_held=learning_held, baseline=baseline,
+                           skill=skill, rmse_baseline=rmse_baseline, wx=wx_summary,
+                           checkpoint=ckpt, fell_back=fell_back)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)
@@ -1771,7 +1912,8 @@ def main():
         json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
-                   "rmse_history": dash["learned"]["rmse_history"]},
+                   "rmse_history": dash["learned"]["rmse_history"],
+                   "checkpoint": ckpt},
                   f, ensure_ascii=False, indent=2)
     print(f"[airflow_model] Geschreven: {DASHBOARD_FILE} + {LEARNED_FILE}. Klaar.")
 

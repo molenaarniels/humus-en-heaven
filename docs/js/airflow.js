@@ -144,9 +144,10 @@ function render() {
     <p style="font-style:italic;color:var(--ink-soft);font-size:14px;margin:0 0 6px;">
       Zet hier ramen, roosters en deuren open of dicht (en draai aan wind &amp; buitentemperatuur) en
       zie meteen wat er met de luchtstroom gebeurt — zónder iets te bewaren of het echte model te raken.
-      Hetzelfde luchtstroomnetwerk als hierboven, maar live in je browser. De kamertemperaturen blijven
-      staan op de huidige meting; je ziet het ógenblikkelijke debiet (ventilatievoud &amp; koeling), geen
-      heruitgerekende opwarming.</p>
+      Hetzelfde luchtstroomnetwerk als hierboven, maar live in je browser. Naast het ógenblikkelijke
+      debiet (ventilatievoud &amp; koeling) schat de speeltuin nu ook de verwachte temperatuurverandering
+      (°C/u) en de geprojecteerde kamertemp over 1u en 2u — een simpele één-knoops wat-als bovenop de
+      live modeltrend, geen exacte voorspelling.</p>
     <div class="grid grid-2" style="padding:0;gap:20px;">
       <div>
         <div class="grp-title" style="margin-top:4px;">Omstandigheden</div>
@@ -558,6 +559,8 @@ function roomContent(rc, r, z, stack, live) {
     s += `<text x="${ix}" y="${y + 52}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
     s += `<text x="${ix}" y="${y + 70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp != null ? ' · tado ' + fmt(r.actual_temp) + '°' : ''}</text>`;
     s += `<text x="${ix}" y="${y + 86}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach, 1)}${r.humidity != null ? ' · RV ' + fmt(r.humidity, 0) + '%' : ''}</text>`;
+    // speeltuin: geprojecteerde temp over 1u rechts naast de ACH-regel (alleen in de wat-als).
+    if (r.sandbox_proj1h != null) s += `<text x="${x + rc.w - WALL_T - 8}" y="${y + 86}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="end">→ ${fmt(r.sandbox_proj1h, 1)}° (1u)</text>`;
     if (r.solar_w > 40) s += `<text x="${x + rc.w - WALL_T - 8}" y="${y + 52}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w, 0)}W</text>`;
     if (live) {
       // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
@@ -1018,9 +1021,13 @@ function renderSandbox() {
   const w = d.weather || {};
   state.sandbox = {
     states: states0,
+    baseStates: Object.assign({}, states0),     // bevroren huidige stand: ventilatie-referentie voor dTdt
     wind_speed: w.wind_speed ?? 3.0,
     wind_dir: w.wind_dir ?? 240,
     outside_temp: w.outside_temp ?? 18.0,
+    base_wind_speed: w.wind_speed ?? 3.0,
+    base_wind_dir: w.wind_dir ?? 240,
+    base_outside_temp: w.outside_temp ?? 18.0,
   };
   // Omgevings-sliders (wind + buitentemp) zodat je óók het weer kunt variëren.
   const env = document.getElementById("sandbox-env");
@@ -1079,9 +1086,45 @@ function sandboxSlider(k, label, min, max, step) {
     <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${sliderVal}" style="width:160px;max-width:48vw;accent-color:var(--moss);"></div>`;
 }
 
+// Verwachte temperatuurdynamiek per kamer in de speeltuin — een bewust simpele één-knoops
+// RC-schatting, NIET het volledige 2-knoops gekalibreerde model. We ankeren op de door het echte
+// model gepubliceerde `trend_c_per_h` (die zon/buren/interne winst/massaknoop al bevat) en
+// verstoren alleen de buiten-gekoppelde termen die de speeltuin écht verandert: ventilatie
+// (openingen + wind) en schil-conductie (buitentemp-slider). De ventilatie-verstoring meten we als
+// het verschil tussen de wat-als-luchtstroom en de *baseline*-luchtstroom (huidige stand + live
+// weer), beide door dezelfde JS-solver — zo valt elke kalibratie-afwijking met het Python-model weg
+// en is dTdt bij de standstand exact de live trend (ingebouwde consistentiecheck). Zon/buren/interne
+// winst blijven constant → geldig voor een vooruitblik van ~1–2u. De ODE is lineair en dalend
+// (rate = dTdt0 − b·(T−Tnow)), dus we projecteren met de exacte exponentiële oplossing: de temp
+// asymptoteert naar het evenwicht i.p.v. door de buitentemp heen te schieten.
+function sandboxThermal(r, freshNew, freshBase, sbOut, Tout0, cAirScale, ventEff, volM3) {
+  const trendLive = (r && typeof r.trend_c_per_h === "number") ? r.trend_c_per_h : 0;
+  const Tnow = (r && r.predicted_temp != null) ? r.predicted_temp : sbOut;
+  const RHO_CP = 1.2 * SIM.CP_AIR;                          // J/(m³·K)
+  const Cair = Math.max(1e4, (volM3 || 40) * RHO_CP * (cAirScale || 1.0));   // J/K
+  const ve = ventEff || 1.0;
+  const Knew = RHO_CP * ve * Math.max(0, freshNew);         // wat-als ventilatie-conductantie (W/K)
+  const Kbase = RHO_CP * ve * Math.max(0, freshBase);       // baseline (in trendLive verdisconteerd)
+  // schil-conductantie terugrekenen uit de gepubliceerde env_w (env_w = UA_env·(Tout0 − Tnow));
+  // bij een te klein temperatuurverschil niet identificeerbaar → schil vastzetten (geen verstoring).
+  const envW = (r && typeof r.env_w === "number") ? r.env_w : 0;
+  const dEnv = (typeof Tout0 === "number") ? Tout0 - Tnow : 0;
+  const uaEnv = (Math.abs(dEnv) >= 1.0) ? envW / dEnv : 0;
+  // verstoring t.o.v. de baseline, geëvalueerd op de huidige temp; baseline-termen zijn constant.
+  const pertNow = Knew * (sbOut - Tnow) - Kbase * (Tout0 - Tnow)
+                + uaEnv * (sbOut - Tnow) - (uaEnv ? envW : 0);
+  const dTdt = trendLive + (pertNow / Cair) * 3600;         // ógenblikkelijke rate (°C/uur)
+  const b = ((Knew + uaEnv) / Cair) * 3600;                 // relaxatiesnelheid onder de nieuwe stand (1/uur)
+  const proj = (h) => (b > 1e-6)
+    ? Tnow + (dTdt / b) * (1 - Math.exp(-b * h))            // dalende lineaire ODE → asymptoteert
+    : Tnow + dTdt * h;                                      // geen koppeling → lineair
+  return { dTdt, t1h: proj(1), t2h: proj(2), Knew, uaEnv, Tnow, sbOut };
+}
+
 function sandboxRecompute() {
   const d = state.data, meta = d.house_meta, sb = state.sandbox;
   const params = (d.learned && d.learned.params) || {};
+  const ventEff = params.vent_eff ?? 1.0;
   const rooms = meta.rooms || {}, junctions = meta.junctions || {};
   const zones = Object.keys(rooms).concat(Object.keys(junctions));
   // Zone-temperaturen: huidige model-temp per kamer; junctie/zonder sensor → buiten.
@@ -1093,27 +1136,52 @@ function sandboxRecompute() {
   const wind = { wind_speed: sb.wind_speed, wind_dir: sb.wind_dir };
   const ops = buildOpeningsJS(meta, sb.states, wind, params, sb.outside_temp);
   const net = solveNetwork(zones, ops, zoneTemps, sb.outside_temp);
+  // Baseline-luchtstroom (huidige stand + live weer): de referentie waartegen de wat-als zijn
+  // ventilatie-verstoring meet — zo is dTdt bij de standstand exact de live trend.
+  const Tout0 = sb.base_outside_temp;
+  const baseWind = { wind_speed: sb.base_wind_speed, wind_dir: sb.base_wind_dir };
+  const baseOps = buildOpeningsJS(meta, sb.baseStates, baseWind, params, Tout0);
+  const baseNet = solveNetwork(zones, baseOps, zoneTemps, Tout0);
   // Flow-objecten in dezelfde vorm als d.flows, zodat floorPlanSVG ze kan tekenen.
   const flows = [];
   ops.forEach((op, i) => { if (!op.id.startsWith("_leak_")) flows.push({ id: op.id, a: op.a, b: op.b, flow_m3s: Math.round(net.flows[i]*1e4)/1e4 }); });
-  const simData = { house_meta: meta, rooms: d.rooms, flows,
-    weather: { wind_dir: sb.wind_dir, wind_speed: sb.wind_speed,
-               sun_az: (d.weather||{}).sun_az, sun_el: (d.weather||{}).sun_el } };
-  document.getElementById("sandbox-plan").innerHTML = floorPlanSVG(simData, {live:false});
-  // Uitlezing: per kamer ventilatievoud (ACH), verse buitenlucht (m³/u) en koeling (W).
+  // Per-kamer kopie met de wat-als-waarden, zodat de plattegrond (trend-rand + ACH + projectie)
+  // de speeltuin weerspiegelt i.p.v. de live stand.
+  const simRooms = {};
+  // Uitlezing: per kamer ventilatievoud (ACH), verse buitenlucht (m³/u), koeling (W),
+  // verwachte verandering (°C/u) en de geprojecteerde temp over 1u/2u.
   let totalFresh = 0, totalCool = 0, rows = "";
   Object.entries(rooms).forEach(([rid, rm]) => {
+    const r = (d.rooms || {})[rid] || {};
     const fresh = net.fresh[rid] || 0;             // m³/s verse buitenlucht in deze kamer
     const vol = rm.volume_m3 || 40;
     const ach = fresh * 3600 / vol;
     const coolW = 1.2 * SIM.CP_AIR * fresh * (zoneTemps[rid] - sb.outside_temp);
     totalFresh += fresh * 3600;
     if (coolW > 0) totalCool += coolW;
+    const th = sandboxThermal(r, fresh, baseNet.fresh[rid] || 0, sb.outside_temp, Tout0,
+      (params[rid] || {}).c_air, ventEff, vol);
     const coolTxt = fresh < 1e-4 ? "—" : (coolW >= 0 ? "+" : "") + Math.round(coolW) + " W";
     const coolCls = coolW > 5 ? "err-neg" : (coolW < -5 ? "err-pos" : "");
+    const dC = outlineColor(th.dTdt) || COLORS.inkSoft;
+    const projTxt = (t) => (t == null || isNaN(t)) ? "—" : `${fmt(t, 1)}°`;
     rows += `<tr><td>${rm.label || rid}</td><td class="num">${ach.toFixed(2)}</td>
-      <td class="num">${Math.round(fresh*3600)}</td><td class="num ${coolCls}">${coolTxt}</td></tr>`;
+      <td class="num">${Math.round(fresh*3600)}</td><td class="num ${coolCls}">${coolTxt}</td>
+      <td class="num" style="color:${dC};font-weight:600;">${trendText(th.dTdt)}</td>
+      <td class="num">${projTxt(th.t1h)}</td><td class="num">${projTxt(th.t2h)}</td></tr>`;
+    // overschrijf alleen wat de speeltuin herrekent; rest (label, temp, comfort) blijft de live kamer.
+    const envWsb = th.uaEnv ? th.uaEnv * (sb.outside_temp - th.Tnow) : (r.env_w || 0);
+    const ventWsb = th.Knew * (sb.outside_temp - th.Tnow);
+    simRooms[rid] = Object.assign({}, r, {
+      ach, trend_c_per_h: th.dTdt, env_w: Math.round(envWsb), vent_w: Math.round(ventWsb),
+      sandbox_proj1h: th.t1h,
+    });
   });
+  Object.keys(junctions).forEach(j => { if ((d.rooms || {})[j]) simRooms[j] = (d.rooms)[j]; });
+  const simData = { house_meta: meta, rooms: simRooms, flows,
+    weather: { wind_dir: sb.wind_dir, wind_speed: sb.wind_speed,
+               sun_az: (d.weather||{}).sun_az, sun_el: (d.weather||{}).sun_el } };
+  document.getElementById("sandbox-plan").innerHTML = floorPlanSVG(simData, {live:true});
   const head = totalCool > 30
     ? `≈ <b class="num">${Math.round(totalCool)} W</b> nuttige koeling · <span class="num">${Math.round(totalFresh)}</span> m³/u verse lucht`
     : (totalFresh > 5
@@ -1121,8 +1189,12 @@ function sandboxRecompute() {
         : `vrijwel dicht — <span class="num">${Math.round(totalFresh)}</span> m³/u verse lucht`);
   document.getElementById("sandbox-out").innerHTML =
     `<p style="font-style:italic;font-size:15px;margin:0 0 6px;">${head}</p>
-     <table><thead><tr><th>kamer</th><th>ACH</th><th>verse m³/u</th><th>koeling</th></tr></thead>
-     <tbody>${rows}</tbody></table>`;
+     <div style="overflow-x:auto;">
+     <table><thead><tr><th>kamer</th><th>ACH</th><th>verse m³/u</th><th>koeling</th>
+       <th>ΔT/u</th><th>over 1u</th><th>over 2u</th></tr></thead>
+     <tbody>${rows}</tbody></table></div>
+     <p class="ctl-sub" style="margin:6px 0 0;">ΔT/u + projectie: simpele één-knoops schatting (ventilatie + schil
+       verstoren de live modeltrend; zon/buren/interne winst constant) — een wat-als-richting voor ~1–2u, geen exacte voorspelling.</p>`;
 }
 
 // ===================== HELPERS =====================

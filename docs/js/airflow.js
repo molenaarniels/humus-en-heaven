@@ -559,8 +559,6 @@ function roomContent(rc, r, z, stack, live) {
     s += `<text x="${ix}" y="${y + 52}" font-size="22" font-weight="600" fill="${COLORS.ink}">${fmt(r.predicted_temp)}°</text>`;
     s += `<text x="${ix}" y="${y + 70}" font-size="9" fill="${COLORS.inkSoft}">model${r.actual_temp != null ? ' · tado ' + fmt(r.actual_temp) + '°' : ''}</text>`;
     s += `<text x="${ix}" y="${y + 86}" font-size="9" fill="${COLORS.inkSoft}">ACH ${fmt(r.ach, 1)}${r.humidity != null ? ' · RV ' + fmt(r.humidity, 0) + '%' : ''}</text>`;
-    // speeltuin: geprojecteerde temp over 1u rechts naast de ACH-regel (alleen in de wat-als).
-    if (r.sandbox_proj1h != null) s += `<text x="${x + rc.w - WALL_T - 8}" y="${y + 86}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="end">→ ${fmt(r.sandbox_proj1h, 1)}° (1u)</text>`;
     if (r.solar_w > 40) s += `<text x="${x + rc.w - WALL_T - 8}" y="${y + 52}" font-size="11" fill="${COLORS.sun}" text-anchor="end">☀ ${fmt(r.solar_w, 0)}W</text>`;
     if (live) {
       // Energie naar buiten (schil + ventilatie): − = warmte verlaat de kamer (koeling),
@@ -1174,7 +1172,6 @@ function sandboxRecompute() {
     const ventWsb = th.Knew * (sb.outside_temp - th.Tnow);
     simRooms[rid] = Object.assign({}, r, {
       ach, trend_c_per_h: th.dTdt, env_w: Math.round(envWsb), vent_w: Math.round(ventWsb),
-      sandbox_proj1h: th.t1h,
     });
   });
   Object.keys(junctions).forEach(j => { if ((d.rooms || {})[j]) simRooms[j] = (d.rooms)[j]; });

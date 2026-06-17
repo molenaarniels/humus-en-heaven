@@ -363,6 +363,15 @@ function drawScatter() {
     pts.push({ x: d.outside_humidity, y: d.outside_now, color: COLORS.rain, label: "buiten",
                dx: (d.outside_hum_trend || 0) * PROJ_H, dy: (d.outside_trend || 0) * PROJ_H, outside: true });
 
+  // Vocht-as (x): strak om de punten, maar toon altijd 50% links en 70% rechts;
+  // alleen verder oprekken als een punt erbuiten valt, met wat marge. Spiegelt ipad.js.
+  const HUM_MARGIN = 5;
+  const hums = pts.map(p => p.x);
+  const humLo = hums.length ? Math.min(...hums) : 50;
+  const humHi = hums.length ? Math.max(...hums) : 70;
+  const hMin = humLo < 50 ? Math.max(0,   Math.floor(humLo - HUM_MARGIN)) : 50;
+  const hMax = humHi > 70 ? Math.min(100, Math.ceil (humHi + HUM_MARGIN)) : 70;
+
   // Eén schuine pijl per punt (chartjs-plugin-annotation line + arrowhead).
   const ann = {};
   pts.forEach((p, i) => {
@@ -408,7 +417,7 @@ function drawScatter() {
         annotation: { annotations: ann },
       },
       scales: {
-        x: { suggestedMin: 30, suggestedMax: 85, grid: { color: "#2a241b11" },
+        x: { min: hMin, max: hMax, grid: { color: "#2a241b11" },
              ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
              title: { display: true, text: "luchtvochtigheid %", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
         y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },

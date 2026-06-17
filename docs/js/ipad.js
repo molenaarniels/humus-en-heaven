@@ -367,15 +367,17 @@ function renderRooms(wd) {
   if (dots.length === 0) return;
 
   // Temp (y) auto-scales with breathing room (window.js leaves y auto too).
-  // Humidity (x) follows window.js: a fixed 30–85% window, widened only if a
-  // dot falls outside it (Chart.js suggestedMin/Max semantics).
+  // Humidity (x): tight around the dots, but always show 50% on the left and
+  // 70% on the right; extend past those only when a dot falls outside, + margin.
   const temps = dots.map(d => d.temp);
   const hums  = dots.map(d => d.hum);
   let tMin = Math.floor(Math.min(...temps) - 1);
   let tMax = Math.ceil (Math.max(...temps) + 1);
   if (tMax - tMin < 10) { const mid = (tMin + tMax) / 2; tMin = Math.floor(mid - 5); tMax = Math.ceil(mid + 5); }
-  const hMin = Math.max(0,   Math.min(30, Math.floor(Math.min(...hums))));
-  const hMax = Math.min(100, Math.max(85, Math.ceil (Math.max(...hums))));
+  const HUM_MARGIN = 5;
+  const humLo = Math.min(...hums), humHi = Math.max(...hums);
+  const hMin = humLo < 50 ? Math.max(0,   Math.floor(humLo - HUM_MARGIN)) : 50;
+  const hMax = humHi > 70 ? Math.min(100, Math.ceil (humHi + HUM_MARGIN)) : 70;
 
   const X = (h) => m.l + ((h - hMin) / (hMax - hMin)) * innerW;
   const Y = (t) => m.t + (1 - (t - tMin) / (tMax - tMin)) * innerH;

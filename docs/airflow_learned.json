@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-18T00:15:00.270718+02:00",
+  "updated_at": "2026-06-18T00:30:00.724764+02:00",
   "model_version": "b7dbf4a",
   "params": {
     "cp_shelter": 0.1,
@@ -61,13 +61,8 @@
       "f_air": 0.4
     }
   },
-  "rmse": 0.577,
+  "rmse": 0.576,
   "rmse_history": [
-    {
-      "t": "2026-06-14T17:00:00.415466+02:00",
-      "rmse": 0.32,
-      "held": false
-    },
     {
       "t": "2026-06-14T17:15:00.281409+02:00",
       "rmse": 0.319,
@@ -1552,6 +1547,19 @@
         "solar_peak": 863,
         "solar_mean": 223
       }
+    },
+    {
+      "t": "2026-06-18T00:30:00.724764+02:00",
+      "rmse": 0.576,
+      "held": false,
+      "version": "b7dbf4a",
+      "skill": 0.572,
+      "rmse_naive": 1.348,
+      "wx": {
+        "tmax": 24.5,
+        "solar_peak": 863,
+        "solar_mean": 223
+      }
     }
   ],
   "checkpoint": {
@@ -1615,10 +1623,10 @@
         "f_air": 0.4
       }
     },
-    "skill": 0.535,
-    "rmse": 0.56,
+    "skill": 0.572,
+    "rmse": 0.576,
     "version": "b7dbf4a",
-    "t": "2026-06-17T23:45:00.255726+02:00",
+    "t": "2026-06-18T00:30:00.724764+02:00",
     "degraded_runs": 0,
     "last_fallback": null
   }

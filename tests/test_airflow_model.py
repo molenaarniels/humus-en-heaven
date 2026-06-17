@@ -681,6 +681,73 @@ def test_model_version_always_nonempty(monkeypatch):
     assert isinstance(v, str) and v   # git short-SHA of 'unknown', nooit leeg
 
 
+# ── 14. Weer-genormaliseerde skill + persistentie-baseline ───────────────────────────
+
+def test_naive_rmse_persistence_baseline():
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
+    actual = {"a": [(t0, 20.0), (t0, 22.0), (t0, 18.0)]}   # baseline = eerste sample (20)
+    assert am.naive_rmse(actual) == pytest.approx(math.sqrt((0 + 4 + 4) / 3))
+    assert am.naive_rmse({}) != am.naive_rmse({})          # geen samples → NaN
+
+
+def test_skill_score_normalizes_and_clamps():
+    assert am.skill_score(0.5, 1.0) == pytest.approx(0.5)   # half zo goed als persistentie
+    assert am.skill_score(0.0, 1.0) == pytest.approx(1.0)   # perfect, geklemd op 1
+    assert am.skill_score(2.0, 1.0) == pytest.approx(-1.0)  # slechter dan persistentie
+    assert am.skill_score(0.5, 0.0) is None                 # vlakke dag → onbruikbare baseline
+    assert am.skill_score(float("nan"), 1.0) is None
+
+
+def test_window_weather_summary_stamps_window_only():
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=am.TZ)
+    rows = [{"dt": now - timedelta(hours=h), "T_out": 20.0 + h % 5, "shortwave": 100.0 * (h % 4)}
+            for h in range(0, 30)]
+    rows.append({"dt": now - timedelta(hours=72), "T_out": 99.0, "shortwave": 9999.0})  # buiten venster
+    wx = am.window_weather_summary({"hourly": rows}, now, window_h=24.0)
+    assert wx["tmax"] <= 24.0 and wx["tmax"] != 99.0        # de oude rij telt niet mee
+    assert 0 <= wx["solar_mean"] <= wx["solar_peak"] <= 300
+
+
+# ── 15. Beste-params-checkpoint + auto-fallback ──────────────────────────────────────
+
+def test_checkpoint_captures_first_and_better_optimum():
+    p1 = {"living": {"c_air": 1.0}}
+    _, ckpt, fb = am.checkpoint_step({}, p1, skill=0.5, rmse_now=0.4, version="v1", now_iso="t1")
+    assert fb is False and ckpt["skill"] == 0.5 and ckpt["params"] == p1
+    # Een duidelijk betere skill legt de nieuwe params vast.
+    p2 = {"living": {"c_air": 2.0}}
+    _, ckpt2, fb2 = am.checkpoint_step(ckpt, p2, skill=0.7, rmse_now=0.3, version="v1", now_iso="t2")
+    assert fb2 is False and ckpt2["skill"] == 0.7 and ckpt2["params"] == p2
+
+
+def test_checkpoint_within_margin_resets_counter():
+    ckpt = {"params": {"living": {"c_air": 1.0}}, "skill": 0.5, "degraded_runs": 3}
+    params, out, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 9.0}},
+                                         skill=0.45, rmse_now=0.5, version="v1", now_iso="t")
+    assert fb is False and out["degraded_runs"] == 0       # binnen marge → teller terug op 0
+    assert out["skill"] == 0.5                              # optimum onveranderd
+    assert params == {"living": {"c_air": 9.0}}            # huidige params behouden
+
+
+def test_checkpoint_falls_back_after_sustained_degradation():
+    best = {"living": {"c_air": 1.0}}
+    ckpt = {"params": best, "skill": 0.6, "degraded_runs": am.FALLBACK_AFTER - 1}
+    bad = {"living": {"c_air": 9.0}}
+    params, out, fb = am.checkpoint_step(ckpt, bad, skill=0.30, rmse_now=1.2,
+                                         version="v2", now_iso="t9")
+    assert fb is True                                      # aanhoudend verslechterd → terugval
+    assert params == best and params is not best           # diepe kopie van de checkpoint-params
+    assert out["degraded_runs"] == 0 and out["last_fallback"] == "t9"
+
+
+def test_checkpoint_degradation_accumulates_before_fallback():
+    ckpt = {"params": {"living": {"c_air": 1.0}}, "skill": 0.6, "degraded_runs": 0}
+    params, out, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 9.0}},
+                                         skill=0.30, rmse_now=1.0, version="v2", now_iso="t1")
+    assert fb is False and out["degraded_runs"] == 1       # nog niet: telt eerst op
+    assert params == {"living": {"c_air": 9.0}}
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ════════════════════════════════════════════════════════════════════════════════════

@@ -150,9 +150,8 @@ async function loadAll() {
   }
   if (soil.status       === "fulfilled") safe("soil",  () => renderSoil(soil.value));
   if (mowing.status     === "fulfilled") safe("mow",   () => renderMow(mowing.value));
-  const omv = om.status === "fulfilled" ? om.value : null;
-  if (windowData.status === "fulfilled") safe("rooms", () => renderRooms(windowData.value, omv));
-  else safe("rooms", () => renderRooms(null, omv));
+  if (windowData.status === "fulfilled") safe("rooms", () => renderRooms(windowData.value));
+  else safe("rooms", () => renderRooms(null));
   safe("blocks", () => renderBlocks());
   safe("chips",  () => renderChips({
     windowData: windowData.status === "fulfilled" ? windowData.value : null,
@@ -219,9 +218,11 @@ function colors() {
     soft: get("--ink-soft", "#6b5d4a"),
     faint:get("--ink-faint","#b5a690"),
     hair: get("--ink",      "#2a2520"),
-    moss: get("--moss",     "#5a6b3e"),
-    clay: get("--clay",     "#b86b4a"),
-    bg2:  get("--bg-2",     "#ebe2d2"),
+    moss: get("--moss",       "#5a6b3e"),
+    mossLight: get("--moss-light", "#6b8562"),
+    clay: get("--clay",       "#b86b4a"),
+    dry:  get("--dry",        "#a0421a"),
+    bg2:  get("--bg-2",       "#ebe2d2"),
   };
 }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -318,95 +319,63 @@ const ROOM_LABELS = {
   "office": "Werkkamer",
 };
 const ROOM_ORDER = ["Living room", "Ted", "hotties", "office"];
-const ROOM_SHORT = {
-  "Living room": "WOON",
-  "Ted":         "TED",
-  "hotties":     "HOT",
-  "office":      "WERK",
-};
-
-// Outside temperature trend (°C/h), derived from Open-Meteo hourly.
-// Two-hour forward slope of the local hourly forecast — simple, robust,
-// and uses the same data source the timeline already loads.
-function computeOutsideTrend(om) {
-  if (!om?.hourly?.time || !om?.hourly?.temperature_2m) return 0;
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const curStr   = `${todayStr}T${pad(now.getHours())}:00`;
-  const idx = om.hourly.time.indexOf(curStr);
-  if (idx < 0) return 0;
-  const last = om.hourly.temperature_2m.length - 1;
-  const future = Math.min(idx + 2, last);
-  if (future <= idx) return 0;
-  const t0 = om.hourly.temperature_2m[idx];
-  const t1 = om.hourly.temperature_2m[future];
-  if (typeof t0 !== "number" || typeof t1 !== "number") return 0;
-  return (t1 - t0) / (future - idx);  // °C per hour
-}
-
-// Outside humidity trend (%RH/h), derived from Open-Meteo hourly — the
-// horizontal companion to computeOutsideTrend, so the buiten dot gets an
-// angled vector consistent with its displayed (Open-Meteo) humidity.
-function computeOutsideHumTrend(om) {
-  if (!om?.hourly?.time || !om?.hourly?.relative_humidity_2m) return 0;
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const curStr   = `${todayStr}T${pad(now.getHours())}:00`;
-  const idx = om.hourly.time.indexOf(curStr);
-  if (idx < 0) return 0;
-  const last = om.hourly.relative_humidity_2m.length - 1;
-  const future = Math.min(idx + 2, last);
-  if (future <= idx) return 0;
-  const h0 = om.hourly.relative_humidity_2m[idx];
-  const h1 = om.hourly.relative_humidity_2m[future];
-  if (typeof h0 !== "number" || typeof h1 !== "number") return 0;
-  return (h1 - h0) / (future - idx);  // %RH per hour
-}
 
 // Scatter plot: vocht (x) vs temp (y). One dot per room + outside.
 // Vector = trend direction & magnitude: an angled arrow combining the
 // temperature trend (vertical: warming → up) and the humidity trend
 // (horizontal: drying → left, humidifying → right). Stable = no vector.
-// Room humidity trend comes from window_data (hum_trend); buiten's from
-// Open-Meteo. Rooms without hum_trend yet fall back to a vertical vector.
-function renderRooms(wd, om) {
+// Mirrors window.js drawScatter(): all values — room AND buiten temp/
+// humidity + both trends — come from window_data.json, the buiten dot is a
+// blue diamond, rooms are coloured by identity, and the RH_COMFORT/
+// RH_HARD_CAP thresholds are drawn as vertical reference lines.
+function renderRooms(wd) {
   const C = colors();
   const W = 600, H = 400;
   const m = { l: 46, r: 30, t: 22, b: 38 };
   const innerW = W - m.l - m.r;
   const innerH = H - m.t - m.b;
 
-  // Gather data points
+  // Room identity colour cycle — same palette + order as window.js drawScatter.
+  const ROOM_COLORS = [C.clay, C.rain, C.sun, C.mossLight];
+
+  // Gather data points. Everything — room AND buiten temp/humidity/trends —
+  // comes from window_data.json so the two dashboards plot the same numbers.
   const dots = [];
-  const outTemp = wd?.outside_now ?? om?.current?.temperature_2m;
-  const outHum  = om?.current?.relative_humidity_2m;
-  const outTrend = computeOutsideTrend(om);
-  const outHumTrend = computeOutsideHumTrend(om);
-  if (outTemp != null && outHum != null) {
-    dots.push({ key: "buiten", label: "BUITEN", temp: outTemp, hum: outHum, trend: outTrend, humTrend: outHumTrend, kind: "outside" });
-  }
-  for (const key of ROOM_ORDER) {
+  // Rooms: coloured by identity (index in the rendered sequence), not advice.
+  ROOM_ORDER.filter(key => {
     const r = wd?.rooms?.[key];
-    if (!r || r.inside == null || r.humidity == null) continue;
+    return r && r.inside != null && r.humidity != null;
+  }).forEach((key, ri) => {
+    const r = wd.rooms[key];
     dots.push({
-      key, label: ROOM_SHORT[key] || key.toUpperCase(),
+      key, label: key, color: ROOM_COLORS[ri % ROOM_COLORS.length],
       temp: r.inside, hum: r.humidity,
       trend: typeof r.trend === "number" ? r.trend : 0,
       humTrend: typeof r.hum_trend === "number" ? r.hum_trend : 0,
-      advice: r.advice, kind: "room",
+      kind: "room",
+    });
+  });
+  // Buiten: measured station temp/humidity + Python-computed history trends.
+  if (wd?.outside_now != null && wd?.outside_humidity != null) {
+    dots.push({
+      key: "buiten", label: "buiten", color: C.rain,
+      temp: wd.outside_now, hum: wd.outside_humidity,
+      trend: wd.outside_trend || 0, humTrend: wd.outside_hum_trend || 0,
+      kind: "outside",
     });
   }
   if (dots.length === 0) return;
 
-  // Auto-scale with breathing room. Snap to whole numbers / 10% steps.
+  // Temp (y) auto-scales with breathing room (window.js leaves y auto too).
+  // Humidity (x) follows window.js: a fixed 30–85% window, widened only if a
+  // dot falls outside it (Chart.js suggestedMin/Max semantics).
   const temps = dots.map(d => d.temp);
   const hums  = dots.map(d => d.hum);
   let tMin = Math.floor(Math.min(...temps) - 1);
   let tMax = Math.ceil (Math.max(...temps) + 1);
   if (tMax - tMin < 10) { const mid = (tMin + tMax) / 2; tMin = Math.floor(mid - 5); tMax = Math.ceil(mid + 5); }
-  let hMin = Math.max(0,   Math.floor((Math.min(...hums) - 5) / 10) * 10);
-  let hMax = Math.min(100, Math.ceil ((Math.max(...hums) + 5) / 10) * 10);
-  if (hMax - hMin < 30) { const mid = (hMin + hMax) / 2; hMin = Math.max(0, Math.floor(mid - 15)); hMax = Math.min(100, Math.ceil(mid + 15)); }
+  const hMin = Math.max(0,   Math.min(30, Math.floor(Math.min(...hums))));
+  const hMax = Math.min(100, Math.max(85, Math.ceil (Math.max(...hums))));
 
   const X = (h) => m.l + ((h - hMin) / (hMax - hMin)) * innerW;
   const Y = (t) => m.t + (1 - (t - tMin) / (tMax - tMin)) * innerH;
@@ -431,35 +400,34 @@ function renderRooms(wd, om) {
     <text x="${m.l}" y="${m.t - 8}" font-family="JetBrains Mono" font-size="9" letter-spacing="2" fill="${C.faint}" text-anchor="start">↑ TEMPERATUUR</text>
   `;
 
-  // Dots + vectors
-  // The vector projects the dot ~PROJ_H hours forward through the SAME axis
-  // mapping as the dots (X/Y), so it points to where the room is actually
-  // heading on this temp×vocht plot — angle and length stay consistent with
-  // the plotted scale (no arbitrary per-axis pixel constants, no per-axis
-  // gates that would swallow the small humidity trends that occur in practice).
-  const PROJ_H = 2;              // hours projected forward
-  const MIN_PX = 6;              // shorter pixel move than this → effectively stable, no arrow
-  const VEC_MIN = 14, VEC_MAX = 70;
+  // Vocht-drempels van de beslislogica (window.js): streef (RH_COMFORT) en hard
+  // veto (RH_HARD_CAP) als verticale stippellijnen op de vocht-as.
+  const P = wd?.params || {};
+  const RH_COMFORT = typeof P.RH_COMFORT === "number" ? P.RH_COMFORT : 60;
+  const RH_HARD_CAP = typeof P.RH_HARD_CAP === "number" ? P.RH_HARD_CAP : 72;
+  const refLine = (h, color, dash, text, top) =>
+    (h < hMin || h > hMax) ? "" :
+    `<line x1="${X(h).toFixed(1)}" y1="${m.t}" x2="${X(h).toFixed(1)}" y2="${H - m.b}" stroke="${color}" stroke-opacity="0.7" stroke-width="1" stroke-dasharray="${dash}"/>`
+    + `<text x="${(X(h) + 4).toFixed(1)}" y="${top ? m.t + 10 : H - m.b - 6}" font-family="JetBrains Mono" font-size="9" fill="${color}" text-anchor="start">${text}</text>`;
+  const refLines = refLine(RH_COMFORT, C.clay, "4,4", `streef ${RH_COMFORT}%`, true)
+                 + refLine(RH_HARD_CAP, C.dry, "2,4", `veto ${RH_HARD_CAP}%`, false);
 
-  // Pre-compute coordinates so we can pick label positions that don't
-  // overlap their dot or each other badly.
+  // Dots + vectors. The trend is clamped in DATA units (window.js drawScatter:
+  // ±20 %RH, ±3 °C) and projected PROJ_H hours forward through X()/Y(), so the
+  // arrow points where the room is heading and reads the same on both dashboards.
+  const PROJ_H = 2;              // hours projected forward
   const placed = dots.map(d => ({ ...d, px: X(d.hum), py: Y(d.temp) }));
 
-  const dotsSVG = placed.map((d, i) => {
-    const color = d.kind === "outside"
-      ? C.sun
-      : (d.advice === "dicht" ? C.clay : C.moss);
+  const dotsSVG = placed.map((d) => {
+    const color = d.color;
 
-    // Future position via X()/Y(): humidity trend moves it along x, temperature
-    // trend along y (Y is inverted, so warming rises). One angled arrow toward it.
-    let vx = X(d.hum + d.humTrend * PROJ_H) - d.px;
-    let vy = Y(d.temp + d.trend   * PROJ_H) - d.py;
-    const raw = Math.hypot(vx, vy);
-
+    // Trend vector: humidity along x, temperature along y (Y inverted → warming
+    // rises). Clamped in data units; near-stationary points get no arrow.
+    const dx = clamp(d.humTrend * PROJ_H, -20, 20);
+    const dy = clamp(d.trend    * PROJ_H, -3, 3);
     let vector = "";
-    if (raw >= MIN_PX) {
-      const s = clamp(raw, VEC_MIN, VEC_MAX) / raw;   // clamp length, keep direction
-      const x2 = d.px + vx * s, y2 = d.py + vy * s;
+    if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.05) {
+      const x2 = X(d.hum + dx), y2 = Y(d.temp + dy);
       // Small arrowhead so the direction reads at a glance.
       const ang = Math.atan2(y2 - d.py, x2 - d.px), ah = 6, spread = 0.5;
       const ax1 = x2 - ah * Math.cos(ang - spread), ay1 = y2 - ah * Math.sin(ang - spread);
@@ -468,25 +436,23 @@ function renderRooms(wd, om) {
              + `<polyline points="${ax1.toFixed(1)},${ay1.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)} ${ax2.toFixed(1)},${ay2.toFixed(1)}" fill="none" stroke="${color}" stroke-opacity="0.55" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`;
     }
 
-    const dot = d.kind === "outside"
-      ? `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="2"/>`
-      : `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="6" fill="${color}" stroke="${C.bg2}" stroke-width="1.5"/>`;
+    // Buiten = blue diamond (window.js rectRot); rooms = filled circle.
+    let dot;
+    if (d.kind === "outside") {
+      const rr = 7, px = d.px, py = d.py;
+      const pts = `${px.toFixed(1)},${(py - rr).toFixed(1)} ${(px + rr).toFixed(1)},${py.toFixed(1)} ${px.toFixed(1)},${(py + rr).toFixed(1)} ${(px - rr).toFixed(1)},${py.toFixed(1)}`;
+      dot = `<polygon points="${pts}" fill="${color}" stroke="${C.ink}" stroke-width="1.5"/>`;
+    } else {
+      dot = `<circle cx="${d.px.toFixed(1)}" cy="${d.py.toFixed(1)}" r="6" fill="${color}" stroke="${color}" stroke-width="1"/>`;
+    }
 
-    // Place the label opposite the arrow's horizontal direction to avoid sitting
-    // on the vector; near an edge, force it inward so it can't clip.
-    let labelLeft;
-    if (d.px > W - m.r - 60)      labelLeft = true;
-    else if (d.px < m.l + 60)     labelLeft = false;
-    else                          labelLeft = vx > 0;
-    const lx = labelLeft ? d.px - 11 : d.px + 11;
-    const ly = d.py + 4;
-    const anchor = labelLeft ? "end" : "start";
-    const label = `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-family="JetBrains Mono" font-size="10" letter-spacing="2" fill="${C.ink}" text-anchor="${anchor}">${d.label}</text>`;
+    // Label centred above the dot, in the point's colour (window.js).
+    const label = `<text x="${d.px.toFixed(1)}" y="${(d.py - 11).toFixed(1)}" font-family="JetBrains Mono" font-size="9" font-weight="600" fill="${color}" text-anchor="middle">${d.label}</text>`;
 
     return `${vector}${dot}${label}`;
   }).join("");
 
-  const innerSVG = `${grid}${axes}${xLabels}${yLabels}${titles}${dotsSVG}`;
+  const innerSVG = `${grid}${axes}${xLabels}${yLabels}${titles}${refLines}${dotsSVG}`;
   const oldEl = $("rooms-scatter");
   if (!oldEl) return;
   const cls = oldEl.getAttribute("class") || "";

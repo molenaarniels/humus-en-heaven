@@ -571,8 +571,14 @@ function roomContent(rc, r, z, stack, live) {
   } else {
     s += `<text x="${ix}" y="${y + 54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
   }
-  // verticale koker (trap): label in het lege middendeel, weg van energietekst en trend-chip
-  if (stack) s += `<text x="${x + rc.w / 2}" y="${y + rc.h / 2}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
+  // verticale koker (trap): label in het lege middendeel, weg van energietekst en trend-chip.
+  // Tweede regel: de koker is één goedgemengde knoop, dus de temp is het gemiddelde over de
+  // héle koker — niet de top of de onderkant (geen verticale gelaagdheid binnen een zone).
+  if (stack) {
+    const cx = x + rc.w / 2, cy = y + rc.h / 2;
+    s += `<text x="${cx}" y="${cy}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
+    s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">temp = gem. hele koker</text>`;
+  }
   return s;
 }
 

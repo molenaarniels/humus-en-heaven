@@ -88,6 +88,17 @@ SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde 
                          # stap), niet een momentopname. Behoudt de dag-energie; dempt enkel de
                          # hoogfrequente aliasing.
 RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
+# Achteraf-herstel van de leercurve. Een leercurve-punt werd berekend met de openingen-log zoals
+# díé toen luidde; meld je een raamwijziging te laat (of date je 'm terug), dan zat de oude fout
+# door een verkeerde open/dicht-aanname verhoogd in de curve — model-skill verward met meld-fouten.
+# Daarom herberekenen we elke run de RMSE/skill van de punten die nog binnen het herstel-horizon
+# (CALIB_WINDOW_H) vallen tegen de HUIDIG gecorrigeerde log + params. Punten ouder dan de horizon
+# bevriezen: hun tado-grond-waarheid is uit het ~48u window_data-buffer gerold en valt niet meer te
+# herberekenen — een harde datalimiet, geen keuze.
+RMSE_BACKFILL_MIN_SAMPLES = 8     # te weinig overlap met de bewaarde actuals → punt ongemoeid laten
+RMSE_BACKFILL_DELTA       = 0.25  # °C — alleen overschrijven als de waarde ≥ dit verschuift, zodat
+                                  # een echte log-correctie de curve heelt maar gewone param-
+                                  # microdrift 'm niet elke run laat churnen
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 # Tikhonov-regularisatie: trek elke leerbare schaal zacht naar zijn prior (1.0, cp_shelter 0.5)
 # zodat zwak-identificeerbare parameters (milde-weer-degeneratie tussen ua_env/ua_party/q_int)
@@ -1067,6 +1078,86 @@ def skill_score(rmse_model: float, rmse_baseline: float) -> float | None:
     return round(min(1.0, 1.0 - rmse_model / rmse_baseline), 3)
 
 
+def _window_naive(actual: dict, start: datetime, end: datetime) -> float:
+    """Persistentie-baseline-RMSE over een DEEL-venster [start, end] — als naive_rmse maar
+    begrensd in de tijd, zodat een herberekend leercurve-punt zijn eigen venster-baseline (en dus
+    skill) krijgt. NaN bij geen samples in het venster."""
+    sq, n = 0.0, 0
+    for samples in actual.values():
+        win = [v for (t, v) in samples if start <= t <= end]
+        if not win:
+            continue
+        base = win[0]
+        for v in win:
+            sq += (base - v) ** 2
+            n += 1
+    return math.sqrt(sq / n) if n else float("nan")
+
+
+def timed_residuals_from_sim(house, timeline, sim, actual: dict) -> list:
+    """(meetmoment, voorspeld−werkelijk) per sensorkamer uit een ál-uitgevoerde simulatie `sim` —
+    als _residuals maar mét de tijdstempel behouden én zónder opnieuw te simuleren, zodat een
+    deel-venster-RMSE per leercurve-punt te snijden valt. Chronologisch gesorteerd."""
+    out = []
+    for rid, samples in actual.items():
+        pred = sim.get("series", {}).get(rid, [])
+        if not pred:
+            continue
+        pred = _to_sensor_series(house, timeline, rid, pred)
+        for ts, val in samples:
+            out.append((ts, _interp(pred, ts) - val))
+    out.sort(key=lambda e: e[0])
+    return out
+
+
+def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: datetime) -> int:
+    """Herbereken in-place de RMSE/skill van elk leercurve-punt dat nog binnen het herstel-horizon
+    (t ≥ now − CALIB_WINDOW_H) valt, tegen de HUIDIG gecorrigeerde openingen-log + params (via de
+    al-uitgevoerde simulatie in `timed_res`). Zo verdwijnt de door een verkeerde open/dicht-aanname
+    opgeblazen fout van een achteraf rechtgezette/teruggedateerde melding uit de curve — de leercurve
+    toont dan model-skill i.p.v. meld-fouten.
+
+    Alleen overschrijven als de waarde ≥ RMSE_BACKFILL_DELTA verschuift (een echte log-correctie
+    heelt; gewone param-microdrift churnt de curve niet) én het deel-venster genoeg overlap
+    (≥ RMSE_BACKFILL_MIN_SAMPLES) met de bewaarde actuals heeft. De oorspronkelijk gelogde waarde
+    blijft één keer
+    bewaard (`rmse_logged`) en herberekende punten worden gemarkeerd (`recomputed`). Punten ouder dan
+    de horizon bevriezen: hun tado-grond-waarheid is uit het ~48u window_data-buffer gerold. Geeft
+    het aantal gewijzigde punten terug."""
+    if not timed_res:
+        return 0
+    horizon = now - _timedelta_h(CALIB_WINDOW_H)
+    earliest = timed_res[0][0]
+    changed = 0
+    for p in history:
+        try:
+            t_p = datetime.fromisoformat(p["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if t_p < horizon or t_p > now:
+            continue
+        start = max(t_p - _timedelta_h(CALIB_WINDOW_H), earliest)
+        res_win = [r for (t, r) in timed_res if start <= t <= t_p]
+        if len(res_win) < RMSE_BACKFILL_MIN_SAMPLES:
+            continue
+        new_rmse = rmse(res_win)
+        if new_rmse != new_rmse:                                   # NaN-guard
+            continue
+        if abs(new_rmse - (p.get("rmse") if p.get("rmse") is not None else new_rmse)) < RMSE_BACKFILL_DELTA:
+            continue
+        p.setdefault("rmse_logged", p.get("rmse"))
+        p["rmse"] = round(new_rmse, 3)
+        new_naive = _window_naive(actual, start, t_p)
+        if new_naive == new_naive:
+            p["rmse_naive"] = round(new_naive, 3)
+            sk = skill_score(new_rmse, new_naive)
+            if sk is not None:
+                p["skill"] = sk
+        p["recomputed"] = True
+        changed += 1
+    return changed
+
+
 def _wcost(res: list[float]) -> float:
     """Huber-gewogen som van kwadraten — het doel dat de kalibratie minimaliseert (een
     paar uitschieters wegen lineair i.p.v. kwadratisch mee)."""
@@ -1587,6 +1678,15 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                  for rid, room in house.get("rooms", {}).items()}
 
     rmse_hist = (learned.get("rmse_history") or [])[:]
+    # Heel de leercurve achteraf: herbereken in-horizon punten tegen de gecorrigeerde openingen-log
+    # (een teruggedateerde/rechtgezette melding haalt zo de oude, vervuilde fout uit de curve).
+    # Hergebruikt deze run-simulatie `sim` → geen extra simulatie. Punten buiten de horizon (oudere
+    # grond-waarheid uit het buffer gerold) blijven ongemoeid.
+    if actual:
+        n_fixed = backfill_rmse_history(
+            rmse_hist, timed_residuals_from_sim(house, timeline, sim, actual), actual, now)
+        if n_fixed:
+            print(f"[leercurve] {n_fixed} punt(en) herberekend tegen de gecorrigeerde openingen-log.")
     if rmse_now == rmse_now:   # niet-NaN
         entry = {"t": now.isoformat(), "rmse": round(rmse_now, 3),
                  "held": bool(learning_held), "version": model_version()}

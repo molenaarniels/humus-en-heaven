@@ -772,12 +772,21 @@ function drawRmseChart() {
   const c = document.getElementById("rmse-chart"); if (!c) return;
   if (state.rmseChart) state.rmseChart.destroy();
   const hist = (state.data.learned && state.data.learned.rmse_history) || [];
+  // Punten die achteraf tegen de gecorrigeerde openingen-log zijn herberekend (een te laat
+  // gemelde/teruggedateerde raamwijziging) krijgen een moss-stip + tooltip met de oude waarde,
+  // zodat zichtbaar is waar de curve model-skill toont i.p.v. een meld-fout.
   state.rmseChart = new Chart(c, { type:"line", data:{ datasets:[{ label:"RMSE (°C)",
-      data:hist.map(p=>({x:p.t,y:p.rmse})), borderColor:COLORS.clay, backgroundColor:COLORS.clay, borderWidth:2, pointRadius:0, tension:0.2 }]}, options:{
+      data:hist.map(p=>({x:p.t,y:p.rmse,recomputed:!!p.recomputed,logged:p.rmse_logged})),
+      borderColor:COLORS.clay, backgroundColor:COLORS.clay, borderWidth:2, tension:0.2,
+      pointRadius:hist.map(p=>p.recomputed?2.5:0),
+      pointBackgroundColor:hist.map(p=>p.recomputed?COLORS.moss:COLORS.clay),
+      pointBorderColor:hist.map(p=>p.recomputed?COLORS.moss:COLORS.clay) }]}, options:{
     responsive:true, maintainAspectRatio:false,
     scales:{ x:{type:"time", time:{unit:"day"}, grid:{display:false}, ticks:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft}},
              y:{beginAtZero:true, grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft, callback:v=>v+"°"}} },
-    plugins:{ legend:{display:false} }
+    plugins:{ legend:{display:false}, tooltip:{ callbacks:{ afterLabel:(ctx)=>{
+      const r = ctx.raw||{}; if (!r.recomputed) return undefined;
+      return r.logged!=null ? `herberekend (was ${(+r.logged).toFixed(2)}°)` : "herberekend"; }}} }
   }});
 }
 function learnedTable(d) {

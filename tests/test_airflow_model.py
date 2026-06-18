@@ -748,6 +748,43 @@ def test_checkpoint_degradation_accumulates_before_fallback():
     assert params == {"living": {"c_air": 9.0}}
 
 
+# ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
+def test_window_naive_baseline_is_time_bounded():
+    t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)
+    actual = {"a": [(t0 + timedelta(hours=h), 20.0 + h) for h in range(6)]}   # 20..25
+    # Deel-venster [t0+2u, t0+4u] → samples 22,23,24; baseline = 22 → rmse √((0+1+4)/3).
+    val = am._window_naive(actual, t0 + timedelta(hours=2), t0 + timedelta(hours=4))
+    assert val == pytest.approx(math.sqrt((0 + 1 + 4) / 3))
+    leeg = am._window_naive(actual, t0 + timedelta(hours=10), t0 + timedelta(hours=12))
+    assert leeg != leeg                                                      # geen samples → NaN
+
+
+def test_backfill_recomputes_in_horizon_points_only():
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    # Gecorrigeerde residuen: klein (0.1°C) over het hele ~48u buffer-venster, elk uur een sample.
+    timed_res = [(now - timedelta(hours=h), 0.1) for h in range(48, -1, -1)]
+    actual = {"a": [(now - timedelta(hours=h), 20.0 + (h % 3)) for h in range(48, -1, -1)]}
+    history = [
+        {"t": (now - timedelta(hours=6)).isoformat(), "rmse": 2.0},    # in horizon, vervuild
+        {"t": (now - timedelta(hours=50)).isoformat(), "rmse": 2.0},   # buiten horizon → bevroren
+        {"t": (now - timedelta(hours=3)).isoformat(), "rmse": 0.11},   # in horizon, al goed → ongemoeid
+    ]
+    changed = am.backfill_rmse_history(history, timed_res, actual, now)
+    assert changed == 1
+    p_fixed, p_frozen, p_ok = history
+    assert p_fixed["rmse"] == pytest.approx(0.1, abs=1e-6)              # naar de echte model-skill
+    assert p_fixed["rmse_logged"] == 2.0 and p_fixed["recomputed"] is True
+    assert p_frozen["rmse"] == 2.0 and "recomputed" not in p_frozen     # grond-waarheid weg → bevroren
+    assert p_ok["rmse"] == 0.11 and "recomputed" not in p_ok            # < DELTA → geen gechurn
+
+
+def test_backfill_noop_without_residuals():
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    history = [{"t": (now - timedelta(hours=1)).isoformat(), "rmse": 1.0}]
+    assert am.backfill_rmse_history(history, [], {}, now) == 0
+    assert history[0]["rmse"] == 1.0 and "recomputed" not in history[0]
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ════════════════════════════════════════════════════════════════════════════════════

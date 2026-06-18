@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data:;
+  connect-src 'self';
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>Grafiek · Humus &amp; Heaven</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" integrity="sha384-oNtu+d18330MVFpltUTve1DatxCkkctlpA2AC3GulbVFOSqhHdDat3qHse/Lbuek" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="css/shared.css?v=1">
+  <style>
+    h1 { font-size: clamp(40px, 5.5vw, 72px); line-height: 0.95; margin: 8px 0 4px; font-weight: 500; letter-spacing: -0.02em; font-style: italic; }
+    .subtitle { font-size: 13px; font-style: italic; color: var(--ink-soft); max-width: 560px; margin-top: 4px; }
+    /* venster-keuze */
+    .seg-btn { background: transparent; color: var(--ink-soft); border: 1px solid #2a241b44; padding: 7px 14px; min-height: 38px; font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; transition: all 0.18s; }
+    .seg-btn:hover { border-color: var(--ink); color: var(--ink); }
+    .seg-btn.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+    /* volle-pagina scatter */
+    .chart-box { position: relative; height: min(74vh, 780px); min-height: 440px; margin-top: 6px; }
+    @media (max-width: 680px) {
+      header { padding: 24px 16px 12px; }
+      .grid { padding-left: 16px; padding-right: 16px; }
+      .banner { margin: 8px 16px; }
+      .chart-box { height: 68vh; min-height: 380px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <div class="corner-mark" id="folio-mark"></div>
+      <h1>Grafiek</h1>
+      <div class="subtitle">Elke kamer als spoor door de afgelopen 24 uur — temperatuur tegen luchtvochtigheid. Het spoor vervaagt naar het verleden; de stip met pijl is nu en wijst waar de kamer heen gaat. Vergelijk de kamers met <em>buiten</em> (ruit) om te zien hoe ze de buitenlucht volgen.</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="corner-mark">Vandaag</div>
+      <div class="num date-big" id="today-date"></div>
+      <div style="margin-top:8px;display:flex;gap:14px;justify-content:flex-end;flex-wrap:wrap;">
+        <a class="link" href="index.html">Bodem</a>
+        <a class="link" href="mowing.html">Gazon</a>
+        <a class="link" href="window.html">Ramen</a>
+        <a class="link" href="accuracy.html">IJking</a>
+        <a class="link" href="airflow.html">Ventilatie</a>
+      </div>
+    </div>
+  </div>
+  <div class="hairline-bold"></div>
+</header>
+
+<section style="padding:14px 40px 0;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+  <button class="btn" id="refresh-btn">↻ Refresh</button>
+  <div id="window-select" style="display:flex;gap:6px;">
+    <button class="seg-btn" data-h="6">6u</button>
+    <button class="seg-btn" data-h="12">12u</button>
+    <button class="seg-btn active" data-h="24">24u</button>
+    <button class="seg-btn" data-h="48">48u</button>
+  </div>
+  <span id="source-label" style="font-size:11px;color:var(--ink-soft);font-style:italic;"></span>
+</section>
+
+<div id="banner-slot"></div>
+
+<div id="content">
+  <div style="padding:80px 40px;text-align:center;">
+    <div class="pulse" style="font-size:22px;font-style:italic;color:var(--ink-soft);">De sporen tekenen…</div>
+  </div>
+</div>
+
+<footer>
+  <div class="rule-label" style="margin-bottom:6px;">Methode</div>
+  Dezelfde meetreeks als het raam-koeladvies: per kamer wordt elk kwartier de
+  binnentemperatuur en luchtvochtigheid bewaard (en <em>buiten</em> erbij). Hier wordt dat
+  uitgezet als spoor in de temperatuur×vocht-ruimte — vervagend van toen naar nu. De pijl aan
+  de kop is de trend van de komende ~2 uur. De stippellijnen zijn de vocht-drempels van de
+  beslislogica (streef <span class="num">RH_COMFORT</span>, veto <span class="num">RH_HARD_CAP</span>).
+  Beschrijvend — er wordt geen raam automatisch bediend.
+</footer>
+
+<script src="js/theme.js"></script>
+<script src="js/grafiek.js"></script>
+</body>
+</html>

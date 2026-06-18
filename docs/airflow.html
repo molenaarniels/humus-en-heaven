@@ -75,6 +75,8 @@
     .seg button.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
     .seg button:not(:last-child) { border-right: none; }
     .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
+    .when-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0 10px; border-bottom: 1px dashed #2a241b22; }
+    .when-row input { font-family: "JetBrains Mono", monospace; font-size: 13px; padding: 8px 10px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; color: var(--ink); }
     @media (max-width: 680px) {
     header { padding: 24px 16px 12px; }
     .pad, .grid { padding-left: 16px; padding-right: 16px; }
@@ -128,7 +130,12 @@
     <h2>Stel ramen, roosters &amp; deuren in</h2>
     <p style="font-style:italic;color:var(--ink-soft);font-size:13px;margin:6px 0 4px;">
       Zet elk element op zijn huidige stand. Het model leert hiervan — hoe nauwkeuriger jouw
-      opgave, hoe beter de voorspelling. De stand wordt met een tijdstempel bewaard.</p>
+      opgave, hoe beter de voorspelling. De stand wordt met een tijdstempel bewaard —
+      standaard nú, pas het tijdstip aan om een eerdere wijziging terug te dateren.</p>
+    <label class="when-row">
+      <span class="grp-title" style="margin:0;">Tijdstip van wijziging</span>
+      <input type="datetime-local" id="report-when">
+    </label>
     <div id="ctl-list"></div>
     <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">
       <button class="btn btn-secondary" id="report-cancel">Annuleer</button>

@@ -806,6 +806,9 @@ async function openReport() {
   const ctls = (state.data && state.data.controls) || [];
   if (!ctls.length) { alert("Nog geen elementen — vul house_model.json en laat het model één keer draaien."); return; }
   state.pending = {};
+  // Tijdstempel-picker standaard op "nu" (lokale tijd) — onveranderd laten = nu; aanpassen om
+  // een eerdere wijziging terug te dateren (zie saveReport).
+  document.getElementById("report-when").value = localDatetimeValue(new Date());
   document.getElementById("ctl-list").innerHTML = '<div class="ctl-sub pulse">⋯ huidige stand laden…</div>';
   toggleModal(true);
   // Lees de ÉCHTE huidige toestand rechtstreeks uit de Gist-log, niet uit de (tot ~15 min
@@ -858,7 +861,7 @@ async function saveReport() {
   const btn = document.getElementById("report-save"); btn.textContent = "⋯ bewaren";
   try {
     const log = await fetchOpeningsLog();
-    log.push({ t: new Date().toISOString(), states: { ...state.pending } });
+    log.push({ t: reportTimestamp(), states: { ...state.pending } });
     // Houd de log behapbaar (laatste ~500 snapshots).
     const trimmed = log.slice(-500);
     await saveOpeningsLog(trimmed);
@@ -869,6 +872,22 @@ async function saveReport() {
   } catch (e) {
     alert("Bewaren mislukt: " + e.message);
   } finally { btn.textContent = "Bewaar & leer"; }
+}
+// Lokale datum/tijd → de "YYYY-MM-DDTHH:mm" waarde die <input type="datetime-local"> verwacht.
+function localDatetimeValue(d) {
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Tijdstempel voor de snapshot: de (lokale) picker-waarde omgezet naar UTC-ISO — net als de oude
+// `new Date().toISOString()`. Leeg of ongeldig → val terug op nu, zodat een ongewijzigde modal
+// gewoon de huidige tijd gebruikt.
+function reportTimestamp() {
+  const v = (document.getElementById("report-when") || {}).value;
+  if (v) {
+    const d = new Date(v);          // datetime-local is lokale tijd → Date interpreteert lokaal
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return new Date().toISOString();
 }
 const ensureToken = ensureGistConfig;
 async function fetchOpeningsLog() {

@@ -7,7 +7,7 @@
 const ROOM_COLORS = [COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight];
 const PROJ_H = 2;          // uur vooruit voor de richtingvector (zelfde als raam-scatter)
 const MIN_ALPHA = 0.08;    // doorzichtigheid van het oudste spoorsegment (vervaagt → 1.0 nu)
-const state = { data: null, chart: null, windowH: 24 };
+const state = { data: null, chart: null, windowH: 24, hidden: new Set() };  // hidden = uitgevinkte kamers
 
 document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Grafiek`;
 document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
@@ -19,6 +19,17 @@ document.getElementById("window-select").addEventListener("click", (e) => {
   if (!btn) return;
   state.windowH = Number(btn.dataset.h);
   document.querySelectorAll("#window-select .seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+  if (state.data) drawScatter();
+});
+
+// Legenda-vinkjes (kamer aan/uit). Gedelegeerd op #content (blijft bestaan over re-renders heen),
+// geen inline handlers (CSP). De legenda wordt niet hertekend bij togglen — alleen de grafiek.
+document.getElementById("content").addEventListener("change", (e) => {
+  const cb = e.target.closest('input[type="checkbox"][data-label]');
+  if (!cb) return;
+  if (cb.checked) state.hidden.delete(cb.dataset.label); else state.hidden.add(cb.dataset.label);
+  const lab = cb.closest(".legend-toggle");
+  if (lab) lab.style.opacity = cb.checked ? "" : "0.4";
   if (state.data) drawScatter();
 });
 
@@ -72,11 +83,20 @@ function render() {
 function ROOMS_ORDER(d) { return Object.keys(d.rooms); }
 
 function scatterLegendHTML(d) {
-  const items = ROOMS_ORDER(d).map((r,i) => `<span style="color:${ROOM_COLORS[i % ROOM_COLORS.length]}">● ${r}</span>`)
-    .concat([`<span style="color:${COLORS.rain}">◆ buiten</span>`,
-             `<span style="color:var(--ink-soft)">spoor: vervaagt van toen → nu</span>`,
-             `<span style="color:var(--ink-soft)">→ trend (komende ~2u)</span>`]);
-  return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
+  const toggles = ROOMS_ORDER(d).map((r,i) => legendToggle(r, ROOM_COLORS[i % ROOM_COLORS.length], "●"))
+    .concat([legendToggle("buiten", COLORS.rain, "◆")]);
+  const notes = [`spoor: vervaagt van toen → nu`, `→ trend (komende ~2u)`]
+    .map(t => `<span style="color:var(--ink-soft)">${t}</span>`);
+  return `<div id="legend" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:10px;color:var(--ink-soft);">${toggles.join("")}${notes.join("")}</div>`;
+}
+
+// Eén legenda-vinkje (kamer/buiten aan-uit). Vinkstatus volgt state.hidden zodat hij over een
+// refresh of venster-wissel heen bewaard blijft.
+function legendToggle(label, color, glyph) {
+  const off = state.hidden.has(label);
+  return `<label class="legend-toggle" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;${off ? "opacity:0.4;" : ""}">`
+    + `<input type="checkbox" data-label="${label}"${off ? "" : " checked"} style="accent-color:${color};cursor:pointer;margin:0;">`
+    + `<span style="color:${color}">${glyph} ${label}</span></label>`;
 }
 
 // hex (#rrggbb) → rgba met alpha, voor de vervagende spoorsegmenten.
@@ -105,7 +125,7 @@ function drawScatter() {
   const series = [];
   ROOMS_ORDER(d).forEach((name, ri) => {
     const r = d.rooms[name];
-    if (!r) return;
+    if (!r || state.hidden.has(name)) return;
     let trail = buildTrail(r.history);
     // Geen historie binnen het venster maar wél een actuele meting → toon enkel de kop.
     if (!trail.length && r.inside != null && r.humidity != null)
@@ -114,8 +134,8 @@ function drawScatter() {
     series.push({ label: name, color: ROOM_COLORS[ri % ROOM_COLORS.length], outside: false,
                   trail, dx: (r.hum_trend || 0) * PROJ_H, dy: (r.trend || 0) * PROJ_H });
   });
-  let outTrail = buildTrail(d.outside_history);
-  if (!outTrail.length && d.outside_now != null && d.outside_humidity != null)
+  let outTrail = state.hidden.has("buiten") ? [] : buildTrail(d.outside_history);
+  if (!outTrail.length && !state.hidden.has("buiten") && d.outside_now != null && d.outside_humidity != null)
     outTrail = [{ x: d.outside_humidity, y: d.outside_now, t: d.as_of_local }];
   if (outTrail.length)
     series.push({ label: "buiten", color: COLORS.rain, outside: true, trail: outTrail,

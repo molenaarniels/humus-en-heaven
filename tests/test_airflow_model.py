@@ -608,6 +608,89 @@ def test_solar_gain_cannot_collapse_to_zero():
         assert new[rid]["solar_gain"] >= 0.25
 
 
+# ── 10b. Regime-bewuste ridge + recency-weging ───────────────────────────────────────
+def test_reg_weight_regime_aware_solar_gain():
+    # Het extra-sterke solar_gain-anker (6.0) ramp terug naar REG_WEIGHT (3.0) zodra het venster
+    # zonniger wordt: bewolkt → vol anker (anti-collapse), zonnig → vertrouw de data.
+    base = am.REG_WEIGHT_BY_PARAM["solar_gain"]
+    assert am.reg_weight("solar_gain") == base                              # geen solar_mean → oud
+    assert am.reg_weight("solar_gain", am.SOLAR_RIDGE_LOW_WM2 - 10) == base   # bewolkt → vol anker
+    assert am.reg_weight("solar_gain", am.SOLAR_RIDGE_HIGH_WM2 + 10) == am.REG_WEIGHT  # zonnig → relax
+    mid = am.reg_weight("solar_gain", 0.5 * (am.SOLAR_RIDGE_LOW_WM2 + am.SOLAR_RIDGE_HIGH_WM2))
+    assert am.REG_WEIGHT < mid < base                                        # monotone tussenwaarde
+    # Andere params zijn niet regime-afhankelijk.
+    assert am.reg_weight("ua_env", 400) == am.REG_WEIGHT
+
+
+def test_recency_weights_decay():
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
+    times = [t0, t0 + timedelta(hours=18), t0 + timedelta(hours=36)]   # oud → nieuw
+    w = am._recency_weights(times, half_life_h=18.0)
+    assert w[-1] == pytest.approx(1.0)        # nieuwste = referentie
+    assert w[1] == pytest.approx(0.5)         # één half-life ouder
+    assert w[0] == pytest.approx(0.25)        # twee half-lives ouder
+    # Uitgeschakeld → uniform.
+    assert am._recency_weights(times, half_life_h=0) == [1.0, 1.0, 1.0]
+    assert am._recency_weights([]) == []
+
+
+def test_recency_weighting_favors_recent_regime(monkeypatch):
+    # Bij een regime-wissel in het venster moet de fit het HUIDIGE (recente) regime beter volgen.
+    # We bouwen 'actual' uit een truth-sim maar verlagen de recente helft met een offset (koeler
+    # regime); met recency-weging horen de recente residuen kleiner te zijn dan zonder weging.
+    house = _toy_house()
+    tl = _varying_timeline(hours=48)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    truth = am.default_params(house)
+    sim = am.simulate(house, truth, tl, seed, calib_only_rooms=set(house["rooms"]))
+    mid = tl[0]["t"] + timedelta(hours=24)
+    delta = 2.0
+    actual = {rid: [(t, (v - delta if t >= mid else v)) for t, v in sim["series"][rid][::4]]
+              for rid in house["rooms"]}
+
+    def recent_rmse(params):
+        res = [r for t, r in am._residuals_timed(house, params, tl, seed, actual, set(house["rooms"]))
+               if t >= mid]
+        return math.sqrt(sum(r * r for r in res) / len(res))
+
+    monkeypatch.setattr(am, "RECENCY_HALFLIFE_H", 0.0)      # uniform
+    p_uniform, _ = am.calibrate(house, am.default_params(house), tl, seed, actual, max_iter=6, time_budget_s=20)
+    monkeypatch.setattr(am, "RECENCY_HALFLIFE_H", 6.0)      # sterke recency
+    p_recent, _ = am.calibrate(house, am.default_params(house), tl, seed, actual, max_iter=6, time_budget_s=20)
+    assert recent_rmse(p_recent) < recent_rmse(p_uniform)
+
+
+# ── 10c. AC-guard-venster (niet-teruggedateerde airco-melding) ────────────────────────
+def test_filter_ac_samples_guard_window():
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=am.TZ)
+    # Eén log-entry zet de airco 'nu' in kamer 'b' (geen terugdatering): zónder guard zou de
+    # AC-koude van de uren vóór de melding ín de fit blijven. De guard laat 'b's recente samples vallen.
+    acc = [(now, "b")]
+    actual = {
+        "a": [(now - timedelta(hours=h), 22.0) for h in range(10, 0, -1)],
+        "b": [(now - timedelta(hours=h), 18.0) for h in range(10, 0, -1)],
+    }
+    filt, excl = am.filter_ac_samples(actual, acc, "b", now, guard_h=6.0)
+    assert "a" not in excl                       # andere kamer ongemoeid
+    assert len(filt["a"]) == len(actual["a"])
+    assert excl["b"] == 6                          # h=1..6 binnen de guard vallen weg
+    assert all(t < now - timedelta(hours=6) for t, _ in filt["b"])
+    # Lege log → niets gefilterd (backwards-compatibel).
+    filt2, excl2 = am.filter_ac_samples(actual, [], None, now)
+    assert excl2 == {} and filt2["b"] == actual["b"]
+
+
+def test_railed_params_flags_bounds():
+    params = am.default_params(_toy_house())
+    params["cp_shelter"] = am.BOUNDS["cp_shelter"][0]      # op de vloer
+    params["a"]["solar_gain"] = am.BOUNDS["solar_gain"][1]  # op het plafond
+    params["a"]["ua_env"] = 1.0                            # midden → niet gerailed
+    flags = am.railed_params(params)
+    assert "global.cp_shelter@floor" in flags
+    assert "a.solar_gain@ceil" in flags
+    assert not any(f.startswith("a.ua_env") for f in flags)
+
+
 # ── 11. Dak-sol-air-term (bovenste verdieping) ───────────────────────────────────────
 
 def _roof_house(roof_m2: float) -> dict:

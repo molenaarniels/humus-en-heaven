@@ -69,6 +69,12 @@ OPENINGS_FILE  = "house_openings.json"   # in de Gist (niet-geheim)
 # model heeft géén actieve-koel-term, dus de AC-kamer wordt alleen uit de KALIBRATIE gelaten
 # (zie main); ze blijft wél voorspeld + getoond.
 AC_STATE_KEY = "ac_room"
+# De AC-exclusie was retroactief-only: ze liet alleen samples vallen waarvan de log op dát moment
+# `ac_room==kamer` zei. Meld je de airco "staat nu hier" zónder terug te dateren, dan bleef de
+# koeling die al vóór de melding liep ín de fit (de AC-kamer leest dan kouder dan de fysica kan en
+# trekt zowel haar eigen params als de gedeelde globalen scheef). Daarom laten we, zodra een kamer
+# nú de airco heeft, óók haar samples van de laatste AC_GUARD_H uur vallen — ongeacht de log-timing.
+AC_GUARD_H = 6.0
 
 # ── Fysische constanten ─────────────────────────────────────────────────────────────
 CP_AIR = 1005.0    # J/(kg·K)
@@ -119,11 +125,39 @@ REG_WEIGHT     = 3.0
 # sterkere ankering naar de prior (1.0) houdt 'm overeind tenzij de data écht het tegendeel
 # bewijst; alle andere parameters houden REG_WEIGHT.
 REG_WEIGHT_BY_PARAM = {"solar_gain": 6.0}
+# Regime-bewuste ridge voor `solar_gain`. Het extra-sterke anker (6.0) is bedoeld voor MILDE /
+# BEWOLKTE vensters waar de zon-magnitude onidentificeerbaar is en de fit 'm anders naar ~0 laat
+# zakken ("zon-uit"). Op een HETE ZONNIGE dag is dat juist averechts: dan bewíjst de data de
+# zon-magnitude (afternoon-piek-residu, RMSE↔dag-max-correlatie ~0.7) en wil ze solar_gain lager,
+# maar dezelfde 6.0-ridge trekt 'm weer naar de prior (1.0) → een te-warme compromiswaarde, juist
+# op de dag waarvoor de twin bestaat. Daarom ramp het anker terug van 6.0 → REG_WEIGHT zodra het
+# venster-zon-gemiddelde van LOW → HIGH loopt: anti-collapse-bescherming blijft op bewolkte
+# vensters, en op zonnige vensters wordt de data vertrouwd. Géén effect als solar_mean onbekend is
+# (backwards-compatibel: dan geldt de oude 6.0).
+SOLAR_RIDGE_LOW_WM2  = 150.0  # ≤ dit zon-gemiddelde (W/m²): vol anker (onidentificeerbaar)
+SOLAR_RIDGE_HIGH_WM2 = 300.0  # ≥ dit: terug naar REG_WEIGHT (zon-magnitude identificeerbaar)
+
+# Recency-weging van de residuen in de fit. Het 48u-kalibratievenster (CALIB_WINDOW_H) kan een
+# REGIME-WISSEL overspannen (mild → hittegolf); een ongewogen kleinste-kwadraten-fit middelt dan
+# twee regimes en het compromis overschat het hete eind. Een exponentieel tijdsgewicht laat het
+# HUIDIGE regime de fit-richting domineren zónder het venster te verkorten (trage termen
+# ua_party/c_mass blijven identificeerbaar over de volle 48u). Raakt alléén de fit-richting, NIET
+# de gerapporteerde RMSE/skill (die blijft de ongewogen fout, vergelijkbaar over de leercurve).
+RECENCY_HALFLIFE_H = 18.0  # uur: een sample van deze leeftijd weegt half t.o.v. het nieuwste
 
 
-def reg_weight(name: str) -> float:
-    """Ridge-gewicht voor parameter `name`: de per-parameter-override of de globale REG_WEIGHT."""
-    return REG_WEIGHT_BY_PARAM.get(name, REG_WEIGHT)
+def reg_weight(name: str, solar_mean: float | None = None) -> float:
+    """Ridge-gewicht voor parameter `name`: de per-parameter-override of de globale REG_WEIGHT.
+    Voor `solar_gain` ramp het extra anker (6.0) regime-bewust terug naar REG_WEIGHT naarmate het
+    venster-zon-gemiddelde `solar_mean` (W/m²) van SOLAR_RIDGE_LOW → HIGH loopt — sterk anker bij
+    weinig zon (anti-collapse), zwak anker bij veel zon (vertrouw de data). `solar_mean=None` →
+    ongewijzigd gedrag."""
+    w = REG_WEIGHT_BY_PARAM.get(name, REG_WEIGHT)
+    if name == "solar_gain" and solar_mean is not None and w > REG_WEIGHT:
+        lo, hi = SOLAR_RIDGE_LOW_WM2, SOLAR_RIDGE_HIGH_WM2
+        frac = 0.0 if hi <= lo else min(1.0, max(0.0, (solar_mean - lo) / (hi - lo)))
+        w += frac * (REG_WEIGHT - w)   # 6.0 (frac=0) → REG_WEIGHT (frac=1)
+    return w
 
 
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
@@ -364,6 +398,40 @@ PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party"
 # corrumpeert. Nu vast op CD; `vent_eff` draagt de meng-koppeling alleen.
 GLOBAL_PARAMS   = ["cp_shelter", "vent_eff"]
 CD = PRIORS["cd"]   # vaste ontladingscoëfficiënt (niet geleerd)
+
+RAIL_TOL = 0.02   # binnen deze fractie van de band-breedte → de param zit 'op zijn grens'
+
+
+def railed_params(params: dict, tol: float = RAIL_TOL) -> list[str]:
+    """Welke geleerde params op (≈) hun BOUNDS-grens zitten — de 'saturatie-tell' dat een
+    fysisch kanaal naar zijn extreem geduwd wordt (vaak een structureel tekort of een te-warme
+    prior). Geeft een lijst `'scope.param@floor|ceil'` voor logging/dashboard. Massaal floor-railen
+    op de warmte-in-kanalen = de optimizer komt niet koel genoeg. Puur diagnostisch, geen mutatie."""
+    out = []
+
+    def _flag(scope: str, name: str, value) -> None:
+        b = BOUNDS.get(name)
+        if b is None or not isinstance(value, (int, float)):
+            return
+        lo, hi = b
+        rng = hi - lo
+        if rng <= 0:
+            return
+        if value - lo <= tol * rng:
+            out.append(f"{scope}.{name}@floor")
+        elif hi - value <= tol * rng:
+            out.append(f"{scope}.{name}@ceil")
+
+    for name in GLOBAL_PARAMS:
+        if name in params:
+            _flag("global", name, params[name])
+    for rid, rp in params.items():
+        if not isinstance(rp, dict):
+            continue
+        for name in PER_ROOM_PARAMS:
+            if name in rp:
+                _flag(rid, name, rp[name])
+    return out
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -773,6 +841,32 @@ def ac_room_at(changes: list[tuple], when: datetime) -> str | None:
     return room
 
 
+def filter_ac_samples(actual: dict, acc: list[tuple], ac_room_now: str | None,
+                      now: datetime, guard_h: float = AC_GUARD_H) -> tuple[dict, dict]:
+    """Laat de tado-samples van de AC-kamer uit `actual` vallen — het model heeft géén actieve-
+    koel-term, dus die kamer leest kouder dan de fysica kan en zou de fit (kamer-params + gedeelde
+    globalen + RMSE/leercurve) vervuilen. Een sample valt weg als (a) de log op dát moment
+    `ac_room==kamer` zei, óf (b) de kamer NÚ de airco heeft en het sample binnen het laatste
+    `guard_h`-uur ligt — die guard vangt een 'staat nu hier'-melding die niet teruggedateerd is
+    (de koeling liep al vóór de melding). Geeft (gefilterde actual-kopie, {kamer: #weggelaten}).
+    Lege `acc` → ongewijzigd. De AC-kamer wordt nog wél gesimuleerd + getoond (seed uit seed_src)."""
+    if not acc:
+        return actual, {}
+    guard_since = now - _timedelta_h(guard_h) if guard_h and guard_h > 0 else None
+    out: dict = {}
+    excluded: dict = {}
+    for rid, samples in actual.items():
+        kept = [(ts, v) for ts, v in samples
+                if not (ac_room_at(acc, ts) == rid
+                        or (ac_room_now == rid and guard_since is not None and ts >= guard_since))]
+        dropped = len(samples) - len(kept)
+        if dropped:
+            excluded[rid] = dropped
+        if kept:
+            out[rid] = kept
+    return out, excluded
+
+
 def _default_frac(element: dict, kind: str) -> float:
     """Basistoestand vóór enige rapportage: ramen dicht, binnendeuren open, roosters
     op trickle-stand (tenzij het huismodel een `default_state` geeft)."""
@@ -1063,20 +1157,43 @@ def _series_trend(series: list[tuple], since: datetime | None = None) -> float |
     return num / den
 
 
-def _residuals(house, params, timeline, seed, actual, rooms_set) -> list[float]:
-    """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
-    voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
-    bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt."""
+def _residuals_timed(house, params, timeline, seed, actual, rooms_set) -> list[tuple]:
+    """(meetmoment, voorspeld−werkelijk) op elk sample — als `_residuals` maar mét de tijdstempel
+    behouden zodat de fit een recency-weging kan toepassen. Voorspelling eerst naar sensor-ruimte
+    (buitenmuur-bias) zodat tegen de werkelijk gemeten — gebiasde — tado-temp vergeleken wordt."""
     sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set)
-    res = []
+    out = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
         if not pred:
             continue
         pred = _to_sensor_series(house, timeline, rid, pred)
         for ts, val in samples:
-            res.append(_interp(pred, ts) - val)
-    return res
+            out.append((ts, _interp(pred, ts) - val))
+    return out
+
+
+def _residuals(house, params, timeline, seed, actual, rooms_set) -> list[float]:
+    """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
+    voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
+    bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt."""
+    return [r for _, r in _residuals_timed(house, params, timeline, seed, actual, rooms_set)]
+
+
+def _recency_weights(times: list, half_life_h: float | None = None) -> list[float]:
+    """Exponentieel tijdsgewicht per sample: 1.0 voor het nieuwste, halverend per `half_life_h`
+    oudere uren — `2^(−Δt/half_life)`. Zo domineert het huidige regime de fit-richting bij een
+    regime-wissel binnen het venster. `half_life_h ≤ 0` → uniform (uitgeschakeld). `None` →
+    de module-constante RECENCY_HALFLIFE_H (op call-time gelezen → configureerbaar/testbaar)."""
+    hl = RECENCY_HALFLIFE_H if half_life_h is None else half_life_h
+    if not times or hl is None or hl <= 0:
+        return [1.0] * len(times)
+    ref = max(times)
+    out = []
+    for t in times:
+        dt_h = (ref - t).total_seconds() / 3600.0
+        out.append(2.0 ** (-dt_h / hl))
+    return out
 
 
 def _interp(series: list[tuple], ts: datetime) -> float:
@@ -1202,18 +1319,22 @@ def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: dat
     return changed
 
 
-def _wcost(res: list[float]) -> float:
+def _wcost(res: list[float], extra_w: list[float] | None = None) -> float:
     """Huber-gewogen som van kwadraten — het doel dat de kalibratie minimaliseert (een
-    paar uitschieters wegen lineair i.p.v. kwadratisch mee)."""
+    paar uitschieters wegen lineair i.p.v. kwadratisch mee). `extra_w` (b.v. recency-gewichten)
+    schaalt elke term extra, consistent met de normaalvergelijkingen in `calibrate`."""
     w = _huber_weights(res)
+    if extra_w is not None:
+        return sum(extra_w[i] * w[i] * res[i] * res[i] for i in range(len(res)))
     return sum(w[i] * res[i] * res[i] for i in range(len(res)))
 
 
 def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
-              time_budget_s: float = 40.0) -> tuple[dict, float]:
+              time_budget_s: float = 40.0, solar_mean: float | None = None) -> tuple[dict, float]:
     """Minimaliseer Σ(voorspeld−werkelijk)² + Tikhonov-ridge naar de priors over het venster
     met gedempte Gauss-Newton. Online: schuif maar LEARN_RATE naar het optimum (stabiel,
-    convergeert over runs). Geeft (nieuwe params, RMSE-na)."""
+    convergeert over runs). `solar_mean` (venster-zon-gemiddelde, W/m²) maakt het solar_gain-anker
+    regime-bewust (zie reg_weight). Geeft (nieuwe params, RMSE-na)."""
     rooms = [rid for rid in actual if actual[rid]]
     if not rooms:
         return params, float("nan")
@@ -1222,18 +1343,23 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     x = params_to_vec(params, keys)
     base = params
     prior_vec = [PRIORS[name] for _, name in keys]   # ridge-anker per parameter
-    reg_vec = [reg_weight(name) for _, name in keys]  # per-parameter ridge-gewicht
+    reg_vec = [reg_weight(name, solar_mean) for _, name in keys]  # regime-bewust ridge-gewicht
 
     def _total_cost(res: list[float], xv: list[float]) -> float:
-        """Huber-datakosten + Tikhonov-ridge naar de priors. Dezelfde schaal als de
-        normaalvergelijkingen (de factor 2 valt consistent aan beide kanten weg)."""
+        """Huber-datakosten (mét recency-weging) + Tikhonov-ridge naar de priors. Dezelfde schaal
+        als de normaalvergelijkingen (de factor 2 valt consistent aan beide kanten weg)."""
         pen = sum(reg_vec[k] * (xv[k] - prior_vec[k]) ** 2 for k in range(len(keys)))
-        return _wcost(res) + pen
+        return _wcost(res, tw) + pen
 
-    r0 = _residuals(house, params, timeline, seed, actual, rooms_set)
-    if not r0:
+    # Eén timed-residu-call vooraf: levert zowel r0 als de sample-tijdstempels. De residu-volgorde
+    # is identiek aan elke latere `_residuals`-call (zelfde actual/rooms_set), dus de recency-
+    # gewichten `tw` blijven uitgelijnd door de hele fit.
+    r0_timed = _residuals_timed(house, params, timeline, seed, actual, rooms_set)
+    if not r0_timed:
         return params, float("nan")
-    best_cost = _total_cost(r0, x)   # Huber-data + ridge sturen accept/reject
+    r0 = [v for _, v in r0_timed]
+    tw = _recency_weights([t for t, _ in r0_timed])   # huidig regime weegt zwaarder
+    best_cost = _total_cost(r0, x)   # Huber-data×recency + ridge sturen accept/reject
 
     t_start = time.time()
     lam = 1e-3
@@ -1245,7 +1371,11 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         if not r:
             break
         m = len(r)
-        w = _huber_weights(r)       # demp uitschieters (rare samples / deels-verkeerde log)
+        hw = _huber_weights(r)      # demp uitschieters (rare samples / deels-verkeerde log)
+        # Recency × Huber: het huidige regime weegt zwaarder (zie _recency_weights). tw is vooraf
+        # uitgelijnd op de residu-volgorde; bij een afwijkende lengte (zelden) val terug op uniform.
+        twv = tw if len(tw) == m else [1.0] * m
+        w = [hw[i] * twv[i] for i in range(m)]
         # Jacobiaan via voorwaartse differentie (één simulatie per parameter).
         J = [[0.0] * len(keys) for _ in range(m)]
         for j in range(len(keys)):
@@ -1257,7 +1387,7 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
                 continue
             for i in range(m):
                 J[i][j] = (rj[i] - r[i]) / dx
-        # Gewogen normaalvergelijkingen (JᵀWJ + λI) δ = −JᵀWr.
+        # Gewogen normaalvergelijkingen (JᵀWJ + λI) δ = −JᵀWr (W = recency × Huber).
         nk = len(keys)
         JtJ = [[sum(w[i] * J[i][a] * J[i][b] for i in range(m)) for b in range(nk)] for a in range(nk)]
         Jtr = [sum(w[i] * J[i][a] * r[i] for i in range(m)) for a in range(nk)]
@@ -1989,19 +2119,9 @@ def main():
     # volledige AC-koel-term, bewust niet gekozen.)
     acc = ac_changes(log)
     ac_room_now = ac_room_at(acc, now)
-    ac_excluded: dict = {}
-    if acc:
-        for rid in list(actual.keys()):
-            kept = [(ts, v) for ts, v in actual[rid] if ac_room_at(acc, ts) != rid]
-            dropped = len(actual[rid]) - len(kept)
-            if dropped:
-                ac_excluded[rid] = dropped
-            if kept:
-                actual[rid] = kept
-            else:
-                del actual[rid]
-        if ac_excluded:
-            print(f"[airco] kamer nu = {ac_room_now or '—'}; samples uit de fit gelaten: {ac_excluded}")
+    actual, ac_excluded = filter_ac_samples(actual, acc, ac_room_now, now)
+    if ac_excluded:
+        print(f"[airco] kamer nu = {ac_room_now or '—'}; samples uit de fit gelaten: {ac_excluded}")
 
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
@@ -2017,6 +2137,11 @@ def main():
         seed[rid] = t0
     for rid in house.get("rooms", {}):
         seed.setdefault(rid, timeline[0]["T_out"])
+
+    # Weer-context van het venster (stempelt de leercurve) + maakt het solar_gain-anker
+    # regime-bewust in de kalibratie (zie reg_weight): op een zonnig venster wordt de
+    # zon-magnitude vertrouwd, op een bewolkt venster sterk verankerd.
+    wx_summary = window_weather_summary(weather, now, CALIB_WINDOW_H)
 
     # Leren (alleen als er werkelijke samples zijn om tegen te ijken).
     rmse_now = float("nan")
@@ -2036,15 +2161,17 @@ def main():
                   "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
                   "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
         else:
-            params, rmse_now = calibrate(house, params, timeline, seed, actual)
+            params, rmse_now = calibrate(house, params, timeline, seed, actual,
+                                         solar_mean=wx_summary.get("solar_mean"))
             print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
+            rails = railed_params(params)
+            if rails:
+                print(f"[saturatie] params op hun grens: {', '.join(rails)}")
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
 
-    # Weer-context van het venster (stempelt de leercurve) + weer-genormaliseerde skill
-    # t.o.v. een persistentie-baseline — de apples-to-apples kwaliteitsmaat die niet met de
-    # weersmoeilijkheid meebeweegt.
-    wx_summary = window_weather_summary(weather, now, CALIB_WINDOW_H)
+    # Weer-genormaliseerde skill t.o.v. een persistentie-baseline — de apples-to-apples
+    # kwaliteitsmaat die niet met de weersmoeilijkheid meebeweegt.
     rmse_baseline = naive_rmse(actual) if actual else float("nan")
     skill = skill_score(rmse_now, rmse_baseline)
 
@@ -2098,6 +2225,7 @@ def main():
         json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
+                   "railed": railed_params(params),   # saturatie-tell (additief, diagnostisch)
                    "rmse_history": dash["learned"]["rmse_history"],
                    "checkpoint": ckpt},
                   f, ensure_ascii=False, indent=2)

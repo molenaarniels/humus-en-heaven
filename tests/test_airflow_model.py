@@ -390,6 +390,32 @@ def test_openings_at_accumulates_incremental():
     assert st["b"] == "tilt"      # bijgewerkt door de latere
 
 
+def test_ac_room_at_forward_fill():
+    # De airco-kamer wordt voorwaarts geaccumuleerd uit de log (net als openings_at): vóór de
+    # eerste melding geen airco, daarna de laatst-gezette kamer; "geen"/"" zet 'm weer uit.
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    log = [
+        {"t": t0.isoformat(), "states": {"w": "open", am.AC_STATE_KEY: "office"}},
+        {"t": (t0 + timedelta(hours=3)).isoformat(), "states": {am.AC_STATE_KEY: "living"}},
+        {"t": (t0 + timedelta(hours=6)).isoformat(), "states": {am.AC_STATE_KEY: "geen"}},
+    ]
+    chg = am.ac_changes(log)
+    assert am.ac_room_at(chg, t0 - timedelta(hours=1)) is None   # vóór de eerste melding
+    assert am.ac_room_at(chg, t0 + timedelta(hours=1)) == "office"
+    assert am.ac_room_at(chg, t0 + timedelta(hours=4)) == "living"
+    assert am.ac_room_at(chg, t0 + timedelta(hours=7)) is None   # "geen" → uit
+    # Een log zonder enige ac_room-sleutel levert geen wijzigingen → altijd None.
+    assert am.ac_changes([{"t": t0.isoformat(), "states": {"w": "open"}}]) == []
+
+
+def test_norm_ac_room():
+    assert am._norm_ac_room("office") == "office"
+    assert am._norm_ac_room("  Office ") == "office"   # genormaliseerd (trim + lower)
+    assert am._norm_ac_room("") is None
+    assert am._norm_ac_room("geen") is None
+    assert am._norm_ac_room(None) is None
+
+
 def test_shade_factor_override():
     w = {"shading": "none", "shade": {"factor": 0.15}}
     assert am._shade_factor("sky", w, {}) == 1.0                       # geen melding → static none

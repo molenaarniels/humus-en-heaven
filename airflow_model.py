@@ -63,6 +63,12 @@ WINDOW_DATA    = os.getenv("WINDOW_DATA_PATH", "docs/window_data.json")
 DASHBOARD_FILE = os.getenv("AIRFLOW_DATA_PATH", "docs/airflow_data.json")
 LEARNED_FILE   = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
 OPENINGS_FILE  = "house_openings.json"   # in de Gist (niet-geheim)
+# Speciale sleutel in een openingen-log-snapshot: in wélke kamer de (ene, mobiele) airco staat
+# — een room-id, of "" / "geen" = geen airco. Voorwaarts geaccumuleerd zoals elke andere stand.
+# Bewust géén element-id: build_openings kent 'm niet → raakt het luchtstroomnetwerk nooit. Het
+# model heeft géén actieve-koel-term, dus de AC-kamer wordt alleen uit de KALIBRATIE gelaten
+# (zie main); ze blijft wél voorspeld + getoond.
+AC_STATE_KEY = "ac_room"
 
 # ── Fysische constanten ─────────────────────────────────────────────────────────────
 CP_AIR = 1005.0    # J/(kg·K)
@@ -727,6 +733,44 @@ def openings_at(log: list[dict], when: datetime) -> dict:
     for _, st in entries:
         state.update(st)
     return state
+
+
+def _norm_ac_room(value) -> str | None:
+    """Normaliseer de gerapporteerde AC-kamer naar een room-id, of None (geen airco)."""
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if s in ("", "geen", "none", "off", "uit", "-"):
+        return None
+    return s
+
+
+def ac_changes(log: list[dict]) -> list[tuple]:
+    """Chronologische (tijdstip, room-id|None) AC-toewijzingen uit de openingen-log: elk
+    snapshot dat de `ac_room`-sleutel zet. Voorwaarts uit te lezen met `ac_room_at`."""
+    out = []
+    for entry in log:
+        st = entry.get("states", {}) or {}
+        if AC_STATE_KEY not in st:
+            continue
+        try:
+            t = datetime.fromisoformat(entry["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        out.append((t, _norm_ac_room(st[AC_STATE_KEY])))
+    out.sort(key=lambda c: c[0])
+    return out
+
+
+def ac_room_at(changes: list[tuple], when: datetime) -> str | None:
+    """Welke kamer de airco had op tijdstip `when` (voorwaarts geaccumuleerd), of None."""
+    room = None
+    for t, r in changes:
+        if t <= when:
+            room = r
+        else:
+            break
+    return room
 
 
 def _default_frac(element: dict, kind: str) -> float:
@@ -1628,6 +1672,10 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * ctx["int_profile_now"], 0),
         "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
         "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
+        # Airco: staat de mobiele unit nu in deze kamer (→ uit de kalibratie gelaten), en hoeveel
+        # samples zijn deze run om die reden uit de fit gevallen. Voor de "niet-gekalibreerd"-chip.
+        "ac": (rid == ctx.get("ac_room")),
+        "ac_excluded_samples": ctx.get("ac_excluded", {}).get(rid, 0),
         # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
         # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
         "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
@@ -1641,7 +1689,7 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
 def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     actual, now, rmse_now, learning_held=False, baseline=None,
                     skill=None, rmse_baseline=None, wx=None, checkpoint=None,
-                    fell_back=False) -> dict:
+                    fell_back=False, ac_room=None, ac_excluded=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -1672,6 +1720,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "ta_all": ta_all, "tm_all": tm_all, "now_step": now_step,
         "int_profile_now": internal_gain_profile(now),
         "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
+        "ac_room": ac_room, "ac_excluded": ac_excluded or {},
     }
     rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                                           actual, now, ctx)
@@ -1720,6 +1769,13 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         },
         "openings": states_now,
         "controls": _controls(house, states_now),
+        # Airco: in welke kamer de ene mobiele unit nu staat (of None) + de keuzelijst voor de
+        # modal-dropdown (alleen sensorkamers — alleen díé worden gekalibreerd, dus alleen daar
+        # doet de airco-uitsluiting ertoe).
+        "ac": {"room": ac_room,
+               "rooms": [{"id": rid, "label": r.get("label", rid)}
+                         for rid, r in house.get("rooms", {}).items()
+                         if r.get("from_window_data")]},
         "rooms": rooms_out,
         "flows": _flow_summary(house, params, sim, timeline, now),
         "suggestion": sugg,
@@ -1919,6 +1975,34 @@ def main():
 
     since = now - _timedelta_h(CALIB_WINDOW_H)
     actual = collect_actual(house, wd, since)
+    # Seed-bron vóór de AC-filter: de eerste (oudste) sample per kamer blijft de seed, óók als de
+    # AC-filter latere samples wegneemt — zo blijft de voorspelling van de AC-kamer geankerd.
+    seed_src = {rid: s[0][1] for rid, s in actual.items() if s}
+
+    # Mobiele airco: het model heeft géén actieve-koel-term, dus de kamer waar de airco staat leest
+    # kouder dan de fysica kan verklaren. Fitten op die AC-koude zou de kamer-params + RMSE/leercurve
+    # + de gedeelde globale params vervuilen. Daarom laten we de samples van de AC-kamer — alléén voor
+    # de uren dat de airco er volgens de log stond — uit `actual` vallen: niet gekalibreerd, maar nog
+    # wél gesimuleerd en op het dashboard getoond (voorspeld-warm vs. gemeten-koud is eerlijk). De
+    # overige kamers blijven schoon. (Tweede-orde: de AC-kamer-knoop loopt zélf warm door en kan via
+    # de deur-advectie de gekoppelde kamers licht beïnvloeden — geaccepteerd; het alternatief is een
+    # volledige AC-koel-term, bewust niet gekozen.)
+    acc = ac_changes(log)
+    ac_room_now = ac_room_at(acc, now)
+    ac_excluded: dict = {}
+    if acc:
+        for rid in list(actual.keys()):
+            kept = [(ts, v) for ts, v in actual[rid] if ac_room_at(acc, ts) != rid]
+            dropped = len(actual[rid]) - len(kept)
+            if dropped:
+                ac_excluded[rid] = dropped
+            if kept:
+                actual[rid] = kept
+            else:
+                del actual[rid]
+        if ac_excluded:
+            print(f"[airco] kamer nu = {ac_room_now or '—'}; samples uit de fit gelaten: {ac_excluded}")
+
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
     timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H)
@@ -1926,10 +2010,11 @@ def main():
         print("[airflow_model] Geen weerdata → kan niet simuleren. Stop.")
         sys.exit(1)
 
-    # Seed de luchtknoop op de eerste werkelijke meting per kamer (anders buiten).
+    # Seed de luchtknoop op de eerste werkelijke meting per kamer (anders buiten); seed_src
+    # behoudt de AC-kamer-seed ook al is die uit `actual` gefilterd.
     seed = {}
-    for rid, samples in actual.items():
-        seed[rid] = samples[0][1]
+    for rid, t0 in seed_src.items():
+        seed[rid] = t0
     for rid in house.get("rooms", {}):
         seed.setdefault(rid, timeline[0]["T_out"])
 
@@ -2004,7 +2089,8 @@ def main():
     dash = build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                            actual, now, rmse_now, learning_held=learning_held, baseline=baseline,
                            skill=skill, rmse_baseline=rmse_baseline, wx=wx_summary,
-                           checkpoint=ckpt, fell_back=fell_back)
+                           checkpoint=ckpt, fell_back=fell_back,
+                           ac_room=ac_room_now, ac_excluded=ac_excluded)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

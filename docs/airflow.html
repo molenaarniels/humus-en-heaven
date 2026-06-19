@@ -76,7 +76,7 @@
     .seg button:not(:last-child) { border-right: none; }
     .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
     .when-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0 10px; border-bottom: 1px dashed #2a241b22; }
-    .when-row input { font-family: "JetBrains Mono", monospace; font-size: 13px; padding: 8px 10px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; color: var(--ink); }
+    .when-row input, .when-row select { font-family: "JetBrains Mono", monospace; font-size: 13px; padding: 8px 10px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; color: var(--ink); }
     @media (max-width: 680px) {
     header { padding: 24px 16px 12px; }
     .pad, .grid { padding-left: 16px; padding-right: 16px; }
@@ -136,6 +136,14 @@
       <span class="grp-title" style="margin:0;">Tijdstip van wijziging</span>
       <input type="datetime-local" id="report-when">
     </label>
+    <label class="when-row" id="ac-row">
+      <span class="grp-title" style="margin:0;">❄️ Airco staat in</span>
+      <select id="ac-select"></select>
+    </label>
+    <p style="font-style:italic;color:var(--ink-soft);font-size:12px;margin:6px 0 0;">
+      Kies de kamer waar de mobiele airco nu staat (of <em>geen</em>). Het model heeft geen
+      koel-term, dus die kamer wordt zolang nog wél voorspeld maar niet meer gekalibreerd —
+      zo vervuilt de airco-koude de fout en geleerde parameters niet.</p>
     <div id="ctl-list"></div>
     <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end;">
       <button class="btn btn-secondary" id="report-cancel">Annuleer</button>

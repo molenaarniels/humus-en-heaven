@@ -1,6 +1,7 @@
 // ===================== CONFIG =====================
 // (CONFIG + Gist/token-logica komen uit js/shared.js)
 const OPENINGS_FILE = "house_openings.json";
+const AC_STATE_KEY = "ac_room";   // sleutel in de snapshot: kamer met de mobiele airco (of "")
 // COLORS-palet komt uit js/theme.js (geladen vóór dit script).
 const state = { data: null, tempChart: null, rmseChart: null, pending: {} };
 
@@ -115,6 +116,7 @@ function render() {
         tado <span class="num">${fmt(r.actual_temp)}°C</span> ·
         fout <span class="num ${errCls}">${r.error==null?"—":(r.error>0?"+":"")+r.error.toFixed(1)+"°"}</span>
       </div>
+      ${r.ac ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">❄️ airco aan — niet gekalibreerd (model heeft geen koel-term)</div>` : ""}
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
         <span class="ctl-sub">zon in</span><span class="num">${fmt(r.solar_w,0)} W</span>
@@ -829,6 +831,10 @@ async function openReport() {
     catch (e) { console.warn("Live Gist-status ophalen mislukt, val terug op dashboard:", e); }
   }
   const stateOf = (c) => (live && (c.id in live)) ? live[c.id] : c.state;
+  // — Airco-dropdown: kies de kamer met de mobiele unit (of geen). Opties uit de server
+  // (alleen sensorkamers); valt terug op de sensorkamers uit house_meta. Huidige stand uit de
+  // live Gist-log, anders uit het dashboard. Wordt als `ac_room` in de snapshot meebewaard.
+  buildAcDropdown(live);
   const groups = { window:"Ramen", vent:"Roosters", shade:"Zonwering", door:"Deuren" };
   const opts = { window:["dicht","tilt","open"], vent:["dicht","open"], shade:["open","half","dicht"], door:["dicht","open"] };
   let html = live ? "" : `<div class="ctl-sub" style="color:var(--clay);margin-bottom:6px;">⚠ kon de live Gist-status niet lezen — toont de laatst bekende dashboard-stand</div>`;
@@ -852,6 +858,29 @@ async function openReport() {
     e.target.classList.add("active");
     state.pending[id] = e.target.dataset.v;
   }));
+}
+// Vul de airco-dropdown: "geen" + elke sensorkamer. Opties uit d.ac.rooms (server), met
+// terugval op de sensorkamers in house_meta. Huidige keuze uit de live Gist-log (anders het
+// dashboard). De keuze wordt als `ac_room` ("" = geen) in state.pending meegeschreven.
+function buildAcDropdown(live) {
+  const sel = document.getElementById("ac-select");
+  if (!sel) return;
+  const d = state.data || {};
+  let rooms = (d.ac && d.ac.rooms) || [];
+  if (!rooms.length) {
+    const meta = (d.house_meta && d.house_meta.rooms) || {};
+    rooms = Object.entries(meta).filter(([, r]) => r.sensor)
+                  .map(([id, r]) => ({ id, label: r.label || id }));
+  }
+  const liveHas = live && (AC_STATE_KEY in live);
+  let cur = liveHas ? live[AC_STATE_KEY] : ((d.ac && d.ac.room) || "");
+  cur = (cur == null ? "" : ("" + cur).trim().toLowerCase());
+  if (["geen", "none", "off", "uit", "-"].includes(cur)) cur = "";
+  sel.innerHTML = `<option value="">geen</option>` +
+    rooms.map(r => `<option value="${r.id}">${r.label}</option>`).join("");
+  sel.value = cur;
+  state.pending[AC_STATE_KEY] = sel.value;       // "" = geen airco
+  sel.onchange = () => { state.pending[AC_STATE_KEY] = sel.value; };
 }
 function normState(v, kind) {
   const mid = kind==="shade" ? "half" : "tilt";

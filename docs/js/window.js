@@ -351,7 +351,7 @@ function drawChart() {
 // als ruit bij (gemeten RH/temp), zodat je ziet of de ventilatielucht droger/natter is.
 // Assen volgen het iPad-dashboard: vocht horizontaal, temperatuur verticaal.
 function drawScatter() {
-  const d = state.data, P = d.params, PROJ_H = 2;   // uur vooruit voor de richtingvector
+  const d = state.data, P = d.params, PROJ_H = 1.5;   // uur vooruit voor de richtingvector
   const pts = [];
   ROOMS_ORDER(d).forEach((name, ri) => {
     const r = d.rooms[name];

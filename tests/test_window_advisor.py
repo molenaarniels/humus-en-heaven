@@ -153,13 +153,14 @@ def _history(now, values_per_hour):
 
 def test_room_trend_lineaire_helling():
     now = datetime(2026, 6, 10, 12, 0)
-    hist = _history(now, [(2, 20.0), (1, 21.0), (0, 22.0)])
+    # Kwartiercadans (spacing ≤ GAP_BREAK_MIN), +1 °C/uur.
+    hist = _history(now, [(0.5, 20.0), (0.25, 20.25), (0, 20.5)])
     assert room_trend(hist, now) == pytest.approx(1.0)
 
 
 def test_room_trend_clamp_en_te_weinig_data():
     now = datetime(2026, 6, 10, 12, 0)
-    steil = _history(now, [(1, 10.0), (0, 30.0)])  # +20°C/u
+    steil = _history(now, [(0.25, 10.0), (0, 30.0)])  # +80°C/u → geclamped
     assert room_trend(steil, now) == pytest.approx(wa.TREND_MAX_SLOPE)
     assert room_trend(_history(now, [(0, 21.0)]), now) is None
     assert room_trend([], now) is None
@@ -170,6 +171,18 @@ def test_room_trend_negeert_oude_samples():
     # Sample ver buiten TREND_WINDOW_H telt niet mee → te weinig punten → None.
     hist = _history(now, [(wa.TREND_WINDOW_H + 5, 0.0), (0, 21.0)])
     assert room_trend(hist, now) is None
+
+
+def test_room_trend_overslaat_gat():
+    now = datetime(2026, 6, 10, 12, 0)
+    gap_h = wa.GAP_BREAK_MIN / 60.0
+    # Recente aaneengesloten reeks (kwartier) die −1 °C/uur daalt, plus een stale,
+    # veel koudere meting vóór een gat > GAP_BREAK_MIN: de fit moet die negeren.
+    recent = [(0.5, 21.5), (0.25, 21.25), (0, 21.0)]      # −1 °C/uur
+    stale = (0.5 + gap_h + 0.25, 10.0)                    # vóór het gat, nog binnen het venster
+    assert room_trend(_history(now, [stale, *recent]), now) == pytest.approx(-1.0)
+    # Eén enkel sample ná het gat → te weinig aaneengesloten punten → None.
+    assert room_trend(_history(now, [stale, (0, 21.0)]), now) is None
 
 
 # ── next_reopen ────────────────────────────────────────────────────────────────

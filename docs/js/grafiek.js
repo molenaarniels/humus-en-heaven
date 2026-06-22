@@ -5,7 +5,7 @@
 // (window_data.json — per kamer `history` + `outside_history`, kwartiercadans).
 // COLORS-palet komt uit js/theme.js (geladen vóór dit script).
 const ROOM_COLORS = [COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight];
-const PROJ_H = 2;          // uur vooruit voor de richtingvector (zelfde als raam-scatter)
+const PROJ_H = 1.5;        // uur vooruit voor de richtingvector (zelfde als raam-scatter)
 const MIN_ALPHA = 0.08;    // doorzichtigheid van het oudste spoorsegment (vervaagt → 1.0 nu)
 const state = { data: null, chart: null, windowH: 24, hidden: new Set() };  // hidden = uitgevinkte kamers
 

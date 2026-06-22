@@ -417,7 +417,7 @@ function renderRooms(wd) {
   // Dots + vectors. The trend is clamped in DATA units (window.js drawScatter:
   // ±20 %RH, ±3 °C) and projected PROJ_H hours forward through X()/Y(), so the
   // arrow points where the room is heading and reads the same on both dashboards.
-  const PROJ_H = 2;              // hours projected forward
+  const PROJ_H = 1.5;            // hours projected forward
   const placed = dots.map(d => ({ ...d, px: X(d.hum), py: Y(d.temp) }));
 
   const dotsSVG = placed.map((d) => {

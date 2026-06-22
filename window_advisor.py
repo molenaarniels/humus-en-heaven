@@ -113,7 +113,10 @@ def convert_rh(rh_out: float | None, t_out: float | None,
 
 # ── Dashboard-voorspelling (heuristiek, geen thermisch huismodel) ──────────────
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
-TREND_WINDOW_H  = 4.0   # uur — historie-venster voor de binnentemp-trend
+TREND_WINDOW_H  = 2.0   # uur — historie-venster voor de binnentemp-trend (kort → volgt "nu")
+GAP_BREAK_MIN   = 40    # min — een gat groter dan dit breekt het trend-venster: de fit gebruikt
+                        # alleen de meest recente aaneengesloten reeks, zodat een gepauzeerde of
+                        # herstarte loop (stale samples vóór het gat) de helling niet vervuilt/omdraait
 TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
 RH_TREND_MAX    = 15.0  # %RH/uur — clamp op de vochttrend (richtingvector op het scatterplot)
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
@@ -433,6 +436,18 @@ def room_trend(history: list[dict], now: datetime,
         if dt_h < -TREND_WINDOW_H or dt_h > 0.01:
             continue
         pts.append((dt_h, val))
+    # Houd alleen de meest recente aaneengesloten reeks: loop vanaf het nieuwste sample
+    # terug en stop zodra het gat naar het volgende oudere sample > GAP_BREAK_MIN is.
+    # Zo vervuilt een gepauzeerde/herstarte loop (stale samples vóór het gat) de fit niet.
+    if pts:
+        pts.sort(key=lambda p: p[0])  # oplopend dt_h: oudste → nieuwste
+        gap_h = GAP_BREAK_MIN / 60.0
+        contiguous = [pts[-1]]
+        for prev_dt, prev_val in reversed(pts[:-1]):
+            if contiguous[-1][0] - prev_dt > gap_h:
+                break
+            contiguous.append((prev_dt, prev_val))
+        pts = contiguous
     if len(pts) < 2:
         return None
     n = len(pts)

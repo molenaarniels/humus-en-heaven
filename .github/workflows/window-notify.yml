@@ -59,7 +59,6 @@ jobs:
           WU_API_KEY:             ${{ secrets.WU_API_KEY }}
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
           DRY_RUN:                ${{ inputs.dry_run && '1' || '' }}
         run: |
           git config user.name "github-actions[bot]"

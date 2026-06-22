@@ -11,7 +11,7 @@ Bronnen:
   - tado  → binnentemperatuur + luchtvochtigheid per zone (kamer)
   - Weather Underground PWS → echte buitentemperatuur nú
   - Open-Meteo hourly → vooruitblik (koele dag onderdrukken, "open weer rond HH:00")
-  - Telegram (privé-chat voor het raam-advies; operationele alerts → groep) → bezorging
+  - Telegram (privé-chat: raam-advies + operationele alerts) → bezorging
 
 Auth: tado gebruikt sinds maart 2025 de OAuth2 device-code flow. Refresh tokens
 roteren (elke refresh herroept de vorige). De roterende token leeft in een
@@ -200,7 +200,7 @@ def _persist_rotated_token(new_refresh: str) -> None:
         "token-keten mogelijk gebroken. Re-run `tado_auth_bootstrap.py` als de "
         "volgende runs op 401 stuklopen.\n"
         f"Laatste fout: {sanitize_error(last_err)}",
-        chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"), parse_mode="Markdown",
+        parse_mode="Markdown",
     )
 
 
@@ -957,9 +957,9 @@ def main():
     if os.environ.get("DRY_RUN") == "1":
         print("DRY_RUN=1, niet verzonden.")
     else:
-        # Raam-advies gaat naar de privé-chat (TELEGRAM_CHAT_ID, de send_telegram
-        # default) i.p.v. de weerbriefing-groep — alleen de operationele alerts
-        # (token-persist, run_guarded crash) blijven naar de groep gaan.
+        # Alles van dit project gaat naar de privé-chat (TELEGRAM_CHAT_ID, de
+        # send_telegram default): zowel het raam-advies als de operationele
+        # alerts (token-persist, run_guarded crash) — niets naar de groep.
         send_telegram(message, parse_mode="Markdown")
         state["last_notification"] = now.isoformat()
         print("Verzonden naar Telegram.")
@@ -972,5 +972,4 @@ if __name__ == "__main__":
     # fail_threshold=6: kwartierloop — pas alerten bij ~1,5 uur aanhoudende
     # storing. Een gemiste iteratie is onschuldig (de volgende haalt bij);
     # alleen een echte outage is een bericht waard.
-    run_guarded(main, "window-advisor", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
-                fail_threshold=6)
+    run_guarded(main, "window-advisor", fail_threshold=6)

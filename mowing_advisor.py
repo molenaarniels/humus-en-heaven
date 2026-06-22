@@ -54,7 +54,8 @@ HEAT_FLOOR = 0.25    # restgroei-fractie bij/boven HEAT_MAX_C
 GDD_BASE = 6.0       # basistemperatuur voor GDD-fallback (koel-seizoensgras)
 
 # --- Maairijp-drempel ---
-READY_GU = 14.0            # geaccumuleerde groei-eenheden = "tijd om te maaien"
+READY_GU = 11.0            # geaccumuleerde groei-eenheden = "tijd om te maaien"
+LEAD_GU = 2.5              # zoveel GU vóór de drempel al een "bijna maairijp"-seintje
 SELF_CALIBRATE = True      # leer de drempel uit het eigen maairitme
 CALIBRATE_MIN_MOWS = 4     # minstens dit aantal intervallen voor we zelf-kalibreren
 CALIBRATE_CLAMP = (8.0, 24.0)  # geleerde drempel blijft binnen deze band
@@ -78,6 +79,7 @@ DROUGHT_DEPLETION_PCT = 55.0  # lawn_depletion hierboven → hoog maaien (wortel
 COOL_TMAX_C = 22.0          # alle dagen koeler dan dit → kort mag
 TIDY_DEPLETION_PCT = 35.0   # en vochtig genoeg → kort mag
 GROWTH_MONTHS = range(4, 11)  # apr t/m okt: actief groeiseizoen
+BOLT_MONTHS = range(5, 7)   # mei–juni: zaadpluim-seizoen (koel-seizoensgras / straatgras)
 LENGTH_WINDOW_DAYS = 5      # vooruitkijk-venster voor het hoogte-advies
 
 # --- Notificatie-cadans ---
@@ -365,11 +367,23 @@ def predict_ready_date(series: list[dict], today_idx: int, threshold: float) -> 
     return None
 
 
-def recommend_length(days: list[dict], today_idx: int, today: date) -> dict:
-    """Adviseer maaihoogte 30/40/50 mm op basis van het komende weer.
+def recommend_length(days: list[dict], today_idx: int, today: date,
+                     overgrown: bool = False,
+                     last_length_mm: int | None = None) -> dict:
+    """Adviseer maaihoogte 30/40/50 mm via een prioriteit-cascade (top-down).
 
-    Bias naar hoog maaien (sterke wortels) bij hitte/droogte; kort alleen bij koel,
-    vochtig, actief groeiend gras.
+    Prioriteit: (1) diepe wortels, (2) zaadpluimen voorkomen, (3) strak gazon.
+    Een hogere prioriteit wint altijd van een lagere:
+      P1a  hitte/droogte op komst → 50mm (hoge canopy koelt/beschaduwt de bodem,
+           houdt de wortels diep en in leven).
+      P1b  ⅓-regel / anti-scalp: een te lang gewoekerd gazon nooit korter dan de
+           vorige beurt maaien — meer dan ⅓ van de spriet eraf remt de wortelgroei
+           dagen-tot-weken (de grootste wortelkiller in huistuinen).
+      P2   zaadpluim-seizoen (mei–juni) → 40mm: regelmatige gematigde beurten maaien
+           de bloeistengels weg; te hoog laten staan laat ze de maaier ontsnappen.
+      P3   strak gazon → 30mm, maar alléén als het koel, vochtig en groeizaam is en
+           het de wortels niets kost (niet in zaadpluim-seizoen, niet overgroeid).
+      default → 40mm (veilige, wortelvriendelijke middenstand).
     """
     window = days[today_idx:today_idx + LENGTH_WINDOW_DAYS]
     tmaxes = [d["Tmax"] for d in window if d.get("Tmax") is not None]
@@ -377,18 +391,32 @@ def recommend_length(days: list[dict], today_idx: int, today: date) -> dict:
     hot_days = sum(1 for t in tmaxes if t >= HOT_TMAX_C)
     max_depl = max(depls) if depls else None
 
+    # P1a — wortelbescherming onder hitte/droogte.
     if hot_days >= HOT_DAYS_NEEDED or (max_depl is not None and max_depl >= DROUGHT_DEPLETION_PCT):
-        reason = "warmte/droogte op komst, hoog maaien beschermt de wortels en de bodem"
-        return {"length_mm": LEN_TALL, "reason": reason}
+        return {"length_mm": LEN_TALL,
+                "reason": "warmte/droogte op komst, hoog maaien beschermt de wortels en de bodem"}
 
+    # P1b — ⅓-regel: te lang gras niet scalperen.
+    if overgrown and last_length_mm is not None:
+        floor = max(LEN_MID, last_length_mm)
+        return {"length_mm": floor,
+                "reason": "gras staat lang — hou je aan de ⅓-regel (niet korter dan de vorige beurt) "
+                          "zodat de wortels niet schrikken; maai desnoods in twee rondes"}
+
+    # P2 — zaadpluim-seizoen: gematigd kort houden.
+    if today.month in BOLT_MONTHS:
+        return {"length_mm": LEN_MID,
+                "reason": "zaadpluim-seizoen — een gematigde hoogte maait de bloeistengels weg vóór ze rijpen"}
+
+    # P3 — strak gazon, alleen als het de wortels niets kost.
     if (tmaxes and all(t < COOL_TMAX_C for t in tmaxes)
             and (max_depl is None or max_depl < TIDY_DEPLETION_PCT)
             and today.month in GROWTH_MONTHS):
-        reason = "koel en vochtig, het gras groeit rustig — kort mag voor een strak gazon"
-        return {"length_mm": LEN_SHORT, "reason": reason}
+        return {"length_mm": LEN_SHORT,
+                "reason": "koel en vochtig, het gras groeit rustig — kort mag voor een strak gazon"}
 
-    reason = "gemengd weer — veilige middenstand voor gazon én wortels"
-    return {"length_mm": LEN_MID, "reason": reason}
+    return {"length_mm": LEN_MID,
+            "reason": "gemengd weer — veilige middenstand voor gazon én wortels"}
 
 
 # =============================================================================
@@ -436,7 +464,8 @@ def _dashboard_link() -> str:
 
 
 def build_message(kind: str, last_mow: date, today: date, today_day: dict,
-                  optimal: dict | None, length: dict, source: str) -> str:
+                  optimal: dict | None, length: dict, source: str,
+                  predicted: str | None = None) -> str:
     banner = ""
     if source == "gdd_fallback":
         banner = "⚠️ <i>Vereenvoudigd groeimodel — bodemdata tijdelijk niet beschikbaar.</i>\n\n"
@@ -459,6 +488,22 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
             f"({describe_day(today_day)}).\n"
             f"🌤️ Beste dag: <b>{_format_date_nl(parse_date(opt['date']))}</b> "
             f"({opt['reason']}).\n"
+            f"{len_line}"
+        )
+    elif kind == "soon":
+        when = ""
+        if optimal:
+            when = (f"\n🌤️ Eerstvolgende goede maaidag: "
+                    f"<b>{_format_date_nl(parse_date(optimal['date']))}</b> "
+                    f"({optimal['reason']}).")
+        around = ""
+        if predicted:
+            around = f" (rond {_format_date_nl(parse_date(predicted))})"
+        body = (
+            "🌱 <b>Het gras is bijna maairijp.</b>\n"
+            f"Nog een paar groeidagen te gaan{around}. Plan alvast een droge "
+            "maaidag, dan sta je niet ineens voor zaadpluimen."
+            f"{when}\n"
             f"{len_line}"
         )
     elif kind == "overgrown":
@@ -521,12 +566,17 @@ def run() -> dict:
     accum_today = series[today_idx]["accum"]
     dormant = is_dormant(series, today_idx)
     ready = accum_today >= threshold and not dormant
+    # "Bijna maairijp": binnen LEAD_GU van de drempel, maar nog net niet rijp.
+    # Geeft een dag of twee voorsprong om een droge maaidag te kiezen vóór er
+    # zaadpluimen komen.
+    almost = (not ready) and (not dormant) and accum_today >= threshold - LEAD_GU
     optimal = pick_optimal_day(days, series, today_idx, threshold)
     predicted = predict_ready_date(series, today_idx, threshold)
-    length = recommend_length(days, today_idx, today)
+    overgrown = accum_today >= threshold * OVERGROWTH_FACTOR
+    last_length_mm = mowings[max(mowings)]["length_mm"] if mowings else None
+    length = recommend_length(days, today_idx, today, overgrown, last_length_mm)
 
     # --- Bepaal het soort bericht ---
-    overgrown = accum_today >= threshold * OVERGROWTH_FACTOR
     if dormant or assumed:
         # Winterrust of koude start (nog geen echte maaibeurt): geen Telegram.
         kind = "none"
@@ -536,6 +586,8 @@ def run() -> dict:
         kind = "ready_today"
     elif ready and optimal:
         kind = "ready_wet"
+    elif almost and optimal:
+        kind = "soon"
     else:
         kind = "none"
 
@@ -544,7 +596,7 @@ def run() -> dict:
         "source": source, "generated_at": generated_at, "mowings": mowings,
         "last_mow": last_mow, "assumed": assumed, "threshold": threshold,
         "calibrated": calibrated, "accum_today": accum_today, "dormant": dormant,
-        "ready": ready, "optimal": optimal, "predicted": predicted,
+        "ready": ready, "almost": almost, "optimal": optimal, "predicted": predicted,
         "length": length, "kind": kind,
     }
 
@@ -563,6 +615,7 @@ def write_mowing_data_json(res: dict) -> None:
         "params": {
             "READY_GU": READY_GU,
             "READY_GU_effective": res["threshold"],
+            "LEAD_GU": LEAD_GU,
             "self_calibrated": res["calibrated"],
             "HEAT_OPT_C": HEAT_OPT_C,
             "HEAT_MAX_C": HEAT_MAX_C,
@@ -576,6 +629,7 @@ def write_mowing_data_json(res: dict) -> None:
         "accum_today": round(res["accum_today"], 2),
         "series": res["series"],
         "ready": res["ready"],
+        "almost": res["almost"],
         "dormant": res["dormant"],
         "predicted_next_mow": res["predicted"],
         "optimal_day": res["optimal"],
@@ -605,7 +659,7 @@ def main():
     if res["kind"] != "none":
         msg = build_message(res["kind"], res["last_mow"], today,
                             res["days"][res["today_idx"]], res["optimal"],
-                            res["length"], res["source"])
+                            res["length"], res["source"], res["predicted"])
 
     # Dashboard-data altijd wegschrijven
     write_mowing_data_json(res)

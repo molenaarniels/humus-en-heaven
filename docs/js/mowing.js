@@ -75,6 +75,12 @@ function render() {
     if (optimal && optimal.is_today) sub = `Vandaag is een goede maaidag (${optimal.reason}).`;
     else if (optimal) sub = `Beste maaidag: <b>${fmtDate(optimal.date)}</b> (${optimal.reason}).`;
     else sub = "Geen goede maaidag in de voorspelling — even afwachten.";
+  } else if (d.almost) {
+    badge = `<span class="badge badge-wait">Bijna</span>`;
+    headline = (n != null && n >= 0) ? `Bijna maairijp — nog ~${n} ${n === 1 ? "dag" : "dagen"}.` : "Bijna maairijp.";
+    sub = optimal
+      ? `Plan alvast een droge maaidag: <b>${fmtDate(optimal.date)}</b> (${optimal.reason}).`
+      : (d.predicted_next_mow ? `Verwachte maairijpheid rond <b>${fmtDate(d.predicted_next_mow)}</b>.` : "Verwachte datum nog onbekend.");
   } else {
     badge = `<span class="badge badge-wait">Nog niet</span>`;
     headline = (n != null && n >= 0) ? `Nog ~${n} ${n === 1 ? "dag" : "dagen"}.` : "Nog even groeien.";

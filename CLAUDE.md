@@ -205,9 +205,14 @@ Fully independent — no weather data, no state file. Shares `TELEGRAM_BOT_TOKEN
 ### Growth model (the brain)
 - Daily growth unit `GU = lawn_T × heat_derate(Tmax)`, where `lawn_T` (actual transpiration from `data.json`) already encodes season, cold, drought and demand via FAO-56. The heat derate (1.0 ≤24°C → `HEAT_FLOOR` 0.25 ≥35°C) reflects that cool-season turf keeps transpiring in heat but stops elongating. Cold/water stress are **not** re-applied (already inside `lawn_T`).
 - Accumulate GU since the last mow (mow day resets the accumulator). **Ready** when `accum ≥ READY_GU_effective` and not dormant.
-- `READY_GU` default 14.0; **self-calibrates** to the median accumulated-growth-between-logged-mows once ≥4 intervals exist (clamped 8–24).
+- `READY_GU` default 11.0; **self-calibrates** to the median accumulated-growth-between-logged-mows once ≥4 intervals exist (clamped 8–24). A `LEAD_GU` (2.5) **"bijna maairijp"** heads-up (`soon` kind) fires a day or two before the threshold is crossed — names the next dry maaidag so you can plan a cut before seed heads form.
 - **Dormancy guard:** 7-day mean GU < 0.4 → winter, suppress all nudges.
-- **Cutting height:** 50mm when heat/drought is coming (≥2 days ≥27°C in next 5, or `lawn_depletion ≥ 55%`) to protect roots; 30mm only when cool (<22°C), moist (<35% depletion), and in growth months (Apr–Oct); 40mm otherwise (default).
+- **Cutting height — priority cascade (1: diepe wortels, 2: zaadpluimen voorkomen, 3: strak gazon), evaluated top-down so a higher priority always wins:**
+  - *P1a* — 50mm when heat/drought is coming (≥2 days ≥27°C in next 5, or `lawn_depletion ≥ 55%`): a tall canopy shades/cools the soil and keeps roots deep.
+  - *P1b* — **⅓-regel / anti-scalp:** an overgrown lawn (`accum ≥ READY_GU × OVERGROWTH_FACTOR`) is never cut shorter than the previous mow (floor `max(40, last_length_mm)`) — removing >⅓ of the blade stalls root growth.
+  - *P2* — 40mm in the **seed-head/bolting season (May–June)**: regular moderate cuts behead the stalks before they ripen.
+  - *P3* — 30mm only when cool (<22°C), moist (<35% depletion), in a growth month (Apr–Oct), **and** not bolting/overgrown — beauty only when it costs the roots nothing.
+  - default → 40mm (root-friendly middenstand).
 - **Fallback:** if `data.json` is missing/stale (>36h), switch to GDD-only mode (own Open-Meteo Tmean fetch, base 6°C) and flag it in the message/dashboard.
 
 ### Notification cadence

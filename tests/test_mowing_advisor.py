@@ -10,9 +10,9 @@ from datetime import date, timedelta
 import pytest
 
 import mowing_advisor as ma
-from mowing_advisor import (build_growth_series, daily_growth_unit,
-                            effective_threshold, heat_derate, is_dormant,
-                            predict_ready_date, recommend_length)
+from mowing_advisor import (build_growth_series, build_message,
+                            daily_growth_unit, effective_threshold, heat_derate,
+                            is_dormant, predict_ready_date, recommend_length)
 
 
 # ── heat_derate ────────────────────────────────────────────────────────────────
@@ -128,16 +128,44 @@ def test_hoogte_droogte_op_komst():
     assert advies["length_mm"] == ma.LEN_TALL
 
 
-def test_hoogte_koel_vochtig_groeiseizoen_mag_kort():
+def test_hoogte_koel_vochtig_buiten_bolt_mag_kort():
     days = _weerdagen(ma.COOL_TMAX_C - 1, ma.TIDY_DEPLETION_PCT - 10)
-    assert recommend_length(days, 0, date(2026, 6, 15))["length_mm"] == ma.LEN_SHORT
+    # September: groeiseizoen, maar geen zaadpluim-seizoen → kort mag.
+    assert recommend_length(days, 0, date(2026, 9, 15))["length_mm"] == ma.LEN_SHORT
     # Zelfde weer buiten het groeiseizoen → niet kort.
     assert recommend_length(days, 0, date(2026, 1, 15))["length_mm"] == ma.LEN_MID
 
 
 def test_hoogte_default_midden():
     days = _weerdagen((ma.COOL_TMAX_C + ma.HOT_TMAX_C) / 2, ma.TIDY_DEPLETION_PCT + 5)
+    # Buiten zaadpluim-seizoen om de default (niet de P2-tier) te raken.
+    assert recommend_length(days, 0, date(2026, 9, 15))["length_mm"] == ma.LEN_MID
+
+
+def test_hoogte_zaadpluim_seizoen_blokkeert_kort():
+    # Koel/vochtig in mei–juni: zaadpluim-preventie (P2) wint van strak gazon (P3).
+    days = _weerdagen(ma.COOL_TMAX_C - 1, ma.TIDY_DEPLETION_PCT - 10)
     assert recommend_length(days, 0, date(2026, 6, 15))["length_mm"] == ma.LEN_MID
+
+
+def test_hoogte_overgroei_nooit_korter_dan_vorige():
+    # Lang gras, koel/vochtig (P3-weer) buiten bolt-seizoen: ⅓-regel (P1b) verbiedt
+    # scalperen → minstens de vorige hoogte, en nooit onder de middenstand.
+    days = _weerdagen(ma.COOL_TMAX_C - 1, ma.TIDY_DEPLETION_PCT - 10)
+    hoog = recommend_length(days, 0, date(2026, 9, 15),
+                            overgrown=True, last_length_mm=ma.LEN_TALL)
+    assert hoog["length_mm"] == ma.LEN_TALL
+    laag_vorige = recommend_length(days, 0, date(2026, 9, 15),
+                                   overgrown=True, last_length_mm=ma.LEN_SHORT)
+    assert laag_vorige["length_mm"] == ma.LEN_MID
+
+
+def test_hoogte_hitte_wint_van_overgroei():
+    # Stress-hoog (P1a) gaat vóór de anti-scalp-vloer (P1b).
+    days = _weerdagen(ma.HOT_TMAX_C + 1, 20.0)
+    advies = recommend_length(days, 0, date(2026, 6, 15),
+                              overgrown=True, last_length_mm=ma.LEN_SHORT)
+    assert advies["length_mm"] == ma.LEN_TALL
 
 
 # ── predict_ready_date ─────────────────────────────────────────────────────────
@@ -146,3 +174,23 @@ def test_predict_ready_date():
     serie = [{"date": f"2026-06-{10 + i:02d}", "accum": float(i)} for i in range(6)]
     assert predict_ready_date(serie, 0, threshold=3.0) == "2026-06-13"
     assert predict_ready_date(serie, 0, threshold=99.0) is None
+
+
+# ── "bijna maairijp" voorsprong (LEAD_GU) ───────────────────────────────────────
+
+def test_lead_gu_is_zinvolle_voorsprong():
+    # Een positieve voorsprong, kleiner dan de drempel zelf, anders heeft het
+    # "bijna"-seintje geen betekenis.
+    assert 0 < ma.LEAD_GU < ma.READY_GU
+
+
+def test_soon_bericht_noemt_beste_dag_en_hoogte():
+    optimal = {"date": "2026-06-22", "reason": "droog, 21°C",
+               "overgrown": False, "is_today": False}
+    length = {"length_mm": ma.LEN_MID, "reason": "veilige middenstand"}
+    msg = build_message("soon", date(2026, 6, 14), date(2026, 6, 20),
+                        {"precip": 0.0, "Tmax": 21.0}, optimal, length, "soil",
+                        predicted="2026-06-23")
+    assert "bijna maairijp" in msg.lower()
+    assert "22 jun" in msg                    # eerstvolgende goede maaidag
+    assert f"{ma.LEN_MID}mm" in msg           # hoogte-advies blijft meegestuurd

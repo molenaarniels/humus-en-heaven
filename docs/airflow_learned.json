@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-22T13:30:00.305406+02:00",
+  "updated_at": "2026-06-22T13:45:00.658643+02:00",
   "model_version": "eb7391b",
   "params": {
     "cp_shelter": 0.10217599986115145,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 1.304,
+  "rmse": 1.281,
   "railed": [
     "global.cp_shelter@floor",
     "living.solar_gain@floor",
@@ -74,22 +74,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-19T14:45:00.254353+02:00",
-      "rmse": 3.166,
-      "held": false,
-      "version": "65364b0",
-      "skill": -40.45,
-      "rmse_naive": 0.076,
-      "wx": {
-        "tmax": 33.3,
-        "solar_peak": 860,
-        "solar_mean": 280
-      },
-      "fell_back": true,
-      "rmse_logged": 1.171,
-      "recomputed": true
-    },
     {
       "t": "2026-06-19T15:00:00.366826+02:00",
       "rmse": 3.284,
@@ -2511,11 +2495,11 @@
     },
     {
       "t": "2026-06-21T10:30:00.518565+02:00",
-      "rmse": 1.464,
+      "rmse": 1.213,
       "held": false,
       "version": "f44330c",
-      "skill": -0.967,
-      "rmse_naive": 0.744,
+      "skill": -0.561,
+      "rmse_naive": 0.777,
       "wx": {
         "tmax": 35.2,
         "solar_peak": 854,
@@ -3617,6 +3601,19 @@
         "solar_peak": 854,
         "solar_mean": 285
       }
+    },
+    {
+      "t": "2026-06-22T13:45:00.658643+02:00",
+      "rmse": 1.281,
+      "held": false,
+      "version": "eb7391b",
+      "skill": 0.138,
+      "rmse_naive": 1.485,
+      "wx": {
+        "tmax": 29.9,
+        "solar_peak": 854,
+        "solar_mean": 285
+      }
     }
   ],
   "checkpoint": {
@@ -3684,7 +3681,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 5,
+    "degraded_runs": 6,
     "last_fallback": "2026-06-22T08:45:00.317861+02:00"
   }
 }

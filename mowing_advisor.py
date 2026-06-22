@@ -79,6 +79,7 @@ DROUGHT_DEPLETION_PCT = 55.0  # lawn_depletion hierboven → hoog maaien (wortel
 COOL_TMAX_C = 22.0          # alle dagen koeler dan dit → kort mag
 TIDY_DEPLETION_PCT = 35.0   # en vochtig genoeg → kort mag
 GROWTH_MONTHS = range(4, 11)  # apr t/m okt: actief groeiseizoen
+BOLT_MONTHS = range(5, 7)   # mei–juni: zaadpluim-seizoen (koel-seizoensgras / straatgras)
 LENGTH_WINDOW_DAYS = 5      # vooruitkijk-venster voor het hoogte-advies
 
 # --- Notificatie-cadans ---
@@ -366,11 +367,23 @@ def predict_ready_date(series: list[dict], today_idx: int, threshold: float) -> 
     return None
 
 
-def recommend_length(days: list[dict], today_idx: int, today: date) -> dict:
-    """Adviseer maaihoogte 30/40/50 mm op basis van het komende weer.
+def recommend_length(days: list[dict], today_idx: int, today: date,
+                     overgrown: bool = False,
+                     last_length_mm: int | None = None) -> dict:
+    """Adviseer maaihoogte 30/40/50 mm via een prioriteit-cascade (top-down).
 
-    Bias naar hoog maaien (sterke wortels) bij hitte/droogte; kort alleen bij koel,
-    vochtig, actief groeiend gras.
+    Prioriteit: (1) diepe wortels, (2) zaadpluimen voorkomen, (3) strak gazon.
+    Een hogere prioriteit wint altijd van een lagere:
+      P1a  hitte/droogte op komst → 50mm (hoge canopy koelt/beschaduwt de bodem,
+           houdt de wortels diep en in leven).
+      P1b  ⅓-regel / anti-scalp: een te lang gewoekerd gazon nooit korter dan de
+           vorige beurt maaien — meer dan ⅓ van de spriet eraf remt de wortelgroei
+           dagen-tot-weken (de grootste wortelkiller in huistuinen).
+      P2   zaadpluim-seizoen (mei–juni) → 40mm: regelmatige gematigde beurten maaien
+           de bloeistengels weg; te hoog laten staan laat ze de maaier ontsnappen.
+      P3   strak gazon → 30mm, maar alléén als het koel, vochtig en groeizaam is en
+           het de wortels niets kost (niet in zaadpluim-seizoen, niet overgroeid).
+      default → 40mm (veilige, wortelvriendelijke middenstand).
     """
     window = days[today_idx:today_idx + LENGTH_WINDOW_DAYS]
     tmaxes = [d["Tmax"] for d in window if d.get("Tmax") is not None]
@@ -378,18 +391,32 @@ def recommend_length(days: list[dict], today_idx: int, today: date) -> dict:
     hot_days = sum(1 for t in tmaxes if t >= HOT_TMAX_C)
     max_depl = max(depls) if depls else None
 
+    # P1a — wortelbescherming onder hitte/droogte.
     if hot_days >= HOT_DAYS_NEEDED or (max_depl is not None and max_depl >= DROUGHT_DEPLETION_PCT):
-        reason = "warmte/droogte op komst, hoog maaien beschermt de wortels en de bodem"
-        return {"length_mm": LEN_TALL, "reason": reason}
+        return {"length_mm": LEN_TALL,
+                "reason": "warmte/droogte op komst, hoog maaien beschermt de wortels en de bodem"}
 
+    # P1b — ⅓-regel: te lang gras niet scalperen.
+    if overgrown and last_length_mm is not None:
+        floor = max(LEN_MID, last_length_mm)
+        return {"length_mm": floor,
+                "reason": "gras staat lang — hou je aan de ⅓-regel (niet korter dan de vorige beurt) "
+                          "zodat de wortels niet schrikken; maai desnoods in twee rondes"}
+
+    # P2 — zaadpluim-seizoen: gematigd kort houden.
+    if today.month in BOLT_MONTHS:
+        return {"length_mm": LEN_MID,
+                "reason": "zaadpluim-seizoen — een gematigde hoogte maait de bloeistengels weg vóór ze rijpen"}
+
+    # P3 — strak gazon, alleen als het de wortels niets kost.
     if (tmaxes and all(t < COOL_TMAX_C for t in tmaxes)
             and (max_depl is None or max_depl < TIDY_DEPLETION_PCT)
             and today.month in GROWTH_MONTHS):
-        reason = "koel en vochtig, het gras groeit rustig — kort mag voor een strak gazon"
-        return {"length_mm": LEN_SHORT, "reason": reason}
+        return {"length_mm": LEN_SHORT,
+                "reason": "koel en vochtig, het gras groeit rustig — kort mag voor een strak gazon"}
 
-    reason = "gemengd weer — veilige middenstand voor gazon én wortels"
-    return {"length_mm": LEN_MID, "reason": reason}
+    return {"length_mm": LEN_MID,
+            "reason": "gemengd weer — veilige middenstand voor gazon én wortels"}
 
 
 # =============================================================================
@@ -545,10 +572,11 @@ def run() -> dict:
     almost = (not ready) and (not dormant) and accum_today >= threshold - LEAD_GU
     optimal = pick_optimal_day(days, series, today_idx, threshold)
     predicted = predict_ready_date(series, today_idx, threshold)
-    length = recommend_length(days, today_idx, today)
+    overgrown = accum_today >= threshold * OVERGROWTH_FACTOR
+    last_length_mm = mowings[max(mowings)]["length_mm"] if mowings else None
+    length = recommend_length(days, today_idx, today, overgrown, last_length_mm)
 
     # --- Bepaal het soort bericht ---
-    overgrown = accum_today >= threshold * OVERGROWTH_FACTOR
     if dormant or assumed:
         # Winterrust of koude start (nog geen echte maaibeurt): geen Telegram.
         kind = "none"

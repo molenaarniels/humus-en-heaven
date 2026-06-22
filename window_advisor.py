@@ -11,7 +11,7 @@ Bronnen:
   - tado  → binnentemperatuur + luchtvochtigheid per zone (kamer)
   - Weather Underground PWS → echte buitentemperatuur nú
   - Open-Meteo hourly → vooruitblik (koele dag onderdrukken, "open weer rond HH:00")
-  - Telegram (weerbriefing-groep) → bezorging
+  - Telegram (privé-chat voor het raam-advies; operationele alerts → groep) → bezorging
 
 Auth: tado gebruikt sinds maart 2025 de OAuth2 device-code flow. Refresh tokens
 roteren (elke refresh herroept de vorige). De roterende token leeft in een
@@ -957,8 +957,10 @@ def main():
     if os.environ.get("DRY_RUN") == "1":
         print("DRY_RUN=1, niet verzonden.")
     else:
-        send_telegram(message, chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
-                      parse_mode="Markdown")
+        # Raam-advies gaat naar de privé-chat (TELEGRAM_CHAT_ID, de send_telegram
+        # default) i.p.v. de weerbriefing-groep — alleen de operationele alerts
+        # (token-persist, run_guarded crash) blijven naar de groep gaan.
+        send_telegram(message, parse_mode="Markdown")
         state["last_notification"] = now.isoformat()
         print("Verzonden naar Telegram.")
 

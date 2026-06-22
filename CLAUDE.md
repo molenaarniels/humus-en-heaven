@@ -243,7 +243,7 @@ tado zone names, matched case-insensitively: **Living room, Ted, hotties, office
 3. Outside temp **now** from WU PWS current obs (`metric.temp`), fallback Open-Meteo current hour. On a WU reading the **stralingsbiascorrectie** (`wu_bias.py`) is applied first — driver = WU `solarRadiation` now, Open-Meteo `shortwave_radiation` as fallback — so `outside_now` (and therefore the microklimaat-bias-blend, `decide()`, and `outside_history.temp`) reflect the corrected temperature. The Open-Meteo fallback path is left uncorrected (already a model value).
 4. Open-Meteo hourly forecast (2 days) → day-max gate + "open again ~HH:00" lookahead. Forecast timestamps are made timezone-aware (Open-Meteo returns naïve local times) so they compare safely with `datetime.now(TZ)`.
 5. Per-room decision with hysteresis, update per-room state in the Gist (`window_state.json`).
-6. Telegram only the rooms whose advice **flipped** this run → weerbriefing-groep.
+6. Telegram only the rooms whose advice **flipped** this run → privé-chat (`TELEGRAM_CHAT_ID`, the `send_telegram` default). Only the operational alerts (token-persist failure, `run_guarded` crash) still go to the weerbriefing-groep (`TELEGRAM_CHAT_GROUP_ID`).
 7. **Always** write `docs/window_data.json` (even on suppressed/cool days) and commit it — this is the dashboard artefact. Telegram cadence is unchanged.
 
 ### Dashboard prediction (`docs/window_data.json` → `docs/window.html`)
@@ -305,7 +305,7 @@ Since March 2025 tado uses the OAuth2 **device-code flow** (no username/password
 Per-room state machine like the sandbox project. One check per 15 minutes, message only on a change. `DRY_RUN=1` prints instead of sending (token + state are still persisted — rotation must not be skipped). `fetch_open_meteo` retried via `http_util.get_json` (geen retry → ~17% iteratieverlies bij incidentele 5xx-hiccups gemeten).
 
 ### Relation to other projects
-Independent. **Commits `docs/window_data.json` each run** (workflow is now `contents: write`) so the dashboard has fresh data — this replaces the earlier "no commit-back" design. The tado **refresh token and per-room advice state still live only in the secret Gist** (`tado_token.json`, `window_state.json`) and are **never committed**; only the non-secret dashboard JSON is published. Reuses Telegram (group), `GIST_TOKEN`, and the WU secrets.
+Independent. **Commits `docs/window_data.json` each run** (workflow is now `contents: write`) so the dashboard has fresh data — this replaces the earlier "no commit-back" design. The tado **refresh token and per-room advice state still live only in the secret Gist** (`tado_token.json`, `window_state.json`) and are **never committed**; only the non-secret dashboard JSON is published. Reuses Telegram (the raam-advies goes to the privé-chat `TELEGRAM_CHAT_ID`; operational alerts to the group `TELEGRAM_CHAT_GROUP_ID`), `GIST_TOKEN`, and the WU secrets.
 
 ---
 
@@ -416,8 +416,8 @@ Five small cross-project Python modules (everything else is self-contained):
 
 ## Shared secrets (GitHub Actions)
 - `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project + window advisor)
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — soil, sandbox, heating, mowing
-- `TELEGRAM_CHAT_GROUP_ID` — weather briefing + window advisor (group chat)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — soil, sandbox, heating, mowing + window advisor raam-advies (privé-chat)
+- `TELEGRAM_CHAT_GROUP_ID` — weather briefing + window advisor operational alerts (group chat)
 - `GIST_ID`, `GIST_TOKEN` — soil project (irrigation log) + mowing advisor (mow log, same Gist) + airflow twin (opening log `house_openings.json`, same Gist, read-only from Python); `GIST_TOKEN` also used by the window advisor
 - `TADO_GIST_ID` — **separate secret Gist** for the window advisor: rotating tado refresh token (`tado_token.json`) + per-room advice state (`window_state.json`)
 - `GITHUB_TOKEN` — automatic, sandbox project

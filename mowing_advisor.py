@@ -54,7 +54,8 @@ HEAT_FLOOR = 0.25    # restgroei-fractie bij/boven HEAT_MAX_C
 GDD_BASE = 6.0       # basistemperatuur voor GDD-fallback (koel-seizoensgras)
 
 # --- Maairijp-drempel ---
-READY_GU = 14.0            # geaccumuleerde groei-eenheden = "tijd om te maaien"
+READY_GU = 11.0            # geaccumuleerde groei-eenheden = "tijd om te maaien"
+LEAD_GU = 2.5              # zoveel GU vóór de drempel al een "bijna maairijp"-seintje
 SELF_CALIBRATE = True      # leer de drempel uit het eigen maairitme
 CALIBRATE_MIN_MOWS = 4     # minstens dit aantal intervallen voor we zelf-kalibreren
 CALIBRATE_CLAMP = (8.0, 24.0)  # geleerde drempel blijft binnen deze band
@@ -436,7 +437,8 @@ def _dashboard_link() -> str:
 
 
 def build_message(kind: str, last_mow: date, today: date, today_day: dict,
-                  optimal: dict | None, length: dict, source: str) -> str:
+                  optimal: dict | None, length: dict, source: str,
+                  predicted: str | None = None) -> str:
     banner = ""
     if source == "gdd_fallback":
         banner = "⚠️ <i>Vereenvoudigd groeimodel — bodemdata tijdelijk niet beschikbaar.</i>\n\n"
@@ -459,6 +461,22 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
             f"({describe_day(today_day)}).\n"
             f"🌤️ Beste dag: <b>{_format_date_nl(parse_date(opt['date']))}</b> "
             f"({opt['reason']}).\n"
+            f"{len_line}"
+        )
+    elif kind == "soon":
+        when = ""
+        if optimal:
+            when = (f"\n🌤️ Eerstvolgende goede maaidag: "
+                    f"<b>{_format_date_nl(parse_date(optimal['date']))}</b> "
+                    f"({optimal['reason']}).")
+        around = ""
+        if predicted:
+            around = f" (rond {_format_date_nl(parse_date(predicted))})"
+        body = (
+            "🌱 <b>Het gras is bijna maairijp.</b>\n"
+            f"Nog een paar groeidagen te gaan{around}. Plan alvast een droge "
+            "maaidag, dan sta je niet ineens voor zaadpluimen."
+            f"{when}\n"
             f"{len_line}"
         )
     elif kind == "overgrown":
@@ -521,6 +539,10 @@ def run() -> dict:
     accum_today = series[today_idx]["accum"]
     dormant = is_dormant(series, today_idx)
     ready = accum_today >= threshold and not dormant
+    # "Bijna maairijp": binnen LEAD_GU van de drempel, maar nog net niet rijp.
+    # Geeft een dag of twee voorsprong om een droge maaidag te kiezen vóór er
+    # zaadpluimen komen.
+    almost = (not ready) and (not dormant) and accum_today >= threshold - LEAD_GU
     optimal = pick_optimal_day(days, series, today_idx, threshold)
     predicted = predict_ready_date(series, today_idx, threshold)
     length = recommend_length(days, today_idx, today)
@@ -536,6 +558,8 @@ def run() -> dict:
         kind = "ready_today"
     elif ready and optimal:
         kind = "ready_wet"
+    elif almost and optimal:
+        kind = "soon"
     else:
         kind = "none"
 
@@ -544,7 +568,7 @@ def run() -> dict:
         "source": source, "generated_at": generated_at, "mowings": mowings,
         "last_mow": last_mow, "assumed": assumed, "threshold": threshold,
         "calibrated": calibrated, "accum_today": accum_today, "dormant": dormant,
-        "ready": ready, "optimal": optimal, "predicted": predicted,
+        "ready": ready, "almost": almost, "optimal": optimal, "predicted": predicted,
         "length": length, "kind": kind,
     }
 
@@ -563,6 +587,7 @@ def write_mowing_data_json(res: dict) -> None:
         "params": {
             "READY_GU": READY_GU,
             "READY_GU_effective": res["threshold"],
+            "LEAD_GU": LEAD_GU,
             "self_calibrated": res["calibrated"],
             "HEAT_OPT_C": HEAT_OPT_C,
             "HEAT_MAX_C": HEAT_MAX_C,
@@ -576,6 +601,7 @@ def write_mowing_data_json(res: dict) -> None:
         "accum_today": round(res["accum_today"], 2),
         "series": res["series"],
         "ready": res["ready"],
+        "almost": res["almost"],
         "dormant": res["dormant"],
         "predicted_next_mow": res["predicted"],
         "optimal_day": res["optimal"],
@@ -605,7 +631,7 @@ def main():
     if res["kind"] != "none":
         msg = build_message(res["kind"], res["last_mow"], today,
                             res["days"][res["today_idx"]], res["optimal"],
-                            res["length"], res["source"])
+                            res["length"], res["source"], res["predicted"])
 
     # Dashboard-data altijd wegschrijven
     write_mowing_data_json(res)

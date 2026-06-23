@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-23T14:30:01.062494+02:00",
+  "updated_at": "2026-06-23T14:45:00.690060+02:00",
   "model_version": "63bbe3b",
   "params": {
     "cp_shelter": 0.15820546392685986,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 0.921,
+  "rmse": 0.909,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -72,22 +72,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-20T07:00:00.299549+02:00",
-      "rmse": 1.538,
-      "held": false,
-      "version": "08d5935",
-      "skill": -4.003,
-      "rmse_naive": 0.307,
-      "wx": {
-        "tmax": 35.2,
-        "solar_peak": 860,
-        "solar_mean": 308
-      },
-      "fell_back": true,
-      "rmse_logged": 1.881,
-      "recomputed": true
-    },
     {
       "t": "2026-06-20T07:15:00.996419+02:00",
       "rmse": 1.521,
@@ -3507,17 +3491,19 @@
     },
     {
       "t": "2026-06-23T13:15:00.159410+02:00",
-      "rmse": 1.162,
+      "rmse": 0.909,
       "held": false,
       "version": "63bbe3b",
-      "skill": 0.385,
-      "rmse_naive": 1.89,
+      "skill": 0.574,
+      "rmse_naive": 2.133,
       "wx": {
         "tmax": 29.2,
         "solar_peak": 843,
         "solar_mean": 288
       },
-      "fell_back": true
+      "fell_back": true,
+      "rmse_logged": 1.162,
+      "recomputed": true
     },
     {
       "t": "2026-06-23T13:30:00.174899+02:00",
@@ -3582,6 +3568,19 @@
         "tmax": 29.2,
         "solar_peak": 843,
         "solar_mean": 288
+      }
+    },
+    {
+      "t": "2026-06-23T14:45:00.690060+02:00",
+      "rmse": 0.909,
+      "held": false,
+      "version": "63bbe3b",
+      "skill": 0.573,
+      "rmse_naive": 2.13,
+      "wx": {
+        "tmax": 29.2,
+        "solar_peak": 845,
+        "solar_mean": 290
       }
     }
   ],
@@ -3650,7 +3649,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 5,
+    "degraded_runs": 6,
     "last_fallback": "2026-06-23T13:15:00.159410+02:00"
   }
 }

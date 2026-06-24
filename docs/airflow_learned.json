@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-24T05:45:00.242263+02:00",
+  "updated_at": "2026-06-24T06:00:00.656793+02:00",
   "model_version": "4c23698",
   "params": {
     "cp_shelter": 0.35616280731267347,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 0.728,
+  "rmse": 0.735,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -72,21 +72,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-20T21:15:00.384679+02:00",
-      "rmse": 1.223,
-      "held": false,
-      "version": "5db08ba",
-      "skill": -3.237,
-      "rmse_naive": 0.289,
-      "wx": {
-        "tmax": 35.2,
-        "solar_peak": 854,
-        "solar_mean": 315
-      },
-      "rmse_logged": 1.605,
-      "recomputed": true
-    },
     {
       "t": "2026-06-20T21:30:01.124088+02:00",
       "rmse": 1.595,
@@ -3684,6 +3669,19 @@
         "solar_peak": 850,
         "solar_mean": 300
       }
+    },
+    {
+      "t": "2026-06-24T06:00:00.656793+02:00",
+      "rmse": 0.735,
+      "held": false,
+      "version": "4c23698",
+      "skill": 0.638,
+      "rmse_naive": 2.029,
+      "wx": {
+        "tmax": 31.1,
+        "solar_peak": 850,
+        "solar_mean": 300
+      }
     }
   ],
   "checkpoint": {
@@ -3751,7 +3749,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 6,
+    "degraded_runs": 0,
     "last_fallback": "2026-06-24T04:15:01.060548+02:00"
   }
 }

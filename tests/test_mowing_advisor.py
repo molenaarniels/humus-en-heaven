@@ -48,6 +48,32 @@ def test_gu_gdd_fallback():
     assert daily_growth_unit({"Tmax": 20.0, "Tmin": 10.0}, "gdd") == pytest.approx(15.0 - ma.GDD_BASE)
 
 
+# ── zaadpluim-seizoen: hitte-demping vervalt ────────────────────────────────────
+
+def test_bolt_seizoen_schakelt_hittedemping_uit():
+    # Hete dag (Tmax ≥ HEAT_MAX_C) in een zaadpluim-maand: zaadpluim-groei loopt
+    # door ondanks de hitte → factor 1.0, volledige lawn_T telt mee.
+    bolt_maand = next(m for m in ma.BOLT_MONTHS)
+    hete_bolt_dag = {"date": f"2026-{bolt_maand:02d}-15", "lawn_T": 4.0, "Tmax": ma.HEAT_MAX_C + 3}
+    assert daily_growth_unit(hete_bolt_dag, "soil") == pytest.approx(4.0)
+    assert ma.growth_heat_factor(hete_bolt_dag) == 1.0
+    assert ma._in_bolt_season(hete_bolt_dag) is True
+
+
+def test_buiten_bolt_seizoen_blijft_hittedemping():
+    # Zelfde hete dag buiten het zaadpluim-seizoen: demping blijft normaal.
+    niet_bolt = next(m for m in range(1, 13) if m not in ma.BOLT_MONTHS)
+    hete_dag = {"date": f"2026-{niet_bolt:02d}-15", "lawn_T": 4.0, "Tmax": ma.HEAT_MAX_C + 3}
+    assert daily_growth_unit(hete_dag, "soil") == pytest.approx(4.0 * ma.HEAT_FLOOR)
+    assert ma._in_bolt_season(hete_dag) is False
+
+
+def test_bolt_seizoen_geen_datum_valt_terug_op_demping():
+    # Zonder date-veld is er geen seizoenscontext → demping blijft van kracht.
+    assert ma._in_bolt_season({"Tmax": 30}) is False
+    assert ma._in_bolt_season({"date": "kapot", "Tmax": 30}) is False
+
+
 # ── build_growth_series ────────────────────────────────────────────────────────
 
 def _dagen(n, start=date(2026, 6, 1), lawn_t=1.0):

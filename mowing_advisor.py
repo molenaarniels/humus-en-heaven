@@ -52,6 +52,13 @@ HEAT_OPT_C = 24.0    # Tmax t/m deze waarde: geen hitte-demping op groei
 HEAT_MAX_C = 35.0    # Tmax vanaf deze waarde: groei bijna stil (hittestress)
 HEAT_FLOOR = 0.25    # restgroei-fractie bij/boven HEAT_MAX_C
 GDD_BASE = 6.0       # basistemperatuur voor GDD-fallback (koel-seizoensgras)
+# In het zaadpluim-seizoen (mei–juni) schiet koel-seizoensgras (en vooral
+# straatgras/Poa annua) ónder hitte-/droogtestress in de aar: de bloeistengels
+# groeien dóór terwijl de bladlengte stilstaat. De hitte-demping modelleert enkel
+# die stilgevallen bladlengtegroei en zou de zaadpluim-groei — juist de reden om te
+# maaien — wegdrukken, waardoor het model in een hittegolf te laat tot maaien
+# aanzet. Daarom vervalt de demping in deze maanden (factor terug naar 1.0).
+BOLT_SUPPRESS_HEAT_DERATE = True
 
 # --- Maairijp-drempel ---
 READY_GU = 11.0            # geaccumuleerde groei-eenheden = "tijd om te maaien"
@@ -218,13 +225,40 @@ def heat_derate(tmax) -> float:
     return 1.0 - frac * (1.0 - HEAT_FLOOR)
 
 
+def _in_bolt_season(day: dict) -> bool:
+    """True als de dag in het zaadpluim-seizoen (BOLT_MONTHS) valt.
+
+    Leest de maand uit `day["date"]`; ontbreekt/onparseerbaar → False (geen
+    seizoenscontext, dus de hitte-demping blijft normaal van kracht).
+    """
+    iso = day.get("date")
+    if not iso:
+        return False
+    try:
+        return parse_date(iso).month in BOLT_MONTHS
+    except (ValueError, TypeError):
+        return False
+
+
+def growth_heat_factor(day: dict) -> float:
+    """Hitte-dempingsfactor voor de groei-eenheid van deze dag.
+
+    Normaal `heat_derate(Tmax)`; in het zaadpluim-seizoen vervalt de demping
+    (factor 1.0) omdat de zaadpluim-groei dan ondanks de hitte doorzet — zie
+    BOLT_SUPPRESS_HEAT_DERATE.
+    """
+    if BOLT_SUPPRESS_HEAT_DERATE and _in_bolt_season(day):
+        return 1.0
+    return heat_derate(day.get("Tmax"))
+
+
 def daily_growth_unit(day: dict, source: str) -> float:
     """Groei-eenheid voor één dag."""
     if source == "soil":
         lt = day.get("lawn_T")
         if lt is None:
             return 0.0
-        return max(0.0, lt) * heat_derate(day.get("Tmax"))
+        return max(0.0, lt) * growth_heat_factor(day)
     # gdd_fallback
     tm = day.get("Tmean")
     if tm is None:

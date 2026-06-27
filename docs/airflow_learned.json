@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-27T13:30:00.168158+02:00",
+  "updated_at": "2026-06-27T13:45:00.717522+02:00",
   "model_version": "e28eebd",
   "params": {
     "cp_shelter": 0.26742499730266,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 3.93,
+  "rmse": 3.878,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -72,21 +72,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-24T16:00:00.983837+02:00",
-      "rmse": 4.093,
-      "held": false,
-      "version": "055386a",
-      "skill": -24.602,
-      "rmse_naive": 0.16,
-      "wx": {
-        "tmax": 36.2,
-        "solar_peak": 853,
-        "solar_mean": 313
-      },
-      "rmse_logged": 1.142,
-      "recomputed": true
-    },
     {
       "t": "2026-06-24T16:15:00.748543+02:00",
       "rmse": 4.093,
@@ -1767,11 +1752,11 @@
     },
     {
       "t": "2026-06-26T01:00:00.289793+02:00",
-      "rmse": 3.84,
+      "rmse": 3.59,
       "held": false,
       "version": "03bbfdb",
-      "skill": -1.234,
-      "rmse_naive": 1.719,
+      "skill": -2.328,
+      "rmse_naive": 1.078,
       "wx": {
         "tmax": 36.2,
         "solar_peak": 853,
@@ -2509,10 +2494,10 @@
     },
     {
       "t": "2026-06-26T13:15:01.109260+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.2,
@@ -2524,10 +2509,10 @@
     },
     {
       "t": "2026-06-26T13:30:00.495925+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.2,
@@ -2539,10 +2524,10 @@
     },
     {
       "t": "2026-06-26T13:45:01.026841+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.2,
@@ -2554,10 +2539,10 @@
     },
     {
       "t": "2026-06-26T14:00:00.337319+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.8,
@@ -2569,10 +2554,10 @@
     },
     {
       "t": "2026-06-26T14:15:00.264321+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.8,
@@ -2584,10 +2569,10 @@
     },
     {
       "t": "2026-06-26T14:30:00.791276+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.8,
@@ -2600,10 +2585,10 @@
     },
     {
       "t": "2026-06-26T14:45:00.173584+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 36.7,
@@ -2615,10 +2600,10 @@
     },
     {
       "t": "2026-06-26T15:00:00.981443+02:00",
-      "rmse": 3.752,
+      "rmse": 3.485,
       "held": false,
       "version": "cbc4b75",
-      "skill": -2.838,
+      "skill": -2.564,
       "rmse_naive": 0.978,
       "wx": {
         "tmax": 37.8,
@@ -3699,6 +3684,19 @@
         "solar_peak": 851,
         "solar_mean": 317
       }
+    },
+    {
+      "t": "2026-06-27T13:45:00.717522+02:00",
+      "rmse": 3.878,
+      "held": false,
+      "version": "e28eebd",
+      "skill": -2.06,
+      "rmse_naive": 1.267,
+      "wx": {
+        "tmax": 38.9,
+        "solar_peak": 851,
+        "solar_mean": 312
+      }
     }
   ],
   "checkpoint": {
@@ -3766,7 +3764,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 1,
+    "degraded_runs": 2,
     "last_fallback": "2026-06-27T13:15:00.188749+02:00"
   }
 }

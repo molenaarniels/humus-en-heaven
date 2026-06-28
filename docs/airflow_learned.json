@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-28T19:15:01.103391+02:00",
+  "updated_at": "2026-06-28T19:30:00.259739+02:00",
   "model_version": "eb2e077",
   "params": {
     "cp_shelter": 0.24143602335004977,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 2.755,
+  "rmse": 2.75,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -72,21 +72,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-25T23:30:00.390664+02:00",
-      "rmse": 2.695,
-      "held": false,
-      "version": "03bbfdb",
-      "skill": -7.745,
-      "rmse_naive": 0.308,
-      "wx": {
-        "tmax": 36.2,
-        "solar_peak": 853,
-        "solar_mean": 330
-      },
-      "rmse_logged": 2.326,
-      "recomputed": true
-    },
     {
       "t": "2026-06-25T23:45:01.079452+02:00",
       "rmse": 2.217,
@@ -2176,10 +2161,10 @@
     },
     {
       "t": "2026-06-27T15:00:00.626337+02:00",
-      "rmse": 3.307,
+      "rmse": 3.054,
       "held": false,
       "version": "e28eebd",
-      "skill": -1.238,
+      "skill": -1.066,
       "rmse_naive": 1.478,
       "wx": {
         "tmax": 38.9,
@@ -2191,10 +2176,10 @@
     },
     {
       "t": "2026-06-27T15:15:00.731383+02:00",
-      "rmse": 3.307,
+      "rmse": 3.054,
       "held": false,
       "version": "e28eebd",
-      "skill": -1.238,
+      "skill": -1.066,
       "rmse_naive": 1.478,
       "wx": {
         "tmax": 38.9,
@@ -3685,6 +3670,19 @@
         "solar_peak": 817,
         "solar_mean": 259
       }
+    },
+    {
+      "t": "2026-06-28T19:30:00.259739+02:00",
+      "rmse": 2.75,
+      "held": false,
+      "version": "eb2e077",
+      "skill": -0.617,
+      "rmse_naive": 1.701,
+      "wx": {
+        "tmax": 32.8,
+        "solar_peak": 817,
+        "solar_mean": 259
+      }
     }
   ],
   "checkpoint": {
@@ -3752,7 +3750,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 5,
+    "degraded_runs": 6,
     "last_fallback": "2026-06-28T18:00:01.085403+02:00"
   }
 }

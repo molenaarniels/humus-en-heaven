@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-29T02:15:00.370043+02:00",
+  "updated_at": "2026-06-29T02:30:00.466060+02:00",
   "model_version": "bf15725",
   "params": {
     "cp_shelter": 0.14242100970778565,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 2.427,
+  "rmse": 2.417,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -72,21 +72,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-26T05:30:00.631517+02:00",
-      "rmse": 1.635,
-      "held": false,
-      "version": "5863082",
-      "skill": -33.688,
-      "rmse_naive": 0.047,
-      "wx": {
-        "tmax": 36.2,
-        "solar_peak": 853,
-        "solar_mean": 330
-      },
-      "rmse_logged": 2.79,
-      "recomputed": true
-    },
     {
       "t": "2026-06-26T05:45:00.993262+02:00",
       "rmse": 1.431,
@@ -1344,11 +1329,11 @@
     },
     {
       "t": "2026-06-27T06:31:05.995661+02:00",
-      "rmse": 2.105,
+      "rmse": 1.726,
       "held": false,
       "version": "5f643bb",
-      "skill": -0.418,
-      "rmse_naive": 1.484,
+      "skill": -1.87,
+      "rmse_naive": 0.601,
       "wx": {
         "tmax": 38.9,
         "solar_peak": 851,
@@ -1420,11 +1405,11 @@
     },
     {
       "t": "2026-06-27T07:45:00.237369+02:00",
-      "rmse": 2.346,
+      "rmse": 2.039,
       "held": false,
       "version": "5f643bb",
-      "skill": -0.473,
-      "rmse_naive": 1.593,
+      "skill": -1.309,
+      "rmse_naive": 0.883,
       "wx": {
         "tmax": 38.9,
         "solar_peak": 851,
@@ -3649,6 +3634,19 @@
         "solar_peak": 817,
         "solar_mean": 257
       }
+    },
+    {
+      "t": "2026-06-29T02:30:00.466060+02:00",
+      "rmse": 2.417,
+      "held": false,
+      "version": "bf15725",
+      "skill": -1.008,
+      "rmse_naive": 1.204,
+      "wx": {
+        "tmax": 32.8,
+        "solar_peak": 817,
+        "solar_mean": 257
+      }
     }
   ],
   "checkpoint": {
@@ -3716,7 +3714,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 5,
+    "degraded_runs": 6,
     "last_fallback": "2026-06-29T00:30:00.758445+02:00"
   }
 }

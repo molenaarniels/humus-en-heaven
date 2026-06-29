@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-29T09:45:00.353451+02:00",
+  "updated_at": "2026-06-29T10:00:00.750739+02:00",
   "model_version": "e220a5c",
   "params": {
     "cp_shelter": 0.1,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 2.337,
+  "rmse": 2.31,
   "railed": [
     "global.cp_shelter@floor",
     "living.solar_gain@floor",
@@ -73,22 +73,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-26T11:15:00.215341+02:00",
-      "rmse": 3.138,
-      "held": false,
-      "version": "2abd753",
-      "skill": -31.772,
-      "rmse_naive": 0.096,
-      "wx": {
-        "tmax": 36.2,
-        "solar_peak": 853,
-        "solar_mean": 328
-      },
-      "fell_back": true,
-      "rmse_logged": 3.757,
-      "recomputed": true
-    },
     {
       "t": "2026-06-26T11:30:00.402584+02:00",
       "rmse": 3.181,
@@ -3137,17 +3121,19 @@
     },
     {
       "t": "2026-06-28T22:30:01.126434+02:00",
-      "rmse": 2.756,
+      "rmse": 2.492,
       "held": false,
       "version": "6486b78",
-      "skill": -0.451,
-      "rmse_naive": 1.899,
+      "skill": -1.344,
+      "rmse_naive": 1.063,
       "wx": {
         "tmax": 32.8,
         "solar_peak": 817,
         "solar_mean": 257
       },
-      "fell_back": true
+      "fell_back": true,
+      "rmse_logged": 2.756,
+      "recomputed": true
     },
     {
       "t": "2026-06-28T22:45:00.493336+02:00",
@@ -3607,6 +3593,19 @@
         "solar_peak": 817,
         "solar_mean": 257
       }
+    },
+    {
+      "t": "2026-06-29T10:00:00.750739+02:00",
+      "rmse": 2.31,
+      "held": false,
+      "version": "e220a5c",
+      "skill": -0.695,
+      "rmse_naive": 1.363,
+      "wx": {
+        "tmax": 32.8,
+        "solar_peak": 817,
+        "solar_mean": 257
+      }
     }
   ],
   "checkpoint": {
@@ -3674,7 +3673,7 @@
     "rmse": 0.664,
     "version": "6360d3f",
     "t": "2026-06-19T01:45:00.445087+02:00",
-    "degraded_runs": 3,
+    "degraded_runs": 4,
     "last_fallback": "2026-06-29T09:00:00.178439+02:00"
   }
 }

@@ -2,7 +2,10 @@ name: Heating Temperature Notification
 
 on:
   schedule:
-    - cron: "0 18 * * *"
+    # Fallback ~40 min ná het orchestrator-doel (21:00 Amsterdam). Normaal heeft
+    # de Timing Orchestrator deze job al om 21:00 gedispatcht; deze cron vuurt
+    # alleen als de orchestrator uitviel. De guard-job hieronder voorkomt dubbel.
+    - cron: "40 21 * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
 
@@ -10,7 +13,38 @@ permissions:
   contents: read
 
 jobs:
+  # Dedup t.o.v. de orchestrator: skip de fallback-cron als deze workflow vandaag
+  # al een (niet-mislukte) run had. Alleen op `schedule` — handmatige en
+  # orchestrator-dispatches (beide workflow_dispatch) draaien altijd door.
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      handled: ${{ steps.check.outputs.handled }}
+    steps:
+      - name: Skip if already handled today
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          since=$(TZ=Europe/Amsterdam date -d "today 00:00" +%s)
+          others=$(gh run list --workflow heating-temp-notify.yml -L 40 \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }}
+                   and (.createdAt|fromdateiso8601) >= $since
+                   and .conclusion != \"failure\" and .conclusion != \"cancelled\"
+                   and .conclusion != \"timed_out\" and .conclusion != \"startup_failure\")] | length")
+          if [ "${others:-0}" -gt 0 ]; then
+            echo "handled=1" >> "$GITHUB_OUTPUT"
+            echo "Al gedraaid vandaag (${others} run(s)) — orchestrator deed dit al, sla over."
+          fi
+
   notify:
+    needs: guard
+    if: needs.guard.outputs.handled != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

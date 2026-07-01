@@ -2,9 +2,14 @@ name: Zandbak Notificaties
 
 on:
   schedule:
-    - cron: "0 8 * * *"
+    # Fallbacks ~40 min ná de orchestrator-doelen (08:00 + 20:00 Amsterdam).
+    # Normaal heeft de Timing Orchestrator het slot al gedispatcht; deze crons
+    # vuren alleen als de orchestrator uitviel. De guard-job hieronder is
+    # slot-bewust (ochtend vs avond) zodat de avond-run niet door de ochtend-run
+    # wordt weggededupt.
+    - cron: "40 8 * * *"
       timezone: "Europe/Amsterdam"
-    - cron: "0 19 * * *"
+    - cron: "40 20 * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
@@ -33,7 +38,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Dedup t.o.v. de orchestrator, per slot. Bepaalt aan de lokale tijd of deze
+  # fallback-cron het ochtend- of avond-slot is, en skipt als er sinds het begin
+  # van dat slot al een (niet-mislukte) run was. Alleen op `schedule` — handmatige
+  # en orchestrator-dispatches (beide workflow_dispatch) draaien altijd door.
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      handled: ${{ steps.check.outputs.handled }}
+    steps:
+      - name: Skip if this slot already handled today
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          nowm=$(( 10#$(TZ=Europe/Amsterdam date +%H) * 60 + 10#$(TZ=Europe/Amsterdam date +%M) ))
+          if [ "$nowm" -lt 720 ]; then
+            since=$(TZ=Europe/Amsterdam date -d "today 00:00" +%s)   # ochtend-slot
+          else
+            since=$(TZ=Europe/Amsterdam date -d "today 20:00" +%s)   # avond-slot
+          fi
+          others=$(gh run list --workflow sandbox-notify.yml -L 40 \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }}
+                   and (.createdAt|fromdateiso8601) >= $since
+                   and .conclusion != \"failure\" and .conclusion != \"cancelled\"
+                   and .conclusion != \"timed_out\" and .conclusion != \"startup_failure\")] | length")
+          if [ "${others:-0}" -gt 0 ]; then
+            echo "handled=1" >> "$GITHUB_OUTPUT"
+            echo "Zandbak-slot al gedraaid vandaag (${others} run(s)) — orchestrator deed dit al, sla over."
+          fi
+
   notify:
+    needs: guard
+    if: needs.guard.outputs.handled != '1'
     runs-on: ubuntu-latest
     # Cap dekt ook de in-job herkansing (10 min slaap + tweede poging).
     timeout-minutes: 30

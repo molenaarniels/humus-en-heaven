@@ -1,0 +1,161 @@
+name: Timing Orchestrator
+
+# Eén centrale "klok"-loop die de dagelijkse pijplijnen op hun precieze lokale
+# tijd afvuurt via workflow_dispatch. GitHub's scheduler is best-effort en laat
+# de meeste cron-ticks vallen of vertraagt ze (zie window-notify.yml), waardoor
+# de dagelijkse jobs (weerbriefing, bodem, maaien, zandbak, verwarming) zonder
+# betrouwbare timing draaiden. Deze workflow bezit ALLEEN de timing — niet de
+# logica: elke job houdt zijn eigen workflow, permissions, retries en run_guarded.
+#
+# Zelfde beproefde patroon als window/airflow: de cron is enkel een *restart-kick*.
+# Elke run is een zelf-sturende ~5u-loop die op elke :00/:15/:30/:45-mark wakker
+# wordt; de concurrency-guard hieronder houdt exact één klok levend en start de
+# volgende loop zodra de huidige eindigt → effectief 24/7 dekking.
+#
+# De per-project crons blijven bestaan als *fallback* (~40 min ná het doel): als
+# deze orchestrator zou uitvallen, vuren die crons de jobs alsnog af. Een
+# dedup-guard in elke dagelijkse workflow voorkomt dat de fallback-cron dubbel
+# notificeert wanneer de orchestrator de job al deed.
+on:
+  schedule:
+    # Offset t.o.v. window (:07/:27/:47) en airflow (:09/:29/:49).
+    - cron: "3,23,43 * * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log welke jobs afgevuurd zouden worden, zonder te dispatchen (één tick)"
+        type: boolean
+        default: false
+
+# De orchestrator dispatcht enkel andere workflows — geen app-secrets nodig.
+# actions:write mag workflow_dispatch triggeren (de gedocumenteerde uitzondering
+# op de "GITHUB_TOKEN-events starten geen runs"-anti-recursieregel) en impliceert
+# actions:read voor `gh run list`. contents:read voor de checkout is genoeg.
+permissions:
+  actions: write
+  contents: read
+
+# Exact één klok tegelijk; een kick die tijdens een loop binnenkomt wacht en
+# neemt over zodra de huidige loop eindigt (zoals window/airflow).
+concurrency:
+  group: orchestrator
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    # ~20 iteraties op 15-min-spacing ≈ 5u wall time; onder de 6u hard limit zodat
+    # de job schoon eindigt en een pending restart-kick kan overnemen.
+    timeout-minutes: 350
+    steps:
+      - name: Drive the daily-job clock
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -u
+
+          # --- Ledger-helpers: alle "al gedraaid?"-checks zijn stateless en lezen
+          # het GitHub Actions run-ledger, zodat ze een loop-herstart overleven én
+          # vanzelf deduppen tegen de fallback-cron (beide landen in datzelfde ledger).
+
+          # Bestaat er een NIET-mislukte run van workflow $1 aangemaakt >= epoch $2?
+          handled_since () {
+            local wf="$1" since="$2" count
+            count=$(gh run list --workflow "$wf" -L 40 \
+              --json createdAt,conclusion \
+              --jq "[.[] | select((.createdAt|fromdateiso8601) >= $since
+                     and .conclusion != \"failure\"
+                     and .conclusion != \"cancelled\"
+                     and .conclusion != \"timed_out\"
+                     and .conclusion != \"startup_failure\")] | length" 2>/dev/null || echo 0)
+            [ "${count:-0}" -gt 0 ]
+          }
+
+          # Heeft de bodem-check (daily-check.yml) vandaag een geslaagde, VOLTOOIDE
+          # run? Maaien leest daarvan de verse data.json → moet er ná draaien.
+          soil_success_since () {
+            local since="$1" count
+            count=$(gh run list --workflow daily-check.yml -L 40 \
+              --json createdAt,status,conclusion \
+              --jq "[.[] | select((.createdAt|fromdateiso8601) >= $since
+                     and .status == \"completed\" and .conclusion == \"success\")] | length" 2>/dev/null || echo 0)
+            [ "${count:-0}" -gt 0 ]
+          }
+
+          dispatch () {
+            local wf="$1"; shift
+            if [ "${DRY_RUN}" = "1" ]; then
+              echo "DRY_RUN: zou dispatchen → $wf $*"
+              return 0
+            fi
+            echo "→ dispatch $wf $*"
+            gh workflow run "$wf" "$@" \
+              || echo "::warning::dispatch van $wf mislukt — volgende wake probeert opnieuw"
+          }
+
+          # Alle doeltijden zijn Europe/Amsterdam lokaal (minuten sinds middernacht).
+          tick () {
+            local h m nowm day_start evening_epoch
+            h=$(TZ=Europe/Amsterdam date +%H)
+            m=$(TZ=Europe/Amsterdam date +%M)
+            nowm=$(( 10#$h * 60 + 10#$m ))
+            day_start=$(TZ=Europe/Amsterdam date -d "today 00:00" +%s)
+            evening_epoch=$(TZ=Europe/Amsterdam date -d "today 20:00" +%s)
+            echo "tick — lokaal ${h}:${m} (${nowm} min), day_start=${day_start}"
+
+            # Weerbriefing — 05:00
+            if [ "$nowm" -ge 300 ] && ! handled_since weather-briefing.yml "$day_start"; then
+              dispatch weather-briefing.yml
+            fi
+
+            # Bodem-check — 08:00
+            if [ "$nowm" -ge 480 ] && ! handled_since daily-check.yml "$day_start"; then
+              dispatch daily-check.yml
+            fi
+
+            # Maaien — zodra de bodem-check vandaag geslaagd is (leest zijn data.json)
+            if [ "$nowm" -ge 480 ] && soil_success_since "$day_start" \
+               && ! handled_since mowing-notify.yml "$day_start"; then
+              dispatch mowing-notify.yml
+            fi
+
+            # Zandbak ochtend — 08:00 (alleen vóór het avond-slot afvuren)
+            if [ "$nowm" -ge 480 ] && [ "$nowm" -lt 1200 ] \
+               && ! handled_since sandbox-notify.yml "$day_start"; then
+              dispatch sandbox-notify.yml -f mode=morning
+            fi
+
+            # Zandbak avond — 20:00 (dedup vanaf 20:00, zodat de ochtendrun niet meetelt)
+            if [ "$nowm" -ge 1200 ] \
+               && ! handled_since sandbox-notify.yml "$evening_epoch"; then
+              dispatch sandbox-notify.yml -f mode=evening
+            fi
+
+            # Verwarming — 21:00
+            if [ "$nowm" -ge 1260 ] && ! handled_since heating-temp-notify.yml "$day_start"; then
+              dispatch heating-temp-notify.yml
+            fi
+          }
+
+          # Dry run = één tick (log intenties), geen loop.
+          if [ "${DRY_RUN}" = "1" ]; then
+            tick
+            exit 0
+          fi
+
+          # Zelf-gestuurde cadans: nu draaien, dan telkens op de volgende
+          # :00/:15/:30/:45-mark, tot ITERS iteraties (~5u wall time). De
+          # concurrency-guard houdt dit de enige levende klok.
+          ITERS=20
+          for i in $(seq 1 "${ITERS}"); do
+            echo "=== iteration ${i}/${ITERS} at $(date -u +%H:%M:%SZ) ==="
+            tick
+            if [ "${i}" -lt "${ITERS}" ]; then
+              now=$(date -u +%s)
+              next=$(( (now / 900 + 1) * 900 ))   # volgende 15-min-mark UTC (900s)
+              sleep $(( next - now ))
+            fi
+          done

@@ -1103,3 +1103,21 @@ def test_stratification_shifts_floor_coupling():
     assert on["Ta"]["bot"] < off["Ta"]["bot"] - 1e-3
     # Het koker-gemiddelde blijft ~behouden (energie-behoudende symmetrische bron, geen netto bron).
     assert on["Ta"]["shaft"] == pytest.approx(off["Ta"]["shaft"], abs=0.3)
+
+
+def test_stair_gradient_solar_steepens():
+    # De zon-op-de-kokertop-term verhoogt de gradiënt bovenop de kamer-spreiding (skylight-zon landt
+    # bovenin, bereikt de bg niet). Zon = 0 → oud gedrag; meer zon → steiler, tot de klem.
+    base = am.stair_gradient(2.0, 0.0)
+    sunny = am.stair_gradient(2.0, 500.0)
+    assert sunny > base
+    assert sunny == pytest.approx(am.STAIR_STRAT_K * 2.0 + am.STAIR_STRAT_SOLAR_K * 500.0)
+    assert am.stair_gradient(2.0, 1e9) == am.STAIR_STRAT_MAX_GRAD          # geklemd
+
+
+def test_stair_gamma_uses_top_solar():
+    info = am._stratify_zones(_strat_house())["shaft"]
+    temps = {"top": 24.0, "bot": 22.0}
+    dark = am._stair_gamma(info, temps, 20.0, 0.0)
+    lit = am._stair_gamma(info, temps, 20.0, 600.0)
+    assert lit > dark

@@ -1090,29 +1090,84 @@ def test_stair_gamma_room_slope_and_door_filter():
     assert am._stair_gamma(info, {"top": 25.0}) == 0.0
 
 
+def _strat_timeline(irr_by_room: dict, hours: int = 24, states: dict | None = None) -> list[dict]:
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
+    tl = []
+    for i in range(hours * 4 + 1):
+        t = t0 + timedelta(minutes=15 * i)
+        tl.append({"t": t, "T_out": 20.0, "irr": dict(irr_by_room), "states": dict(states or {}),
+                   "weather": {"wind_speed": 3.0, "wind_dir": 200.0, "gust": 5.0,
+                   "precip": 0.0, "direct": 0.0, "diffuse": 0.0, "rh": 55}, "dt": 900.0})
+    return tl
+
+
 def test_stratification_shifts_floor_coupling():
     # Zon alleen op de bovenkamer → top warmer dan onder → verticale spreiding in de koker.
     # Met stratificatie mengt de bovendeur tegen de warmere koker-top (→ bovenkamer blijft warmer)
     # en de onderdeur tegen de koelere koker-onder (→ onderkamer koeler). Zonder de vlag identiek.
+    # BUOY_EXCH_C tijdelijk op 0: dit test het γ-offset-mechanisme geïsoleerd van de counterflow.
     house = _strat_house()
     params = am.default_params(house)
     zones = list(house["rooms"]) + list(house.get("junctions", {}))
-    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
-    tl = []
-    for i in range(24 * 4 + 1):
-        t = t0 + timedelta(minutes=15 * i)
-        tl.append({"t": t, "T_out": 20.0, "irr": {"top": 500.0, "bot": 0.0, "shaft": 0.0},
-                   "states": {}, "weather": {"wind_speed": 3.0, "wind_dir": 200.0, "gust": 5.0,
-                   "precip": 0.0, "direct": 0.0, "diffuse": 0.0, "rh": 55}, "dt": 900.0})
+    tl = _strat_timeline({"top": 500.0, "bot": 0.0, "shaft": 0.0})
     seed = {z: 20.0 for z in zones}
-    on = am.simulate(house, params, tl, seed, calib_only_rooms={"top", "bot"})
-    house_off = _strat_house()
-    house_off["rooms"]["shaft"].pop("stratify")
-    off = am.simulate(house_off, params, tl, seed, calib_only_rooms={"top", "bot"})
+    saved = am.BUOY_EXCH_C
+    try:
+        am.BUOY_EXCH_C = 0.0
+        on = am.simulate(house, params, tl, seed, calib_only_rooms={"top", "bot"})
+        house_off = _strat_house()
+        house_off["rooms"]["shaft"].pop("stratify")
+        off = am.simulate(house_off, params, tl, seed, calib_only_rooms={"top", "bot"})
+    finally:
+        am.BUOY_EXCH_C = saved
     assert on["Ta"]["top"] > off["Ta"]["top"] + 1e-3
     assert on["Ta"]["bot"] < off["Ta"]["bot"] - 1e-3
     # Het koker-gemiddelde blijft ~behouden (energie-behoudende symmetrische bron, geen netto bron).
     assert on["Ta"]["shaft"] == pytest.approx(off["Ta"]["shaft"], abs=0.3)
+
+
+def test_buoyant_door_exchange_basics():
+    # Dichte deur (area 0) of gelijke temps → 0. Groeit met ΔT (√-wet) en met de deuroppervlakte.
+    assert am.buoyant_door_exchange(0.0, 26.0, 22.0) == 0.0
+    assert am.buoyant_door_exchange(1.8, 24.0, 24.0) == 0.0
+    q2 = am.buoyant_door_exchange(1.8, 25.0, 23.0)       # ΔT 2, T̄ 24
+    q8 = am.buoyant_door_exchange(1.8, 28.0, 20.0)       # ΔT 8, zelfde T̄ 24
+    assert q2 > 0.0
+    assert q8 == pytest.approx(q2 * 2.0, rel=1e-6)       # ΔT 8 vs 2 → √4 = 2×
+    assert am.buoyant_door_exchange(3.6, 25.0, 23.0) == pytest.approx(2.0 * q2, rel=1e-6)
+    # Grootte-orde: ~2°C over een 1.8 m² deur → zo'n 0.05–0.15 m³/s (honderden m³/h) — de
+    # menging die het netto-netwerkdebiet mist.
+    assert 0.05 < q2 < 0.15
+
+
+def test_counterflow_pins_shaft_to_open_door_rooms():
+    # Zon op de koker zelf. Deuren OPEN → de counterflow mengt de koker naar de kamers (gat
+    # klein). Deuren DICHT → geen uitwisseling → de warmte poolt in de koker (gat groot) —
+    # "office-deur dicht → de warmte gaat daarheen".
+    house = _strat_house()
+    params = am.default_params(house)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    irr = {"top": 0.0, "bot": 0.0, "shaft": 400.0}
+    open_tl = _strat_timeline(irr)
+    closed_tl = _strat_timeline(irr, states={"top_shaft": "dicht", "bot_shaft": "dicht"})
+    op = am.simulate(house, params, open_tl, seed, calib_only_rooms={"top", "bot"})
+    cl = am.simulate(house, params, closed_tl, seed, calib_only_rooms={"top", "bot"})
+    gap_open = op["Ta"]["shaft"] - max(op["Ta"]["top"], op["Ta"]["bot"])
+    gap_closed = cl["Ta"]["shaft"] - max(cl["Ta"]["top"], cl["Ta"]["bot"])
+    assert gap_closed > gap_open + 1.0     # dicht → warmte poolt; open → weggemengd
+    assert gap_open < 4.0                  # open deur → geen groot zwevend gat meer
+
+
+def test_stair_crown_solar_display():
+    # 's Avonds (irr 0) → 0, zodat de avond-inconsistentie niet terug kan komen; middagzon →
+    # een paar graden, geklemd op de max.
+    assert am.stair_crown(0.0) == 0.0
+    assert am.stair_crown(None) == 0.0
+    mid = am.stair_crown(500.0)
+    assert mid == pytest.approx(am.STAIR_CROWN_K * 500.0)
+    assert 1.0 < mid < am.STAIR_CROWN_MAX
+    assert am.stair_crown(1e6) == am.STAIR_CROWN_MAX
 
 
 def test_stair_gamma_steeper_when_top_hotter():

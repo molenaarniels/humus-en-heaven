@@ -388,6 +388,24 @@ GLASS_IAM_B0 = 0.10
 STAIR_STRAT_MAX_GRAD = 0.7   # °C/m — klem (gemeten kamer-helling piekte op ~0.67; ~8m koker → ~5°C
                              # top-onder-verschil). Rail tegen office's eigen zonwinst die de helling
                              # op de zonnigste momenten kunstmatig zou opblazen.
+# Tweerichtings-deuruitwisseling (Brown–Solvason). Het netwerk rekent alleen het NETTO-debiet door
+# een deur, maar een open binnendeur tussen een warme koker en een koelere kamer draagt een grote
+# buoyancy-gedreven counterflow (warm bovenlangs eruit, koel onderlangs erin) — óók bij netto nul.
+# Zonder die term kon de koker-knoop ~2°C boven een open-deur-kamer blijven zweven (top-weergave
+# 28.4° naast office 24.3° — fysisch onmogelijk over een open deur). Q_ex = C·A·√(g·H·ΔT/T̄) per
+# open koker-deur, uitgewisseld tegen de koker-lucht op déúrhoogte (γ-offset, consistent met de
+# stratificatie). Deur dicht → geen term → de skylight-/dakwarmte poolt bovenin (de "pocket").
+# Bewust alleen op de deuren van stratify-zones (scope/risico); telt mee in dezelfde gdoor-route
+# (× vent_eff) als de netto-advectie.
+BUOY_EXCH_C = 0.14      # ≈ Cd/3 met doorway-Cd ~0.42 (Brown–Solvason interzonale convectie)
+DOOR_HEIGHT_M = 2.0     # m — verticale maat van een binnendeur (drijft de stack in de deuropening)
+# Zon-kroon voor de top-weergave: de skylight-/dak-zon landt bovenin de koker; met de office-deur
+# open wordt dat grotendeels weggemengd (counterflow), maar de bovenste ~1.7m (bóven de hoogste
+# deur) blijft op een felle middag een paar graden warmer dan de γ-lijn. Display-term (geen
+# fysica-knoop), ∝ horizontale dak-instraling, geklemd — 's avonds (irr≈0) automatisch 0, dus de
+# avond-inconsistentie kan er niet door terugkomen.
+STAIR_CROWN_K = 0.004    # °C per W/m² horizontale dak-instraling
+STAIR_CROWN_MAX = 4.0    # °C — klem
 
 # ── Prior-parameters (vertrekpunt vóór het leren) ───────────────────────────────────
 # Alles is een dimensieloze schaal × een fysische basis, zodat het leren rond 1.0 speelt
@@ -1000,6 +1018,26 @@ def stair_gradient(points: list, max_grad: float = STAIR_STRAT_MAX_GRAD) -> floa
     return max(0.0, min(max_grad, slope))
 
 
+def buoyant_door_exchange(area_m2: float, t_a: float, t_b: float,
+                          height_m: float = DOOR_HEIGHT_M) -> float:
+    """Tweerichtings-uitwisselingsdebiet (m³/s, één kant van de counterflow) door een open
+    binnendeur op temperatuurverschil (Brown–Solvason): Q = C·A·√(g·H·ΔT/T̄). Nul bij een dichte
+    deur (area 0) of gelijke temperaturen. Dit is de menging die het netwerk-nettodebiet mist."""
+    if area_m2 <= 0.0 or t_a is None or t_b is None:
+        return 0.0
+    dt = abs(t_a - t_b)
+    if dt <= 0.0:
+        return 0.0
+    t_mean_k = 273.15 + 0.5 * (t_a + t_b)
+    return BUOY_EXCH_C * area_m2 * math.sqrt(G * height_m * dt / t_mean_k)
+
+
+def stair_crown(irr_roof_wm2: float) -> float:
+    """Zon-kroon (°C) bovenop de γ-lijn voor de tóp-weergave van een gestratificeerde koker —
+    de skylight-/dak-zon die bovenin landt en boven de hoogste deur niet weggemengd wordt."""
+    return max(0.0, min(STAIR_CROWN_MAX, STAIR_CROWN_K * (irr_roof_wm2 or 0.0)))
+
+
 def _stratify_zones(house: dict) -> dict:
     """Zones met "stratify": true → hun verticale-koker-metadata voor de stratificatie-gradiënt:
     `z_mean` (advectie-referentiehoogte, = gemiddelde deurhoogte), de gekoppelde `doors`
@@ -1129,30 +1167,49 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         P_warm = net["P"]
         fresh = net["fresh"]
         mix = door_mix(house, net["flows"], ops)
+        # Trappenhuis-stratificatie: γ = kleinste-kwadraten-helling door de OPEN-deur-kamers
+        # (proxy-meting van het profiel), plus de Brown–Solvason-counterflow per open koker-deur —
+        # de tweerichtings-menging die het netto-netwerkdebiet mist. De counterflow gaat in `mix`
+        # vóór de gdoor-opbouw (zelfde × vent_eff route); deur dicht → geen term → warmte poolt
+        # bovenin. Leeg `strat` (geen opt-in) → alles ongewijzigd.
+        strat_step = {}
+        if strat:
+            door_area = {}
+            for op in ops:
+                if op.get("b") != "outside":
+                    k = (op["a"], op["b"])
+                    door_area[k] = door_area.get(k, 0.0) + op["area"]
+            for sid, info in strat.items():
+                open_others = {o for o in info["doors"]
+                               if (sid, o) in door_area or (o, sid) in door_area}
+                gamma = _stair_gamma(info, Ta, open_others)
+                strat_step[sid] = (gamma, open_others)
+                for other in open_others:
+                    zh = info["doors"][other]
+                    area = door_area.get((sid, other), 0.0) + door_area.get((other, sid), 0.0)
+                    q_ex = buoyant_door_exchange(area, Ta[sid] + gamma * (zh - info["z_mean"]),
+                                                 Ta.get(other, T_out))
+                    if q_ex > 0.0:
+                        key = (sid, other) if (sid, other) in mix else (other, sid)
+                        mix[key] = mix.get(key, 0.0) + q_ex
         # Advectieve geleiding per (zone↔zone) deur (W/K) en per zone naar buiten (vent).
         gdoor = {key: rho_cp * qm * veff for key, qm in mix.items()}
         gvent = {z: rho_cp * fresh.get(z, 0.0) * veff for z in zones}
-        # Trappenhuis-stratificatie: elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v.
-        # de vlakke koker-gemiddelde-temp. Energie-behoudend + matrix-symmetrisch: het hoogte-offset
-        # gaat als bron in b[] (+ op de kamer-luchtknoop, − op de koker), niet in A. γ = kleinste-
-        # kwadraten-helling door de OPEN-deur-kamers (proxy-meting van het profiel). Leeg `strat`
-        # (geen opt-in) → geen termen, output ongewijzigd.
+        # Het γ-hoogte-offset als energie-behoudende symmetrische bron in b[] (+ kamer, − koker):
+        # elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v. het vlakke gemiddelde.
         strat_terms = []
-        if strat:
-            open_pairs = {(op["a"], op["b"]) for op in ops if op.get("b") != "outside"}
-            for sid, info in strat.items():
-                open_others = {o for o in info["doors"]
-                               if (sid, o) in open_pairs or (o, sid) in open_pairs}
-                gamma = _stair_gamma(info, Ta, open_others)
-                if gamma == 0.0:
+        for sid, (gamma, open_others) in strat_step.items():
+            if gamma == 0.0:
+                continue
+            info = strat[sid]
+            for other in open_others:
+                if other not in zi:
                     continue
-                for other, zh in info["doors"].items():
-                    if other not in zi or other not in open_others:
-                        continue
-                    g = gdoor.get((sid, other), 0.0) + gdoor.get((other, sid), 0.0)
-                    if g == 0.0:
-                        continue
-                    strat_terms.append((zi[other], zi[sid], g * gamma * (zh - info["z_mean"])))
+                zh = info["doors"][other]
+                g = gdoor.get((sid, other), 0.0) + gdoor.get((other, sid), 0.0)
+                if g == 0.0:
+                    continue
+                strat_terms.append((zi[other], zi[sid], g * gamma * (zh - info["z_mean"])))
 
         nsub = max(1, int(math.ceil(step["dt"] / SUBSTEP_S)))
         h = step["dt"] / nsub
@@ -1940,9 +1997,14 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         open_others = {o for o in strat_info["doors"]
                        if (rid, o) in open_pairs or (o, rid) in open_pairs}
         gamma = _stair_gamma(strat_info, ta_all, open_others)
+        crown = stair_crown(now_step.get("irr_roof", {}).get(rid, 0.0))
         strat_extra = {
             "stair_gradient_c_per_m": round(gamma, 3),
-            "predicted_temp_top": round(ta_now + gamma * (strat_info["z_hi"] - strat_info["z_mean"]), 2),
+            # Zon-kroon: extra °C bovenop de γ-lijn voor de bovenste meters (boven de hoogste
+            # deur), gedreven door de dak-/skylight-instraling nu; 's avonds 0. Additief veld.
+            "stair_crown_c": round(crown, 2),
+            "predicted_temp_top": round(ta_now + gamma * (strat_info["z_hi"] - strat_info["z_mean"])
+                                        + crown, 2),
             "predicted_temp_bottom": round(ta_now + gamma * (strat_info["z_lo"] - strat_info["z_mean"]), 2),
         }
     return {

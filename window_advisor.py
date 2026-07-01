@@ -31,7 +31,7 @@ import math
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import gist_io
 from http_util import get_json
@@ -121,6 +121,8 @@ TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
 RH_TREND_MAX    = 15.0  # %RH/uur — clamp op de vochttrend (richtingvector op het scatterplot)
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
 PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
+PREDICT_STEP_MIN  = 15  # min — raster waarop open/dicht-momenten worden gevonden (interpoleert
+                        # tussen de uurlijkse forecast-punten, zodat tijden niet op het hele uur plakken)
 HISTORY_KEEP    = 192   # samples — rollend venster aan binnen/buiten-metingen (~2 dagen bij kwartiercadans)
 
 # ── Locatie (Utrecht) ──────────────────────────────────────────────────────────
@@ -470,17 +472,52 @@ def project_inside(inside_now: float, slope: float | None, hours_ahead: float) -
     return inside_now + slope * min(hours_ahead, TREND_CAP_H)
 
 
+def _interp_out_corr(pts: list[tuple[datetime, float]], t: datetime) -> float:
+    """Lineair geïnterpoleerde geijkte buitentemp op tijdstip `t` uit de uurlijkse
+    (dt, out_corr)-punten (oplopend gesorteerd). Buiten het bereik → dichtstbijzijnde
+    eindpunt (geen extrapolatie)."""
+    if t <= pts[0][0]:
+        return pts[0][1]
+    if t >= pts[-1][0]:
+        return pts[-1][1]
+    for (t0, v0), (t1, v1) in zip(pts, pts[1:]):
+        if t0 <= t <= t1:
+            span = (t1 - t0).total_seconds()
+            if span <= 0:
+                return v0
+            f = (t - t0).total_seconds() / span
+            return v0 + f * (v1 - v0)
+    return pts[-1][1]
+
+
 def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
                             slope: float | None, now: datetime,
                             high: float) -> tuple[list[dict], list]:
-    """Loop de geijkte forecast af (tot PREDICT_HORIZON_H) en vind de uren waarop het
-    raam-open zinvol is: geprojecteerde binnentemp > `high` (kamer-comfortgrens) én
-    buiten-geijkt ≤ binnen − OPEN_MARGIN. Geeft (open_intervals, proj) waarbij proj de
-    geprojecteerde binnentemp per forecast-uur is (uitgelijnd op forecast_corr)."""
+    """Vind de momenten waarop raam-open zinvol is: geprojecteerde binnentemp > `high`
+    (kamer-comfortgrens) én buiten-geijkt ≤ binnen − OPEN_MARGIN.
+
+    De open/dicht-momenten worden gezocht op een fijn PREDICT_STEP_MIN-raster (met
+    lineaire interpolatie van de geijkte buitentemp tussen de uurlijkse forecast-punten),
+    zodat de tijden niet op het hele uur plakken maar op kwartieren vallen. Geeft
+    (open_intervals, proj) terug; `proj` blijft de geprojecteerde binnentemp *per
+    forecast-uur* (uitgelijnd op forecast_corr, voor de dashboard-grafiek)."""
+    # proj: per forecast-uur (ongewijzigd — voedt de grafiek, moet op fc uitgelijnd blijven).
     proj: list = []
+    for r in forecast_corr:
+        h_ahead = (r["dt"] - now).total_seconds() / 3600.0
+        if inside_now is None or h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
+            proj.append(None)
+        else:
+            proj.append(round(project_inside(inside_now, slope, max(0.0, h_ahead)), 1))
+
+    # intervals: op fijn raster tussen de uurpunten.
+    pts = [(r["dt"], r["out_corr"]) for r in forecast_corr if r["out_corr"] is not None]
+    if inside_now is None or len(pts) < 2:
+        return [], proj
+
     intervals: list[dict] = []
     cur_start: datetime | None = None
-    prev_dt: datetime | None = None
+    prev_t: datetime | None = None
 
     def _close(end_dt: datetime) -> None:
         intervals.append({
@@ -490,27 +527,28 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
             "end_h":   round((end_dt - now).total_seconds() / 3600.0, 2),
         })
 
-    for r in forecast_corr:
-        dt, oc = r["dt"], r["out_corr"]
-        h_ahead = (dt - now).total_seconds() / 3600.0
-        if inside_now is None or h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
-            proj.append(None)
-            # buiten het zoekvenster een lopend interval afsluiten
-            if cur_start is not None and prev_dt is not None:
-                _close(prev_dt)
+    step = timedelta(minutes=PREDICT_STEP_MIN)
+    t = pts[0][0]  # forecast-uur → raster valt op :00/:15/:30/:45
+    while t <= pts[-1][0]:
+        h_ahead = (t - now).total_seconds() / 3600.0
+        if h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
+            if cur_start is not None and prev_t is not None:
+                _close(prev_t)
                 cur_start = None
+            t += step
             continue
+        oc = _interp_out_corr(pts, t)
         ip = project_inside(inside_now, slope, max(0.0, h_ahead))
-        proj.append(round(ip, 1))
-        is_open = oc is not None and ip > high and oc <= ip - OPEN_MARGIN
+        is_open = ip > high and oc <= ip - OPEN_MARGIN
         if is_open and cur_start is None:
-            cur_start = dt
+            cur_start = t
         elif not is_open and cur_start is not None:
-            _close(dt)
+            _close(t)
             cur_start = None
-        prev_dt = dt
-    if cur_start is not None and prev_dt is not None:
-        _close(prev_dt)
+        prev_t = t
+        t += step
+    if cur_start is not None and prev_t is not None:
+        _close(prev_t)
     return intervals, proj
 
 

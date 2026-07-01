@@ -575,12 +575,16 @@ function roomContent(rc, r, z, stack, live) {
     s += `<text x="${ix}" y="${y + 54}" font-size="11" fill="${COLORS.inkSoft}" font-style="italic">geen sensor</text>`;
   }
   // verticale koker (trap): label in het lege middendeel, weg van energietekst en trend-chip.
-  // Tweede regel: de koker is één goedgemengde knoop, dus de temp is het gemiddelde over de
-  // héle koker — niet de top of de onderkant (geen verticale gelaagdheid binnen een zone).
+  // Bij stratificatie (stap 3) tonen we de geschatte boven-/ondertemp uit de verticale gradiënt;
+  // de koker blijft één knoop (predicted_temp = koker-gemiddelde), dit is enkel de weergave-split.
   if (stack) {
     const cx = x + rc.w / 2, cy = y + rc.h / 2;
     s += `<text x="${cx}" y="${cy}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
-    s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">temp = gem. hele koker</text>`;
+    if (r.predicted_temp_top != null && r.predicted_temp_bottom != null) {
+      s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">boven ${fmt(r.predicted_temp_top, 1)}° · onder ${fmt(r.predicted_temp_bottom, 1)}° (gem. ${fmt(r.predicted_temp, 1)}°)</text>`;
+    } else {
+      s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">temp = gem. hele koker</text>`;
+    }
   }
   return s;
 }

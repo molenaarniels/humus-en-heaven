@@ -349,6 +349,37 @@ ROOF_U          = 1.5   # W/(m²·K) — dak-schil-conductie-basis (1920s, deels
 ROOF_SOLAR_GAIN = 0.025  # °C per W/m² horizontale instraling (≈ donkere dakabsorptie / h_out)
 ROOF_SKY_COOLING = 3.0   # °C — nachtelijke hemel-stralings-depressie ('s nachts, helder)
 
+# ── Zonnige-dag-nauwkeurigheid (stappen 1 & 2) ──────────────────────────────────────
+# STAP 1 — WU-gemeten-zon herschaling van de Open-Meteo glas-drive. Open-Meteo levert een gladde
+# uur-instraling zonder de wolk-transiënten die op zonnige dagen juist de meeste variatie geven; het
+# co-gelegen WU-pyranometer (al opgehaald voor de bias-correctie) vángt die bursts wel. We schalen de
+# OM direct+diffuus met k = WU_global/OM_global (behoudt de direct/diffuus-split) op de recente
+# stappen rond nu, lineair uitdovend naar 1.0 (pure OM) verder terug — dit project heeft geen WU
+# uur-historie, alleen de nu-meting (mirror van de window-advisor BIAS_DECAY_H). No-op als WU ontbreekt.
+WU_SOLAR_SCALE_DECAY_H = 3.0   # uur: het WU/OM-herschaal-gewicht dooft lineair naar 0 over dit venster
+WU_SOLAR_SCALE_MIN = 0.3       # klem: WU kan bij gebroken bewolking laag/hoog uitschieten
+WU_SOLAR_SCALE_MAX = 1.5
+WU_SOLAR_MIN_WM2 = 20.0        # onder dit zonniveau: herschaling irrelevant (nacht/schemer) → k=1
+# STAP 2 — hoek-afhankelijke glas-transmissie. De vaste 0.7 in build_timeline is de transmissie bij
+# loodrechte inval; echte beglazing laat bij scherende invalshoeken (de lage NW-avondzon op de
+# straatgevel) veel minder door. Standaard ASHRAE-incidentiehoek-modifier Kτα = 1 − b0·(1/cosθ − 1),
+# genormaliseerd op 1 bij loodrechte inval en geklemd op [0,1]; b0≈0.1 voor heldere beglazing. Alleen
+# op de beam-component (diffuus houdt de vlakke transmissie). Achter een vlag zodat de default
+# ongewijzigd blijft (facade_irradiance zonder beam_iam).
+GLASS_IAM_B0 = 0.10
+
+# ── Trappenhuis-stratificatie (stap 3) ──────────────────────────────────────────────
+# De koker is één goedgemengde knoop, maar fysisch pool warme lucht bovenin. We houden de enkele
+# knoop (kalibratie/airflow) maar leggen een begrensde, NIET-leerbare verticale gradiënt γ (°C/m) op —
+# een gedocumenteerde prior zoals ROOF_SOLAR_GAIN, geen vrije parameter (een vrije γ zou degenereren
+# met de deur-advectie). γ schaalt met de verticale temp-spreiding van de gekoppelde kamers (warme
+# kamer boven, koele onder → drijft de stratificatie) en voedt (a) de weergave (top/onder) en (b) de
+# advectieve deur-koppeling: elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v. de
+# vlakke gemiddelde-temp. Opt-in via "stratify": true op de zone in house_model.json → default
+# (afwezig) volledig ongewijzigd.
+STAIR_STRAT_K = 0.06         # °C/m per °C verticale kamer-spreiding
+STAIR_STRAT_MAX_GRAD = 0.5   # °C/m — klem (een ~8m koker → ≤~4°C top-onder-verschil)
+
 # ── Prior-parameters (vertrekpunt vóór het leren) ───────────────────────────────────
 # Alles is een dimensieloze schaal × een fysische basis, zodat het leren rond 1.0 speelt
 # en geclamped blijft in een fysiek plausibele band.
@@ -495,9 +526,19 @@ def sun_position(lat: float, lon: float, when_utc: datetime) -> tuple[float, flo
     return az, el
 
 
+def beam_iam_factor(cos_inc: float, b0: float = GLASS_IAM_B0) -> float:
+    """ASHRAE-incidentiehoek-modifier voor de beam-glas-transmissie: Kτα = 1 − b0·(1/cosθ − 1),
+    genormaliseerd op 1 bij loodrechte inval (cos=1) en geklemd op [0,1]. cos_inc ≤ 0 (zon achter
+    het vlak) → 0. Vangt de scherende-hoek-terugval die de vlakke 0.7-transmissie mist."""
+    if cos_inc <= 1e-6:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - b0 * (1.0 / cos_inc - 1.0)))
+
+
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
                       direct: float, diffuse: float, tilt_deg: float = 90.0,
-                      diffuse_only: bool = False, horizon_deg: float = 0.0) -> float:
+                      diffuse_only: bool = False, horizon_deg: float = 0.0,
+                      beam_iam: bool = False) -> float:
     """Instraling (W/m²) op een vlak met azimut `facade_az` en helling `tilt_deg` vanaf
     horizontaal (90 = verticaal raam, 0 = plat dakraam/skylight). Directe component via de
     invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2.
@@ -523,6 +564,8 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
     # cos(invalshoek) op een vlak met helling β: standaard zon-op-vlak-formule.
     cos_inc = math.cos(zen) * math.cos(beta) + math.sin(zen) * math.sin(beta) * math.cos(daz)
     direct_on = max(0.0, (direct or 0.0) * max(0.0, cos_inc))
+    if beam_iam:
+        direct_on *= beam_iam_factor(cos_inc)   # scherende-hoek-transmissie-terugval (stap 2)
     return direct_on + diff_on
 
 
@@ -929,6 +972,50 @@ def door_mix(house: dict, flows: list[float], openings: list[dict]) -> dict:
     return mix
 
 
+def stair_gradient(vertical_spread: float, k: float = STAIR_STRAT_K,
+                   max_grad: float = STAIR_STRAT_MAX_GRAD) -> float:
+    """Verticale temperatuurgradiënt (°C/m, ≥0) in een verticale koker uit de kamer-spreiding die
+    de stratificatie drijft (warme kamer boven − koele onder). Begrensd, niet-leerbaar. Een
+    inversie (top koeler) wordt niet gemodelleerd → geklemd op ≥0."""
+    return max(0.0, min(max_grad, k * max(0.0, vertical_spread)))
+
+
+def _stratify_zones(house: dict) -> dict:
+    """Zones met "stratify": true → hun verticale-koker-metadata voor de stratificatie-gradiënt:
+    `z_mean` (advectie-referentiehoogte, = gemiddelde deurhoogte), de gekoppelde `doors`
+    {buurzone: hoogte}, en de koker-extent `z_lo`/`z_hi` (laagste/hoogste opening) voor de
+    top/onder-weergave. Zonder de vlag (of zonder deuren) → afwezig, dus geen effect."""
+    out = {}
+    for zid, r in house.get("rooms", {}).items():
+        if not r.get("stratify"):
+            continue
+        doors = {}
+        for d in house.get("doors", {}).values():
+            pair = d.get("between", [])
+            if len(pair) == 2 and zid in pair:
+                other = pair[0] if pair[1] == zid else pair[1]
+                doors[other] = d.get("center_height_m", 0.0)
+        if len(doors) < 2:
+            continue
+        heights = list(doors.values())
+        for coll in ("windows", "vents"):
+            for w in house.get(coll, {}).values():
+                if w.get("room") == zid:
+                    heights.append(w.get("center_height_m", 0.0))
+        out[zid] = {"z_mean": sum(doors.values()) / len(doors), "doors": doors,
+                    "z_lo": min(heights), "z_hi": max(heights)}
+    return out
+
+
+def _stair_gamma(info: dict, temps: dict, t_out: float) -> float:
+    """De verticale gradiënt γ (°C/m) voor één koker: uit de temp-spreiding tussen de hoogst- en
+    laagst-gekoppelde kamer (op deurhoogte). `temps` = actuele zone-luchttemps."""
+    by_h = sorted(info["doors"].items(), key=lambda kv: kv[1])
+    bottom, top = by_h[0][0], by_h[-1][0]
+    spread = temps.get(top, t_out) - temps.get(bottom, t_out)
+    return stair_gradient(spread)
+
+
 # ════════════════════════════════════════════════════════════════════════════════════
 #  2-knoops RC-thermisch model
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1087,7 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     par = _zone_thermal_params(house, params)
     veff = params.get("vent_eff", 1.0)
     rho_cp = 1.2 * CP_AIR
+    strat = _stratify_zones(house)   # verticale-koker-zones (opt-in via "stratify"); leeg → geen effect
 
     Ta = {z: seed.get(z, timeline[0]["T_out"]) for z in zones}
     # Massaknoop richting een warme blend (NEIGHBOR_TEMP) i.p.v. = luchtknoop: met de sim-only
@@ -1023,6 +1111,22 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         # Advectieve geleiding per (zone↔zone) deur (W/K) en per zone naar buiten (vent).
         gdoor = {key: rho_cp * qm * veff for key, qm in mix.items()}
         gvent = {z: rho_cp * fresh.get(z, 0.0) * veff for z in zones}
+        # Trappenhuis-stratificatie: elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v.
+        # de vlakke koker-gemiddelde-temp. Energie-behoudend + matrix-symmetrisch: het hoogte-offset
+        # gaat als bron in b[] (+ op de kamer-luchtknoop, − op de koker), niet in A. γ per stap uit de
+        # verticale kamer-spreiding. Leeg `strat` (geen opt-in) → geen termen, output ongewijzigd.
+        strat_terms = []
+        for sid, info in strat.items():
+            gamma = _stair_gamma(info, Ta, T_out)
+            if gamma == 0.0:
+                continue
+            for other, zh in info["doors"].items():
+                if other not in zi:
+                    continue
+                g = gdoor.get((sid, other), 0.0) + gdoor.get((other, sid), 0.0)
+                if g == 0.0:
+                    continue
+                strat_terms.append((zi[other], zi[sid], g * gamma * (zh - info["z_mean"])))
 
         nsub = max(1, int(math.ceil(step["dt"] / SUBSTEP_S)))
         h = step["dt"] / nsub
@@ -1065,6 +1169,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 A[2 * ka][2 * kb] += -g
                 A[2 * kb][2 * kb] += g
                 A[2 * kb][2 * ka] += -g
+            # Stratificatie-hoogte-offset als symmetrische bron (kamer +, koker −): behoudt energie
+            # en laat A ongemoeid (dus stabiel). Leeg als geen koker gestratificeerd is.
+            for ko, ks, val in strat_terms:
+                b[2 * ko] += val
+                b[2 * ks] -= val
             x = solve_linear(A, b)
             if x is None:
                 break
@@ -1656,8 +1765,21 @@ def _get(h: dict, key: str, i: int):
 #  Timeline-opbouw + dashboard
 # ════════════════════════════════════════════════════════════════════════════════════
 
+def wu_solar_scale_factor(k: float | None, age_h: float,
+                          decay_h: float = WU_SOLAR_SCALE_DECAY_H) -> float:
+    """Per-stap herschaalfactor voor de instraling: blend tussen de WU/OM-zon-ratio `k` (geldig op
+    nu) en 1.0 (pure OM) naar sample-leeftijd. `age_h` = uren vóór nu (negatief = de 2u-vooruitblik,
+    krijgt vol `k`). `k`=None → 1.0 (WU ontbrak; no-op)."""
+    if k is None:
+        return 1.0
+    w = 1.0 if decay_h <= 0 else 1.0 - age_h / decay_h
+    w = min(1.0, max(0.0, w))
+    return 1.0 + (k - 1.0) * w
+
+
 def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
-                   window_h: float) -> list[dict]:
+                   window_h: float, wu_solar_scale: float | None = None,
+                   beam_iam: bool = False) -> list[dict]:
     """Bouw een 15-minuten-raster van drivers over het kalibratievenster t/m nu,
     plus een korte vooruitblik. Per stap: T_out, per-kamer instraling (door het glas),
     wind, en de gerapporteerde openingen-toestand op dat moment."""
@@ -1684,11 +1806,16 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         # ROOF_SOLAR_GAIN, niet in een glas-transmissie) voor de bovenste-verdieping-kamers.
         roof_rooms = [rid for rid, r in house.get("rooms", {}).items() if r.get("roof_m2", 0.0) > 0.0]
         irr_roof = {rid: 0.0 for rid in roof_rooms}
+        # WU/OM-herschaling (stap 1): sterkst rond nu, uitdovend naar 1.0 verder terug. None → 1.0.
+        sc = wu_solar_scale_factor(wu_solar_scale, (now - t).total_seconds() / 3600.0)
         for j in range(SOLAR_SUBSTEPS):
             ts = t + _timedelta_h(0.25 * (j + 0.5) / SOLAR_SUBSTEPS)
             s_az, s_el = sun_position(lat, lon, ts.astimezone(timezone.utc))
             s_direct = _interp_hourly(rows, ts, "direct")
             s_diffuse = _interp_hourly(rows, ts, "diffuse")
+            if sc != 1.0:
+                s_direct = (s_direct or 0.0) * sc
+                s_diffuse = (s_diffuse or 0.0) * sc
             for rid in irr:
                 tot = 0.0
                 for wid, w in house.get("windows", {}).items():
@@ -1699,7 +1826,7 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                     I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), s_az, s_el,  # noqa: E741
                                           s_direct, s_diffuse, w.get("tilt_deg", 90.0),
                                           bool(w.get("diffuse_only", False)),
-                                          w.get("horizon_elevation_deg", 0.0))
+                                          w.get("horizon_elevation_deg", 0.0), beam_iam)
                     tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
                 irr[rid] += tot / SOLAR_SUBSTEPS
             if roof_rooms:
@@ -1776,6 +1903,17 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
             vent_w = round(ctx["rho_cp"] * ctx["veff"] * fresh_m3s * (t_out_now - ta_now), 0)
     sens_series = _to_sensor_series(house, timeline, rid, pred_series)
     trend = _series_trend(sens_series, since=now)
+    # Verticale-koker-stratificatie (stap 3): additieve top/onder-temp + gradiënt voor de weergave
+    # (de koker blijft één knoop; `predicted_air_temp` is het koker-gemiddelde). Alleen bij "stratify".
+    strat_extra = {}
+    strat_info = ctx.get("strat", {}).get(rid)
+    if strat_info and ta_now is not None and t_out_now is not None:
+        gamma = _stair_gamma(strat_info, ta_all, t_out_now)
+        strat_extra = {
+            "stair_gradient_c_per_m": round(gamma, 3),
+            "predicted_temp_top": round(ta_now + gamma * (strat_info["z_hi"] - strat_info["z_mean"]), 2),
+            "predicted_temp_bottom": round(ta_now + gamma * (strat_info["z_lo"] - strat_info["z_mean"]), 2),
+        }
     return {
         "label": room.get("label", rid),
         "from_window_data": wd_key,
@@ -1813,6 +1951,7 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                              if t >= now - _timedelta_h(CALIB_WINDOW_H)],
         "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
         "params": params.get(rid, {}),
+        **strat_extra,
     }
 
 
@@ -1851,6 +1990,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "int_profile_now": internal_gain_profile(now),
         "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
         "ac_room": ac_room, "ac_excluded": ac_excluded or {},
+        "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
     }
     rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                                           actual, now, ctx)
@@ -1896,6 +2036,10 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
             "neighbor_temp": round(_NEIGHBOR_TEMP, 1),
+            # WU/OM glas-drive-herschaling die deze run op de recente stappen is toegepast (stap 1);
+            # null = pure Open-Meteo (WU-zon ontbrak of te laag). Additief.
+            "wu_solar_scale": (round(weather.get("wu_solar_scale"), 2)
+                               if weather.get("wu_solar_scale") is not None else None),
         },
         "openings": states_now,
         "controls": _controls(house, states_now),
@@ -2071,6 +2215,7 @@ def main():
     cur = weather.get("current", {}) or {}
     out_rh_temp = cur.get("temperature_2m")   # rauwe temp bij de gebruikte RH (één sensorpaar)
     wu_temp, wu_solar, wu_humid = fetch_wu_current_temp()
+    wu_solar_scale = None   # WU/OM glas-drive-herschaling (stap 1); None → pure Open-Meteo
     if wu_temp is not None:
         solar_now = wu_solar if wu_solar is not None else cur.get("shortwave_radiation")
         src = "wu" if wu_solar is not None else "om"
@@ -2081,10 +2226,19 @@ def main():
             cur["relative_humidity_2m"] = wu_humid
         print(f"[buiten] WU: {wu_temp}°C → gecorrigeerd {cur['temperature_2m']}°C "
               f"(zon {solar_now} W/m², bron {src}); RH {wu_humid}%")
+        # WU-gemeten-zon herschaling van de glas-drive rond nu: k = WU_global/OM_global (stap 1).
+        om_solar_now = cur.get("shortwave_radiation")
+        if (wu_solar is not None and om_solar_now and om_solar_now >= WU_SOLAR_MIN_WM2
+                and wu_solar >= WU_SOLAR_MIN_WM2):
+            wu_solar_scale = min(WU_SOLAR_SCALE_MAX,
+                                 max(WU_SOLAR_SCALE_MIN, wu_solar / om_solar_now))
+            print(f"[zon] WU/OM glas-drive-herschaling k={wu_solar_scale:.2f} "
+                  f"(WU {wu_solar}, OM {om_solar_now} W/m²)")
     else:
         cur["outside_source"] = "open-meteo"
         print("[buiten] WU niet beschikbaar → Open-Meteo buiten-nu.")
     weather["current"] = cur
+    weather["wu_solar_scale"] = wu_solar_scale
     log = load_openings_log()
     _OPENINGS_CACHE = log
 
@@ -2125,7 +2279,8 @@ def main():
 
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
-    timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H)
+    timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H,
+                              wu_solar_scale=wu_solar_scale, beam_iam=True)
     if not timeline:
         print("[airflow_model] Geen weerdata → kan niet simuleren. Stop.")
         sys.exit(1)

@@ -970,3 +970,136 @@ def _node_residual(zones, ops, pressures, zt, T_out):
         if op["b"] != "outside":
             res[idx[op["b"]]] -= md
     return res
+
+
+# ════════════════════════════════════════════════════════════════════════════════════
+#  Zonnige-dag-nauwkeurigheid (stap 1 WU-zon-herschaling + stap 2 hoek-transmissie)
+# ════════════════════════════════════════════════════════════════════════════════════
+
+def test_beam_iam_factor_grazing_dropoff():
+    # Loodrechte inval (cos=1) → factor 1 (default 0.7-transmissie ongewijzigd). Scherende hoek
+    # → < 1. cos ≤ 0 (zon achter het vlak) → 0. Monotoon dalend naar de horizon.
+    assert am.beam_iam_factor(1.0) == pytest.approx(1.0)
+    assert am.beam_iam_factor(0.0) == 0.0
+    assert am.beam_iam_factor(-0.3) == 0.0
+    import math as _m
+    f60 = am.beam_iam_factor(_m.cos(_m.radians(60)))   # 1/cos=2 → 1 − b0
+    assert f60 == pytest.approx(1.0 - am.GLASS_IAM_B0, abs=1e-9)
+    f75 = am.beam_iam_factor(_m.cos(_m.radians(75)))
+    assert 0.0 <= f75 < f60 < 1.0
+
+
+def test_facade_irradiance_beam_iam_only_touches_beam():
+    # beam_iam dempt enkel de directe component; op een scherende hoek < de default, en nooit
+    # de diffuse view-factor. Default (vlag uit) blijft byte-identiek.
+    az = 309.0
+    plain = am.facade_irradiance(az, az + 60.0, 15.0, 700.0, 120.0, 90.0, False, 0.0)
+    iam = am.facade_irradiance(az, az + 60.0, 15.0, 700.0, 120.0, 90.0, False, 0.0, True)
+    assert iam < plain                                   # scherende avondzon → minder transmissie
+    # Alleen-diffuus (zon onder de horizon): beam-vlag verandert niets (geen beam).
+    night_plain = am.facade_irradiance(az, az, -5.0, 0.0, 80.0, 90.0, False, 0.0)
+    night_iam = am.facade_irradiance(az, az, -5.0, 0.0, 80.0, 90.0, False, 0.0, True)
+    assert night_iam == pytest.approx(night_plain, abs=1e-12)
+
+
+def test_wu_solar_scale_factor_decays_to_one():
+    # Op nu (age 0) → vol k; ouder dan het venster → 1.0 (pure OM); vooruitblik (age<0) → vol k.
+    assert am.wu_solar_scale_factor(1.4, 0.0) == pytest.approx(1.4)
+    assert am.wu_solar_scale_factor(1.4, am.WU_SOLAR_SCALE_DECAY_H) == pytest.approx(1.0)
+    assert am.wu_solar_scale_factor(1.4, 2 * am.WU_SOLAR_SCALE_DECAY_H) == pytest.approx(1.0)
+    assert am.wu_solar_scale_factor(1.4, -1.0) == pytest.approx(1.4)          # vooruitblik
+    mid = am.wu_solar_scale_factor(1.4, am.WU_SOLAR_SCALE_DECAY_H / 2)
+    assert 1.0 < mid < 1.4
+    assert am.wu_solar_scale_factor(None, 0.0) == 1.0                          # WU ontbrak → no-op
+
+
+def test_build_timeline_applies_wu_solar_scale():
+    # Met een WU/OM-schaal wordt de instraling op de nu-stap ~k× de ongeschaalde waarde (de OM
+    # direct+diffuus schalen mee, split behouden). Zonder schaal identiek aan de basis.
+    house = {"rooms": {"r": {}},
+             "windows": {"w": {"room": "r", "facade_azimuth_deg": 309.0,
+                               "glass_m2": 1.0, "tilt_deg": 90.0}}}
+    base = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+    rows = [{"dt": base + timedelta(hours=h), "T_out": 20.0, "direct": 600.0, "diffuse": 100.0,
+             "wind_speed": 3.0, "wind_dir": 309.0, "gust": 5.0, "precip": 0.0, "rh": 50.0}
+            for h in range(0, 4)]
+    now = base + timedelta(hours=1)
+    plain = am.build_timeline(house, {"hourly": rows}, [], now, 1.0)
+    scaled = am.build_timeline(house, {"hourly": rows}, [], now, 1.0, wu_solar_scale=1.5)
+    sp = next(s for s in plain if s["t"] == now)["irr"]["r"]
+    ss = next(s for s in scaled if s["t"] == now)["irr"]["r"]
+    assert sp > 0.0
+    assert ss == pytest.approx(1.5 * sp, rel=1e-9)       # nu-stap: vol k
+
+
+# ════════════════════════════════════════════════════════════════════════════════════
+#  Trappenhuis-stratificatie (stap 3)
+# ════════════════════════════════════════════════════════════════════════════════════
+
+def test_stair_gradient_bounds_and_sign():
+    # Positieve spreiding (warm boven) → positieve gradiënt; geen spreiding of inversie → 0;
+    # grote spreiding → geklemd op de max.
+    assert am.stair_gradient(0.0) == 0.0
+    assert am.stair_gradient(-5.0) == 0.0                # inversie niet gemodelleerd
+    assert am.stair_gradient(2.0) == pytest.approx(am.STAIR_STRAT_K * 2.0)
+    assert am.stair_gradient(1e6) == pytest.approx(am.STAIR_STRAT_MAX_GRAD)
+
+
+def _strat_house():
+    return {
+        "rooms": {
+            "top": {"volume_m3": 32, "exterior_wall_m2": 12},
+            "bot": {"volume_m3": 32, "exterior_wall_m2": 12},
+            "shaft": {"volume_m3": 26, "exterior_wall_m2": 6, "stratify": True},
+        },
+        "doors": {
+            "bot_shaft": {"between": ["bot", "shaft"], "area_m2": 1.8, "center_height_m": 1.0,
+                          "default_state": "open"},
+            "top_shaft": {"between": ["top", "shaft"], "area_m2": 1.8, "center_height_m": 7.0,
+                          "default_state": "open"},
+        },
+    }
+
+
+def test_stratify_zones_metadata():
+    info = am._stratify_zones(_strat_house())
+    assert set(info) == {"shaft"}
+    z = info["shaft"]
+    assert z["doors"] == {"bot": 1.0, "top": 7.0}
+    assert z["z_mean"] == pytest.approx(4.0)             # (1 + 7) / 2
+    assert z["z_lo"] == 1.0 and z["z_hi"] == 7.0
+    # Zonder de vlag → afwezig (default ongewijzigd).
+    house_off = _strat_house()
+    house_off["rooms"]["shaft"].pop("stratify")
+    assert am._stratify_zones(house_off) == {}
+
+
+def test_stair_gamma_from_room_spread():
+    info = am._stratify_zones(_strat_house())["shaft"]
+    temps = {"top": 26.0, "bot": 22.0}                   # spreiding 4°C
+    assert am._stair_gamma(info, temps, 20.0) == pytest.approx(am.stair_gradient(4.0))
+
+
+def test_stratification_shifts_floor_coupling():
+    # Zon alleen op de bovenkamer → top warmer dan onder → verticale spreiding in de koker.
+    # Met stratificatie mengt de bovendeur tegen de warmere koker-top (→ bovenkamer blijft warmer)
+    # en de onderdeur tegen de koelere koker-onder (→ onderkamer koeler). Zonder de vlag identiek.
+    house = _strat_house()
+    params = am.default_params(house)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
+    tl = []
+    for i in range(24 * 4 + 1):
+        t = t0 + timedelta(minutes=15 * i)
+        tl.append({"t": t, "T_out": 20.0, "irr": {"top": 500.0, "bot": 0.0, "shaft": 0.0},
+                   "states": {}, "weather": {"wind_speed": 3.0, "wind_dir": 200.0, "gust": 5.0,
+                   "precip": 0.0, "direct": 0.0, "diffuse": 0.0, "rh": 55}, "dt": 900.0})
+    seed = {z: 20.0 for z in zones}
+    on = am.simulate(house, params, tl, seed, calib_only_rooms={"top", "bot"})
+    house_off = _strat_house()
+    house_off["rooms"]["shaft"].pop("stratify")
+    off = am.simulate(house_off, params, tl, seed, calib_only_rooms={"top", "bot"})
+    assert on["Ta"]["top"] > off["Ta"]["top"] + 1e-3
+    assert on["Ta"]["bot"] < off["Ta"]["bot"] - 1e-3
+    # Het koker-gemiddelde blijft ~behouden (energie-behoudende symmetrische bron, geen netto bron).
+    assert on["Ta"]["shaft"] == pytest.approx(off["Ta"]["shaft"], abs=0.3)

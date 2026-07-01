@@ -5,25 +5,23 @@ Runs in GitHub Actions every morning. Doet:
   1. Haalt WU + Open-Meteo data
   2. Haalt irrigatie-log uit GitHub Gist
   3. Rekent soil water balance uit voor lawn + shrubs
-  4. Als water geven nodig → stuurt Telegram + e-mail
+  4. Als water geven nodig → stuurt Telegram
   5. Schrijft verse data.json terug (voor de GitHub Pages dashboard)
 
 Benodigde env vars (in GitHub Secrets):
   WU_STATION_ID, WU_API_KEY
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID      (optioneel)
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO  (optioneel)
   GIST_ID, GITHUB_TOKEN                     (voor irrigatie-log)
 """
 
 import json
 import os
-import smtplib
-from datetime import date, datetime, timedelta
-from email.mime.text import MIMEText
+from datetime import timedelta
 from pathlib import Path
 
 from gist_io import read_json as gist_read_json
 from notify import run_guarded, sanitize_error, send_telegram
+from shared_const import format_date_nl, local_today
 from soil_model import (SOIL_FC, SOIL_WP, apply_et0_and_balance, assess_status,
                         build_full_dataset, build_monthly_totals_from_days,
                         fetch_open_meteo_archive)
@@ -72,7 +70,7 @@ def load_previous_theta() -> dict:
 
 def bootstrap_monthly_totals(irrigations_raw: dict) -> dict:
     """Eenmalige bootstrap: haal ~13 maanden historische data op en bevries voltooide maanden."""
-    today = date.today()
+    today = local_today()
     first_of_month = today.replace(day=1)
     # Einddatum = laatste dag van vorige maand (archive API heeft lag, voltooide maanden zijn veilig)
     end_date = (first_of_month - timedelta(days=1)).isoformat()
@@ -108,31 +106,6 @@ def load_irrigations_from_gist() -> dict:
     return data
 
 
-def send_email(subject: str, body_html: str) -> bool:
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER")
-    pw   = os.getenv("SMTP_PASS")
-    to   = os.getenv("EMAIL_TO")
-    if not all([host, user, pw, to]):
-        print("[email] geen creds, overslaan")
-        return False
-    try:
-        msg = MIMEText(body_html, "html", "utf-8")
-        msg["Subject"] = subject
-        msg["From"] = user
-        msg["To"] = to
-        with smtplib.SMTP(host, port) as s:
-            s.starttls()
-            s.login(user, pw)
-            s.send_message(msg)
-        print("[email] ✓ verzonden")
-        return True
-    except Exception as e:
-        print(f"[email] fout: {sanitize_error(e)}")
-        return False
-
-
 def format_telegram(status_lawn: dict, status_shrubs: dict,
                     generated_at: str) -> str:
     icons = {"high": "🚨", "medium": "💧", "low": "⏳", "none": "✓"}
@@ -158,9 +131,10 @@ def format_telegram(status_lawn: dict, status_shrubs: dict,
     both_need = status_lawn["proposal_min"] > 0 and status_shrubs["proposal_min"] > 0
     one_needs = status_lawn["proposal_min"] > 0 or status_shrubs["proposal_min"] > 0
 
+    today = local_today()
     lines = [
         "<b>Humus &amp; Heaven · dagcheck</b>",
-        f"<i>{datetime.now().strftime('%A %d %B %Y')}</i>",
+        f"<i>{format_date_nl(today)} {today.year}</i>",
         "",
         *lawn_lines,
         "",
@@ -200,43 +174,6 @@ def format_telegram(status_lawn: dict, status_shrubs: dict,
     if dash:
         lines += ["", f'<a href="{dash}">→ Open dashboard</a>']
     return "\n".join(lines)
-
-
-def format_email(status_lawn: dict, status_shrubs: dict) -> tuple:
-    icons = {"high": "🚨", "medium": "💧", "low": "⏳", "none": "✓"}
-    highest = status_lawn if {"high":3,"medium":2,"low":1,"none":0}[status_lawn["priority"]] \
-        >= {"high":3,"medium":2,"low":1,"none":0}[status_shrubs["priority"]] else status_shrubs
-    subject = f"{icons[highest['priority']]} Humus &amp; Heaven — {highest['recommendation']}"
-    dash = os.getenv("DASHBOARD_URL", "#")
-    body = f"""
-<html><body style="font-family:Georgia,serif;color:#2a241b;background:#f3ecd9;padding:32px;">
-  <h1 style="font-style:italic;font-weight:500;">Humus &amp; Heaven</h1>
-  <p style="color:#5c4f3c;font-style:italic;">
-    Dagcheck voor {datetime.now().strftime('%A %d %B %Y')}
-  </p>
-  <table cellpadding="12" style="border-collapse:collapse;margin-top:16px;">
-    <tr style="border-bottom:1px solid #2a241b33;">
-      <td><b>Gras</b><br><small>15 cm wortelzone</small></td>
-      <td>{icons[status_lawn['priority']]} {status_lawn['recommendation']}<br>
-          <small style="color:#5c4f3c;">Beschikbaar water {100 - status_lawn['depletion_pct']:.0f}%</small></td>
-    </tr>
-    <tr>
-      <td><b>Struiken</b><br><small>40 cm wortelzone</small></td>
-      <td>{icons[status_shrubs['priority']]} {status_shrubs['recommendation']}<br>
-          <small style="color:#5c4f3c;">Beschikbaar water {100 - status_shrubs['depletion_pct']:.0f}%</small></td>
-    </tr>
-  </table>
-  <p style="margin-top:24px;">
-    🌧️ Regen komende 7 dagen: <b>{status_lawn['rain7_mm']:.1f} mm</b>
-  </p>
-  <p><a href="{dash}" style="color:#3d5a3a;">→ Open dashboard</a></p>
-  <hr style="border:none;border-top:1px dashed #2a241b66;margin-top:32px;">
-  <p style="font-size:11px;color:#5c4f3c;font-style:italic;">
-    FAO-56 Penman-Monteith ET₀ + single-bucket water balance voor zandgrond Utrecht Oost.
-  </p>
-</body></html>
-    """.strip()
-    return subject, body
 
 
 def main():
@@ -300,8 +237,6 @@ def main():
         print("→ Notificatie nodig, versturen...")
         tg_text = format_telegram(status_lawn, status_shrubs, data["generated_at"])
         send_telegram(tg_text)
-        # subject, body = format_email(status_lawn, status_shrubs)
-        # send_email(subject, body)
     else:
         print("→ Geen notificatie nodig (alles rustig)")
 

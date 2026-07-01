@@ -24,12 +24,11 @@ State wordt automatisch bijgewerkt na elk advies.
 import json
 import os
 import sys
-from datetime import datetime
 
 import shared_const
-from shared_const import utc_now_iso
+from shared_const import format_date_nl, parse_date, utc_now_iso
 from http_util import get_json
-from notify import run_guarded, send_telegram
+from notify import run_guarded, sanitize_error, send_telegram
 
 # ── Configuratie ──────────────────────────────────────────────────────────────
 STATE_FILE         = os.environ.get("SANDBOX_STATE_FILE", "sandbox_state.json")
@@ -51,7 +50,7 @@ def load_state() -> dict:
                 data = json.load(f)
             return {**defaults, **data}
         except (json.JSONDecodeError, OSError) as e:
-            print(f"[state] {STATE_FILE} onleesbaar ({e}), terug naar defaults")
+            print(f"[state] {STATE_FILE} onleesbaar ({sanitize_error(e)}), terug naar defaults")
     return defaults
 
 
@@ -269,10 +268,7 @@ def evening_check(state: dict, forecast: list[dict]) -> tuple[str | None, dict]:
 def _format_date(d: str | None) -> str:
     if not d:
         return "onbekend"
-    dt = datetime.strptime(d, "%Y-%m-%d")
-    nl_days   = ["maandag","dinsdag","woensdag","donderdag","vrijdag","zaterdag","zondag"]
-    nl_months = ["","jan","feb","mrt","apr","mei","jun","jul","aug","sep","okt","nov","dec"]
-    return f"{nl_days[dt.weekday()]} {dt.day} {nl_months[dt.month]}"
+    return format_date_nl(parse_date(d))
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -287,6 +283,11 @@ def main():
 
     state    = load_state()
     forecast = fetch_forecast()
+    if not forecast:
+        # API-hiccup met lege daily-array: zonder vandaag-rij valt er niets te
+        # beslissen — state ongemoeid laten en de volgende run het laten proberen.
+        print("[forecast] leeg antwoord van Open-Meteo → geen advies, state ongewijzigd")
+        return
 
     print(f"[forecast] Vandaag: {forecast[0]}")
     if len(forecast) > 1:

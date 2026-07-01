@@ -133,27 +133,49 @@ def cloud_corrected_uv(uv_clear_sky, cloud_cover_pct):
 def parse_hourly(forecast):
     h = forecast["hourly"]
     n = len(h["time"])
-    uv_clear_series = h.get("uv_index_clear_sky", [None] * n)
-    cloud_series    = h.get("cloud_cover",        [None] * n)
-    gust_series     = h.get("wind_gusts_10m",     [None] * n)
+
+    def col(key):
+        # Defensief: een gedeeltelijk Open-Meteo-antwoord (ontbrekende of te
+        # korte reeks) mag de hele briefing niet laten crashen — pad met None.
+        vals = h.get(key) or []
+        return list(vals) + [None] * (n - len(vals))
+
+    temp_series   = col("temperature_2m")
+    feels_series  = col("apparent_temperature")
+    precip_series = col("precipitation")
+    pop_series    = col("precipitation_probability")
+    uv_series     = col("uv_index")
+    uv_clear_series = col("uv_index_clear_sky")
+    cloud_series  = col("cloud_cover")
+    rad_series    = col("direct_radiation")
+    wind_series   = col("wind_speed_10m")
+    gust_series   = col("wind_gusts_10m")
     rows = []
+    skipped = 0
     for i, t in enumerate(h["time"]):
         dt = datetime.fromisoformat(t)
+        if temp_series[i] is None:
+            skipped += 1  # zonder temperatuur is het uur onbruikbaar
+            continue
         uv_clear = uv_clear_series[i]
         cloud    = cloud_series[i]
-        uv = cloud_corrected_uv(uv_clear, cloud) if uv_clear is not None else h["uv_index"][i]
+        uv = cloud_corrected_uv(uv_clear, cloud) if uv_clear is not None else uv_series[i]
         rows.append({
             "dt": dt,
-            "temp":       h["temperature_2m"][i],
-            "feels":      h["apparent_temperature"][i],
-            "precip":     h["precipitation"][i],
-            "pop":        h["precipitation_probability"][i],
+            "temp":       temp_series[i],
+            # Ontbrekende nevenreeksen degraderen naar een neutrale waarde
+            # i.p.v. een crash: feels ≈ temp, regen/kans/straling/wind = 0.
+            "feels":      feels_series[i] if feels_series[i] is not None else temp_series[i],
+            "precip":     precip_series[i] or 0.0,
+            "pop":        pop_series[i] or 0,
             "uv":         uv,
             "cloud":      cloud,
-            "direct_rad": h["direct_radiation"][i],
-            "wind_spd":   h["wind_speed_10m"][i],
+            "direct_rad": rad_series[i] or 0.0,
+            "wind_spd":   wind_series[i] or 0.0,
             "wind_gust":  gust_series[i],
         })
+    if skipped:
+        print(f"[parse] {skipped}/{n} uren zonder temperatuur overgeslagen")
     return rows
 
 

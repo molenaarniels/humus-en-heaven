@@ -82,7 +82,11 @@ header { padding: 32px 40px 16px; }
     --moss: #3d5a3a; --moss-light: #6b8562;
     --clay: #b8532a; --sand: #c9a978;
     --rain: #4a6b8a; --sun: #d4a017; --dry: #a0421a;
+    --wet: #2d4a5c;
   }
+/* ↑ Eén bron voor het palet. js/theme.js is de JS-spiegel (COLORS) — een
+   kleurwijziging dus op beide plekken doorvoeren. Pagina's herdefiniëren
+   deze variabelen niet meer in hun eigen <style>-blok. */
 
 .grid { display: grid; gap: 24px; padding: 24px 40px 0; }
 

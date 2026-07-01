@@ -360,13 +360,19 @@ WU_SOLAR_SCALE_DECAY_H = 3.0   # uur: het WU/OM-herschaal-gewicht dooft lineair 
 WU_SOLAR_SCALE_MIN = 0.3       # klem: WU kan bij gebroken bewolking laag/hoog uitschieten
 WU_SOLAR_SCALE_MAX = 1.5
 WU_SOLAR_MIN_WM2 = 20.0        # onder dit zonniveau: herschaling irrelevant (nacht/schemer) → k=1
-# STAP 2 — hoek-afhankelijke glas-transmissie. De vaste 0.7 in build_timeline is de transmissie bij
+# STAP 2 — hoek-afhankelijke glas-transmissie. GLASS_TRANSMITTANCE (0.7) is de transmissie bij
 # loodrechte inval; echte beglazing laat bij scherende invalshoeken (de lage NW-avondzon op de
 # straatgevel) veel minder door. Standaard ASHRAE-incidentiehoek-modifier Kτα = 1 − b0·(1/cosθ − 1),
 # genormaliseerd op 1 bij loodrechte inval en geklemd op [0,1]; b0≈0.1 voor heldere beglazing. Alleen
 # op de beam-component (diffuus houdt de vlakke transmissie). Achter een vlag zodat de default
 # ongewijzigd blijft (facade_irradiance zonder beam_iam).
 GLASS_IAM_B0 = 0.10
+# Glas-zonwinst in build_timeline: transmissie bij loodrechte inval (dubbel glas,
+# SHGC-achtig) en de fractie van het raamkozijn die glas is wanneer `glass_m2`
+# niet expliciet in house_model.json staat. Zelfde status als GLASS_IAM_B0:
+# gedocumenteerde fysische priors, bewust niet leerbaar.
+GLASS_TRANSMITTANCE = 0.7
+GLASS_AREA_FRACTION = 0.6
 
 # ── Trappenhuis-stratificatie (stap 3) ──────────────────────────────────────────────
 # De koker is één goedgemengde knoop, maar fysisch pool warme lucht bovenin. We houden de enkele
@@ -1910,7 +1916,8 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                                           s_direct, s_diffuse, w.get("tilt_deg", 90.0),
                                           bool(w.get("diffuse_only", False)),
                                           w.get("horizon_elevation_deg", 0.0), beam_iam)
-                    tot += 0.7 * shade * I * w.get("glass_m2", 0.6 * w.get("area_m2", 1.0))
+                    tot += GLASS_TRANSMITTANCE * shade * I * w.get(
+                        "glass_m2", GLASS_AREA_FRACTION * w.get("area_m2", 1.0))
                 irr[rid] += tot / SOLAR_SUBSTEPS
             if roof_rooms:
                 # Plat dak (tilt 0) → azimut-onafhankelijk; één waarde voor alle dak-kamers.

@@ -760,7 +760,7 @@ def apply_et0_and_balance(series: List[Dict],
                 lat_rad=lat_rad, doy=doy,
             ), 2)
         except Exception as e:
-            print(f"[ET0] {d.get('date')}: {type(e).__name__}: {e}")
+            print(f"[ET0] {d.get('date')}: {type(e).__name__}: {sanitize_error(e)}")
             d["ET0"] = None
     for d in series:
         if d["ET0"] is None:

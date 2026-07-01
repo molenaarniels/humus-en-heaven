@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-01T20:30:00.329710+02:00",
+  "updated_at": "2026-07-01T20:45:01.053138+02:00",
   "model_version": "23011cd",
   "params": {
     "cp_shelter": 0.10668300264397493,
@@ -61,7 +61,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 0.791,
+  "rmse": 0.776,
   "railed": [
     "global.cp_shelter@floor",
     "living.solar_gain@floor",
@@ -70,21 +70,6 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
-    {
-      "t": "2026-06-28T14:15:00.892309+02:00",
-      "rmse": 1.002,
-      "held": false,
-      "version": "e19b887",
-      "skill": 0.098,
-      "rmse_naive": 1.111,
-      "wx": {
-        "tmax": 38.9,
-        "solar_peak": 817,
-        "solar_mean": 270
-      },
-      "rmse_logged": 3.217,
-      "recomputed": true
-    },
     {
       "t": "2026-06-28T14:30:00.543690+02:00",
       "rmse": 1.002,
@@ -1841,11 +1826,11 @@
     },
     {
       "t": "2026-06-30T01:45:00.964479+02:00",
-      "rmse": 0.855,
+      "rmse": 0.603,
       "held": false,
       "version": "29e7473",
-      "skill": 0.666,
-      "rmse_naive": 2.558,
+      "skill": 0.541,
+      "rmse_naive": 1.314,
       "wx": {
         "tmax": 29.2,
         "solar_peak": 861,
@@ -2120,16 +2105,18 @@
     },
     {
       "t": "2026-06-30T08:15:01.035349+02:00",
-      "rmse": 0.952,
+      "rmse": 0.699,
       "held": false,
       "version": "8dc3bd4",
-      "skill": 0.577,
-      "rmse_naive": 2.25,
+      "skill": 0.716,
+      "rmse_naive": 2.458,
       "wx": {
         "tmax": 29.2,
         "solar_peak": 861,
         "solar_mean": 307
-      }
+      },
+      "rmse_logged": 0.952,
+      "recomputed": true
     },
     {
       "t": "2026-06-30T10:31:09.572352+02:00",
@@ -3489,6 +3476,19 @@
         "tmax": 26.7,
         "solar_peak": 860,
         "solar_mean": 201
+      }
+    },
+    {
+      "t": "2026-07-01T20:45:01.053138+02:00",
+      "rmse": 0.776,
+      "held": false,
+      "version": "23011cd",
+      "skill": 0.679,
+      "rmse_naive": 2.42,
+      "wx": {
+        "tmax": 26.7,
+        "solar_peak": 860,
+        "solar_mean": 202
       }
     }
   ],

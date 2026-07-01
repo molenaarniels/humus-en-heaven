@@ -376,12 +376,18 @@ GLASS_IAM_B0 = 0.10
 # kamer boven, koele onder → drijft de stratificatie) en voedt (a) de weergave (top/onder) en (b) de
 # advectieve deur-koppeling: elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v. de
 # vlakke gemiddelde-temp. Opt-in via "stratify": true op de zone in house_model.json → default
-# (afwezig) volledig ongewijzigd. γ heeft twee drijvers (beide ≥0): de verticale kamer-spreiding
-# (dag+nacht basis) én de zon die bovenin de koker landt — de skylight-zon + dak-sol-air bereiken
-# door de draai-trap de onderkant niet, dus op een zonnige dag staat de top véél warmer dan de bg.
-STAIR_STRAT_K = 0.08         # °C/m per °C verticale kamer-spreiding
-STAIR_STRAT_SOLAR_K = 0.0004  # °C/m per W/m² dak-/skylight-instraling op de kokertop
-STAIR_STRAT_MAX_GRAD = 0.6   # °C/m — klem (een ~8m koker → ~5°C top-onder-verschil)
+# (afwezig) volledig ongewijzigd.
+# γ is GEEN afgestemde constante meer maar de kleinste-kwadraten-HELLING van de kamertemp t.o.v.
+# deurhoogte door de gekoppelde kamers (ted 1.0m, hotties 3.9m, office 7.0m) — die kamers grenzen
+# met een OPEN deur aan de koker en zijn dus een directe proxy-meting van het verticale profiel
+# (gevalideerd: 142 tado-punten gaven een gemeten helling ~0.15 °C/m, piek ~0.67 op de zonnige
+# stretch). Zo ijkt de gradiënt zichzelf op de kamers en hoeft er geen K/zon-constante geraden te
+# worden — de zon zit al ín de kamertemps (office loopt warm in de middag → de helling steilt
+# vanzelf). Alleen deuren die op dat moment OPEN zijn tellen mee (dichte deur = ontkoppeld); <2
+# open verdiepingen → vlak. Enkel de klem blijft een prior.
+STAIR_STRAT_MAX_GRAD = 0.7   # °C/m — klem (gemeten kamer-helling piekte op ~0.67; ~8m koker → ~5°C
+                             # top-onder-verschil). Rail tegen office's eigen zonwinst die de helling
+                             # op de zonnigste momenten kunstmatig zou opblazen.
 
 # ── Prior-parameters (vertrekpunt vóór het leren) ───────────────────────────────────
 # Alles is een dimensieloze schaal × een fysische basis, zodat het leren rond 1.0 speelt
@@ -975,15 +981,23 @@ def door_mix(house: dict, flows: list[float], openings: list[dict]) -> dict:
     return mix
 
 
-def stair_gradient(vertical_spread: float, solar_wm2: float = 0.0, k: float = STAIR_STRAT_K,
-                   solar_k: float = STAIR_STRAT_SOLAR_K,
-                   max_grad: float = STAIR_STRAT_MAX_GRAD) -> float:
-    """Verticale temperatuurgradiënt (°C/m, ≥0) in een verticale koker. Twee drijvers, beide ≥0:
-    de kamer-spreiding (warme kamer boven − koele onder) plus de zon die bovenin de koker landt
-    (skylight + dak-sol-air; bereikt door de draai-trap de onderkant niet, dus zon steilt de
-    top-onder-gradiënt extra op). Begrensd, niet-leerbaar. Een inversie (top koeler) wordt niet
-    gemodelleerd → geklemd op ≥0."""
-    return max(0.0, min(max_grad, k * max(0.0, vertical_spread) + solar_k * max(0.0, solar_wm2)))
+def stair_gradient(points: list, max_grad: float = STAIR_STRAT_MAX_GRAD) -> float:
+    """Verticale temperatuurgradiënt γ (°C/m, ≥0) als de kleinste-kwadraten-HELLING van kamertemp
+    t.o.v. deurhoogte door de gekoppelde (open-deur) kamers — de kamers zijn de proxy-meting van
+    het koker-profiel, dus γ ijkt zich op de data i.p.v. op een geraden constante. `points` =
+    lijst (hoogte_m, temp_°C). <2 punten op verschillende hoogtes → 0 (vlak). Geklemd op
+    [0, max_grad]; een inversie (top koeler → negatieve helling) wordt niet doorgezet."""
+    pts = [(z, t) for z, t in points if t is not None]
+    if len({z for z, _ in pts}) < 2:
+        return 0.0
+    n = len(pts)
+    mz = sum(z for z, _ in pts) / n
+    mt = sum(t for _, t in pts) / n
+    den = sum((z - mz) ** 2 for z, _ in pts)
+    if den <= 0.0:
+        return 0.0
+    slope = sum((z - mz) * (t - mt) for z, t in pts) / den
+    return max(0.0, min(max_grad, slope))
 
 
 def _stratify_zones(house: dict) -> dict:
@@ -1013,14 +1027,14 @@ def _stratify_zones(house: dict) -> dict:
     return out
 
 
-def _stair_gamma(info: dict, temps: dict, t_out: float, solar_wm2: float = 0.0) -> float:
-    """De verticale gradiënt γ (°C/m) voor één koker: uit de temp-spreiding tussen de hoogst- en
-    laagst-gekoppelde kamer (op deurhoogte) plus de zon-instraling op de kokertop (dak-/skylight
-    W/m²). `temps` = actuele zone-luchttemps."""
-    by_h = sorted(info["doors"].items(), key=lambda kv: kv[1])
-    bottom, top = by_h[0][0], by_h[-1][0]
-    spread = temps.get(top, t_out) - temps.get(bottom, t_out)
-    return stair_gradient(spread, solar_wm2)
+def _stair_gamma(info: dict, temps: dict, open_others: set | None = None) -> float:
+    """De verticale gradiënt γ (°C/m) voor één koker: de kleinste-kwadraten-helling van de
+    gekoppelde kamertemps t.o.v. hun deurhoogte. `temps` = actuele zone-luchttemps. `open_others`
+    = de kamers waarvan de koker-deur NÚ open staat (None = alle deuren meetellen); een dichte deur
+    ontkoppelt die kamer, dus die valt uit de regressie."""
+    pts = [(zh, temps[o]) for o, zh in info["doors"].items()
+           if o in temps and (open_others is None or o in open_others)]
+    return stair_gradient(pts)
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1120,20 +1134,25 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         gvent = {z: rho_cp * fresh.get(z, 0.0) * veff for z in zones}
         # Trappenhuis-stratificatie: elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v.
         # de vlakke koker-gemiddelde-temp. Energie-behoudend + matrix-symmetrisch: het hoogte-offset
-        # gaat als bron in b[] (+ op de kamer-luchtknoop, − op de koker), niet in A. γ per stap uit de
-        # verticale kamer-spreiding. Leeg `strat` (geen opt-in) → geen termen, output ongewijzigd.
+        # gaat als bron in b[] (+ op de kamer-luchtknoop, − op de koker), niet in A. γ = kleinste-
+        # kwadraten-helling door de OPEN-deur-kamers (proxy-meting van het profiel). Leeg `strat`
+        # (geen opt-in) → geen termen, output ongewijzigd.
         strat_terms = []
-        for sid, info in strat.items():
-            gamma = _stair_gamma(info, Ta, T_out, step.get("irr_roof", {}).get(sid, 0.0))
-            if gamma == 0.0:
-                continue
-            for other, zh in info["doors"].items():
-                if other not in zi:
+        if strat:
+            open_pairs = {(op["a"], op["b"]) for op in ops if op.get("b") != "outside"}
+            for sid, info in strat.items():
+                open_others = {o for o in info["doors"]
+                               if (sid, o) in open_pairs or (o, sid) in open_pairs}
+                gamma = _stair_gamma(info, Ta, open_others)
+                if gamma == 0.0:
                     continue
-                g = gdoor.get((sid, other), 0.0) + gdoor.get((other, sid), 0.0)
-                if g == 0.0:
-                    continue
-                strat_terms.append((zi[other], zi[sid], g * gamma * (zh - info["z_mean"])))
+                for other, zh in info["doors"].items():
+                    if other not in zi or other not in open_others:
+                        continue
+                    g = gdoor.get((sid, other), 0.0) + gdoor.get((other, sid), 0.0)
+                    if g == 0.0:
+                        continue
+                    strat_terms.append((zi[other], zi[sid], g * gamma * (zh - info["z_mean"])))
 
         nsub = max(1, int(math.ceil(step["dt"] / SUBSTEP_S)))
         h = step["dt"] / nsub
@@ -1914,9 +1933,13 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
     # (de koker blijft één knoop; `predicted_air_temp` is het koker-gemiddelde). Alleen bij "stratify".
     strat_extra = {}
     strat_info = ctx.get("strat", {}).get(rid)
-    if strat_info and ta_now is not None and t_out_now is not None:
-        roof_now = now_step.get("irr_roof", {}).get(rid, 0.0) if now_step else 0.0
-        gamma = _stair_gamma(strat_info, ta_all, t_out_now, roof_now)
+    if strat_info and ta_now is not None and t_out_now is not None and now_step is not None:
+        strat_ops = build_openings(house, now_step["states"], now_step["weather"], params,
+                                   ta_all, t_out_now)
+        open_pairs = {(op["a"], op["b"]) for op in strat_ops if op.get("b") != "outside"}
+        open_others = {o for o in strat_info["doors"]
+                       if (rid, o) in open_pairs or (o, rid) in open_pairs}
+        gamma = _stair_gamma(strat_info, ta_all, open_others)
         strat_extra = {
             "stair_gradient_c_per_m": round(gamma, 3),
             "predicted_temp_top": round(ta_now + gamma * (strat_info["z_hi"] - strat_info["z_mean"]), 2),

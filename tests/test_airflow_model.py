@@ -1036,13 +1036,17 @@ def test_build_timeline_applies_wu_solar_scale():
 #  Trappenhuis-stratificatie (stap 3)
 # ════════════════════════════════════════════════════════════════════════════════════
 
-def test_stair_gradient_bounds_and_sign():
-    # Positieve spreiding (warm boven) → positieve gradiënt; geen spreiding of inversie → 0;
-    # grote spreiding → geklemd op de max.
-    assert am.stair_gradient(0.0) == 0.0
-    assert am.stair_gradient(-5.0) == 0.0                # inversie niet gemodelleerd
-    assert am.stair_gradient(2.0) == pytest.approx(am.STAIR_STRAT_K * 2.0)
-    assert am.stair_gradient(1e6) == pytest.approx(am.STAIR_STRAT_MAX_GRAD)
+def test_stair_gradient_slope_and_bounds():
+    # γ = kleinste-kwadraten-helling van temp t.o.v. hoogte door de kamer-punten. Warm boven →
+    # positieve helling; inversie (top koeler) → 0; <2 hoogtes → 0; steile helling → geklemd.
+    assert am.stair_gradient([(1.0, 22.0), (7.0, 24.4)]) == pytest.approx(0.4)   # 2.4°C / 6m
+    assert am.stair_gradient([(1.0, 24.0), (7.0, 22.0)]) == 0.0                  # inversie
+    assert am.stair_gradient([(3.0, 23.0)]) == 0.0                              # 1 punt
+    assert am.stair_gradient([]) == 0.0
+    assert am.stair_gradient([(2.0, 20.0), (2.0, 25.0)]) == 0.0                 # zelfde hoogte
+    assert am.stair_gradient([(1.0, 20.0), (7.0, 100.0)]) == am.STAIR_STRAT_MAX_GRAD  # geklemd
+    # Drie punten: helling via kleinste kwadraten (hier exact lineair → 0.5 °C/m).
+    assert am.stair_gradient([(1.0, 22.0), (4.0, 23.5), (7.0, 25.0)]) == pytest.approx(0.5)
 
 
 def _strat_house():
@@ -1074,10 +1078,16 @@ def test_stratify_zones_metadata():
     assert am._stratify_zones(house_off) == {}
 
 
-def test_stair_gamma_from_room_spread():
+def test_stair_gamma_room_slope_and_door_filter():
     info = am._stratify_zones(_strat_house())["shaft"]
-    temps = {"top": 26.0, "bot": 22.0}                   # spreiding 4°C
-    assert am._stair_gamma(info, temps, 20.0) == pytest.approx(am.stair_gradient(4.0))
+    temps = {"top": 25.0, "bot": 22.0}                   # (7m,25) (1m,22) → 3°C / 6m = 0.5 (< klem)
+    # Alle deuren open → helling door beide kamers.
+    assert am._stair_gamma(info, temps) == pytest.approx(am.stair_gradient([(1.0, 22.0), (7.0, 25.0)]))
+    assert am._stair_gamma(info, temps) == pytest.approx(3.0 / 6.0)
+    # Eén deur dicht → <2 open kamers → vlak (die kamer is ontkoppeld, geen proxy).
+    assert am._stair_gamma(info, temps, open_others={"top"}) == 0.0
+    # Ontbrekende kamertemp valt eveneens uit de regressie.
+    assert am._stair_gamma(info, {"top": 25.0}) == 0.0
 
 
 def test_stratification_shifts_floor_coupling():
@@ -1105,19 +1115,10 @@ def test_stratification_shifts_floor_coupling():
     assert on["Ta"]["shaft"] == pytest.approx(off["Ta"]["shaft"], abs=0.3)
 
 
-def test_stair_gradient_solar_steepens():
-    # De zon-op-de-kokertop-term verhoogt de gradiënt bovenop de kamer-spreiding (skylight-zon landt
-    # bovenin, bereikt de bg niet). Zon = 0 → oud gedrag; meer zon → steiler, tot de klem.
-    base = am.stair_gradient(2.0, 0.0)
-    sunny = am.stair_gradient(2.0, 500.0)
-    assert sunny > base
-    assert sunny == pytest.approx(am.STAIR_STRAT_K * 2.0 + am.STAIR_STRAT_SOLAR_K * 500.0)
-    assert am.stair_gradient(2.0, 1e9) == am.STAIR_STRAT_MAX_GRAD          # geklemd
-
-
-def test_stair_gamma_uses_top_solar():
+def test_stair_gamma_steeper_when_top_hotter():
+    # De kamers zíjn de proxy-meting: hoe warmer de bovenkamer t.o.v. de onderkamer, hoe steiler γ
+    # (de zon zit al ín de kamertemp — geen aparte zon-constante meer nodig).
     info = am._stratify_zones(_strat_house())["shaft"]
-    temps = {"top": 24.0, "bot": 22.0}
-    dark = am._stair_gamma(info, temps, 20.0, 0.0)
-    lit = am._stair_gamma(info, temps, 20.0, 600.0)
-    assert lit > dark
+    mild = am._stair_gamma(info, {"top": 23.0, "bot": 22.0})
+    hot = am._stair_gamma(info, {"top": 26.0, "bot": 22.0})
+    assert hot > mild > 0.0

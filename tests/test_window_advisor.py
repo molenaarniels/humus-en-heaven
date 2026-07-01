@@ -12,7 +12,7 @@ import pytest
 
 import window_advisor as wa
 from window_advisor import (convert_rh, decide, humidity_offset, next_reopen,
-                            open_desire, room_trend)
+                            open_desire, predict_open_intervals, room_trend)
 
 LOW, HIGH = 19.5, 22.0  # voorbeeldcomfortband (Living room-achtig)
 
@@ -200,3 +200,39 @@ def test_next_reopen_none_als_warm_blijft():
     now = datetime(2026, 6, 10, 18, 0)
     hourly = [{"dt": now + timedelta(hours=h), "temp": 30.0} for h in range(1, 6)]
     assert next_reopen(hourly, 24.0, now) is None
+
+
+# ── predict_open_intervals ─────────────────────────────────────────────────────
+
+def _fc(now, temps):
+    """Bouw een uurlijkse forecast_corr vanaf `now` (out_corr == out_raw)."""
+    return [{"dt": now + timedelta(hours=h), "out_raw": t, "out_corr": t}
+            for h, t in enumerate(temps)]
+
+
+def test_predict_open_kwartier_granulariteit():
+    # Binnen 24°, vlakke trend, buiten kruist tussen uur +1 (24.5) en +2 (23.0)
+    # onder de open-drempel (inside − OPEN_MARGIN). De crossover valt binnen het uur,
+    # dus de starttijd hoort op een kwartier te vallen, niet op het hele uur.
+    now = datetime(2026, 6, 10, 18, 0)
+    high = 22.0
+    # inside 24 → open-drempel = 24 − OPEN_MARGIN (=22.5). Buiten kruist 'm tussen
+    # uur +1 (23.0) en uur +2 (22.0), dus de crossover valt midden in het uur.
+    fc = _fc(now, [26.0, 23.0, 22.0, 22.0])
+    intervals, proj = predict_open_intervals(fc, inside_now=24.0, slope=0.0,
+                                             now=now, high=high)
+    assert intervals, "verwacht een open-interval"
+    start = intervals[0]["start"]
+    minute = int(start.split(":")[1])
+    assert minute % wa.PREDICT_STEP_MIN == 0          # op het raster
+    assert minute != 0                                # niet op het hele uur geplakt
+    # proj blijft één waarde per forecast-uur (dashboard-grafiek).
+    assert len(proj) == len(fc)
+
+
+def test_predict_open_geen_crossover():
+    now = datetime(2026, 6, 10, 18, 0)
+    fc = _fc(now, [30.0, 30.0, 30.0])  # buiten blijft warmer dan binnen − marge
+    intervals, _ = predict_open_intervals(fc, inside_now=24.0, slope=0.0,
+                                          now=now, high=22.0)
+    assert intervals == []

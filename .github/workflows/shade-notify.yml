@@ -1,0 +1,121 @@
+name: Zonwering-adviseur
+
+on:
+  schedule:
+    # Fallback ~25 min ná het orchestrator-doel (08:15 Amsterdam, plan-stand).
+    # Normaal dispatcht de Timing Orchestrator het plan al; deze cron vuurt
+    # alleen als de orchestrator uitviel. De guard-job dedupt. De reminder-stand
+    # heeft géén fallback-cron — die is puur orchestrator-gedreven (leest
+    # reminder_at uit de gecommitte shade_state.json) en het script is idempotent.
+    - cron: "40 8 * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan (ochtend-dagplan) of reminder (eerste dicht-moment)"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - reminder
+      dry_run:
+        description: "Print zonder Telegram te sturen"
+        type: boolean
+        default: false
+
+# Eén run tegelijk: plan- en reminder-dispatches committen allebei
+# shade_state.json — serialiseer ze.
+concurrency:
+  group: shade-notify
+  cancel-in-progress: false
+
+jobs:
+  # Dedup t.o.v. de orchestrator: skip de fallback-cron als deze workflow vandaag
+  # al een (niet-mislukte) run had. Alleen op `schedule` — handmatige en
+  # orchestrator-dispatches (beide workflow_dispatch) draaien altijd door.
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      handled: ${{ steps.check.outputs.handled }}
+    steps:
+      - name: Skip if already handled today
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          since=$(TZ=Europe/Amsterdam date -d "today 00:00" +%s)
+          others=$(gh run list --workflow shade-notify.yml -L 40 \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }}
+                   and (.createdAt|fromdateiso8601) >= $since
+                   and .conclusion != \"failure\" and .conclusion != \"cancelled\"
+                   and .conclusion != \"timed_out\" and .conclusion != \"startup_failure\")] | length")
+          if [ "${others:-0}" -gt 0 ]; then
+            echo "handled=1" >> "$GITHUB_OUTPUT"
+            echo "Al gedraaid vandaag (${others} run(s)) — orchestrator deed dit al, sla over."
+          fi
+
+  advise:
+    needs: guard
+    if: needs.guard.outputs.handled != '1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Cap dekt ook de in-job herkansing (10 min slaap + tweede poging).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run shade advisor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          SHADE_MODE: ${{ inputs.mode || 'plan' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        # Eén herkansing na 10 min: een transiente Open-Meteo/Gist-hapering
+        # kost dan geen run. run_guarded telt mee in RUNNER_TEMP (zelfde job)
+        # en alert pas bij de 2e mislukking (fail_threshold=2).
+        run: |
+          python shade_advisor.py || {
+            echo "::warning::eerste poging mislukt — herkansing over 10 min"
+            sleep 600
+            python shade_advisor.py
+          }
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add shade_state.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update shade_state.json [skip ci]"
+            # De soil-run en de window/airflow-loops committen de hele dag door
+            # naar main — rebase vóór push. De state wordt elke run volledig
+            # opnieuw geschreven, dus bij conflict wint onze verse versie
+            # (-X theirs). Falen moet hard en zichtbaar zijn (exit 1): zonder
+            # gecommitte state kan de orchestrator de reminder niet timen.
+            git rebase --abort 2>/dev/null || true
+            if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
+              git push
+            else
+              git rebase --abort 2>/dev/null || true
+              echo "::error::rebase failed, shade state not pushed"
+              exit 1
+            fi
+          fi

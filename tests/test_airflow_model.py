@@ -1177,3 +1177,89 @@ def test_stair_gamma_steeper_when_top_hotter():
     mild = am._stair_gamma(info, {"top": 23.0, "bot": 22.0})
     hot = am._stair_gamma(info, {"top": 26.0, "bot": 22.0})
     assert hot > mild > 0.0
+
+
+# ── 8. Groundwork P9/P10: end_h + per_window_solar + merged_params ──────────────────
+
+def _pw_house():
+    return {
+        "rooms": {"r": {}},
+        "windows": {
+            "w1": {"room": "r", "facade_azimuth_deg": 309.0, "glass_m2": 1.0,
+                   "tilt_deg": 90.0},
+            "w2": {"room": "r", "facade_azimuth_deg": 129.0, "glass_m2": 2.0,
+                   "tilt_deg": 90.0, "shading": "lamella",
+                   "shade": {"factor": 0.12, "label": "Gordijn"}},
+        },
+    }
+
+
+def _pw_rows(base):
+    return [{"dt": base + timedelta(hours=h), "T_out": 16.0, "direct": 600.0,
+             "diffuse": 100.0, "wind_speed": 3.0, "wind_dir": 309.0, "gust": 5.0,
+             "precip": 0.0, "rh": 60.0} for h in range(0, 5)]
+
+
+def test_build_timeline_end_h_default_unchanged():
+    # Default end_h=2.0 → het raster eindigt exact op now+2u (het oude gedrag);
+    # een expliciete end_h rekt de vooruitblik op zonder iets anders te raken.
+    house = _pw_house()
+    base = datetime(2026, 6, 14, 10, 0, tzinfo=timezone.utc)
+    now = base + timedelta(hours=2)
+    weather = {"hourly": _pw_rows(base)}
+    grid_default = am.build_timeline(house, weather, [], now, window_h=1.0)
+    assert grid_default[-1]["t"] == now + timedelta(hours=2)
+    grid_long = am.build_timeline(house, weather, [], now, window_h=1.0, end_h=13.0)
+    assert grid_long[-1]["t"] == now + timedelta(hours=13)
+    # Het overlappende deel is identiek (zelfde drivers, zelfde middeling).
+    for s_def, s_long in zip(grid_default, grid_long):
+        assert s_def["t"] == s_long["t"]
+        assert s_def["irr"]["r"] == pytest.approx(s_long["irr"]["r"], abs=1e-12)
+
+
+def test_per_window_solar_matches_room_irr():
+    # De per-kamer irr in build_timeline is exact het substap-gemiddelde van de
+    # per-raam-sommen — de extractie veranderde de boekhouding niet.
+    house = _pw_house()
+    base = datetime(2026, 6, 14, 10, 0, tzinfo=timezone.utc)
+    now = base + timedelta(hours=2)
+    grid = am.build_timeline(house, {"hourly": _pw_rows(base)}, [], now, window_h=0.5)
+    step = next(s for s in grid if s["t"] == now)
+    expected = 0.0
+    for j in range(am.SOLAR_SUBSTEPS):
+        ts = now + timedelta(hours=0.25 * (j + 0.5) / am.SOLAR_SUBSTEPS)
+        s_az, s_el = am.sun_position(am._LAT, am._LON, ts.astimezone(timezone.utc))
+        pw = am.per_window_solar(house, {}, s_az, s_el, 600.0, 100.0)
+        expected += (pw["w1"] + pw["w2"]) / am.SOLAR_SUBSTEPS
+    assert step["irr"]["r"] == pytest.approx(expected, abs=1e-9)
+
+
+def test_per_window_solar_respects_shade_state():
+    # Een dicht gemelde bedienbare zonwering schaalt dat raam met z'n factor
+    # (× de statische shading); het andere raam blijft ongemoeid.
+    house = _pw_house()
+    open_pw = am.per_window_solar(house, {}, 129.0, 40.0, 600.0, 100.0)
+    closed_pw = am.per_window_solar(house, {"w2_shade": "dicht"}, 129.0, 40.0,
+                                    600.0, 100.0)
+    assert closed_pw["w2"] == pytest.approx(open_pw["w2"] * 0.12, rel=1e-9)
+    assert closed_pw["w1"] == pytest.approx(open_pw["w1"], abs=1e-12)
+    # Statische lamella (0.9) zit er in beide standen overheen.
+    bare = dict(house["windows"]["w2"])
+    bare.pop("shade")
+    bare.pop("shading")
+    house_bare = {"rooms": {"r": {}}, "windows": {"w2": bare}}
+    bare_pw = am.per_window_solar(house_bare, {}, 129.0, 40.0, 600.0, 100.0)
+    assert open_pw["w2"] == pytest.approx(bare_pw["w2"] * 0.9, rel=1e-9)
+
+
+def test_merged_params_fills_new_rooms_and_keys():
+    house = {"rooms": {"a": {}, "b": {}}}
+    learned = {"params": {"cp_shelter": 0.42, "a": {"c_air": 123.0}}}
+    p = am.merged_params(house, learned)
+    assert p["cp_shelter"] == 0.42                     # geleerd blijft staan
+    assert p["a"]["c_air"] == 123.0
+    for k in am.PER_ROOM_PARAMS:                        # ontbrekende keys → prior
+        assert k in p["a"] and k in p["b"]
+    assert p["b"]["c_air"] == am.PRIORS["c_air"]        # nieuwe kamer → priors
+    for g in am.GLOBAL_PARAMS:
+        assert g in p

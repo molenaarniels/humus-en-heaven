@@ -44,6 +44,7 @@ function render() {
   document.getElementById("banner-slot").innerHTML = banners.join("");
 
   document.getElementById("content").innerHTML = `
+    ${summaryHTML(d)}
     ${biasStripHTML(d)}
     <div class="grid grid-2">${ROOMS_ORDER(d).map(r => roomCardHTML(r, d.rooms[r])).join("")}</div>
     <div class="grid">
@@ -74,6 +75,80 @@ function render() {
 
 function ROOMS_ORDER(d) { return Object.keys(d.rooms); }
 function fmtT(v) { return v == null ? "–" : `${v.toFixed(1)}°`; }
+
+// "Over 1 uur": trend (per uur) één uur doorgetrokken — dezelfde basis als de scatter-pijl
+// (PROJ_H), hier ×1u voor een letterlijke delta. Temp in °, RH afgerond en geklemd op 0–100%.
+function proj1hT(now, trend) { return now == null ? "–" : `${(now + (trend || 0)).toFixed(1)}°`; }
+function proj1hRH(now, trend) {
+  if (now == null) return "–";
+  return `${Math.round(Math.max(0, Math.min(100, now + (trend || 0))))}%`;
+}
+// Kleur van een °C/u- of %/u-trend (zelfde drempel als trendArrow): warm/stijgend = dry,
+// koel/dalend = rain, stabiel = gedempt.
+function trendColor(t) {
+  if (t == null) return "var(--ink-soft)";
+  if (t > 0.15) return "var(--dry)";
+  if (t < -0.15) return "var(--rain)";
+  return "var(--ink-soft)";
+}
+// Kleur van de vent-RH t.o.v. de binnen-RH — spiegelt ventNote(): buiten droger dan binnen
+// (ventileren droogt) = mos, buiten vochtiger = klei.
+function ventColor(hum, vent) {
+  if (vent == null || hum == null) return "var(--ink-soft)";
+  if (vent < hum - 2) return "var(--moss)";
+  if (vent > hum + 2) return "var(--clay)";
+  return "var(--ink-soft)";
+}
+
+// "In één oogopslag": geijkte buitentemp + per-kamer tabel (advies, temp nu→1u, vocht nu→1u
+// incl. de verwachte buiten-RH bij ventileren). Puur samenvattend; herbruikt bestaande data.
+function summaryHTML(d) {
+  const outLabel = d.outside_source === "wu" ? "station" : "model";
+  const rows = ROOMS_ORDER(d).map((name) => {
+    const r = d.rooms[name];
+    if (!r) return "";
+    const open = r.advice === "open";
+    const adv = `<span class="sum-adv" style="color:${open ? "var(--moss)" : "var(--clay)"};">${open ? "● Open" : "○ Dicht"}</span>`;
+    const tempCell = r.inside == null ? "–"
+      : `<span class="sum-now">${r.inside.toFixed(1)}°</span>`
+        + `<span class="sum-arrow" style="color:${trendColor(r.trend)}"> → </span>`
+        + `<span>${proj1hT(r.inside, r.trend)}</span>`;
+    const vent = r.vent_rh == null ? ""
+      : ` <span style="color:${ventColor(r.humidity, r.vent_rh)}" title="Buitenlucht omgerekend naar kamertemperatuur — de luchtvochtigheid die de kamer benadert als je ventileert. Lager dan binnen = ventileren droogt de kamer uit.">(${r.vent_rh}% buiten)</span>`;
+    const humCell = r.humidity == null ? "–"
+      : `<span class="sum-now">${r.humidity}%</span>${vent}`
+        + `<span class="sum-arrow" style="color:${trendColor(r.hum_trend)}"> → </span>`
+        + `<span>${proj1hRH(r.humidity, r.hum_trend)}</span>`;
+    return `<tr>
+      <td class="sum-room">${name}</td>
+      <td>${adv}</td>
+      <td class="sum-r">${tempCell}</td>
+      <td class="sum-r">${humCell}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="grid"><div class="specimen-card">
+      <div class="corner-mark">In één oogopslag</div>
+      <div class="sum-outside">
+        <div>
+          <div style="display:flex;align-items:flex-end;gap:12px;">
+            <div class="big-num">${d.outside_now == null ? "–" : d.outside_now.toFixed(1)}<span>°C</span></div>
+            <div style="padding-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">${trendArrow(d.outside_trend)}</div>
+          </div>
+          <div class="rule-label" style="margin-top:4px;">Buiten geijkt (${outLabel}) · over 1 uur ${proj1hT(d.outside_now, d.outside_trend)}</div>
+        </div>
+        <div class="sum-outside-rh">
+          <div class="rule-label">Luchtvochtigheid buiten</div>
+          <div class="sum-outside-rh-val">${d.outside_humidity == null ? "–" : d.outside_humidity + "%"}<span> → ${proj1hRH(d.outside_humidity, d.outside_hum_trend)}</span></div>
+        </div>
+      </div>
+      <table class="sum-table">
+        <thead><tr><th>Kamer</th><th>Advies</th><th class="sum-r">Temp · nu → 1u</th><th class="sum-r">Vocht · nu (buiten) → 1u</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div></div>`;
+}
 
 function biasStripHTML(d) {
   const biasTxt = d.bias == null ? "–"

@@ -37,6 +37,19 @@
     .status-line { font-size: 19px; font-style: italic; margin-top: 12px; }
     .chart-box { position: relative; height: 340px; margin-top: 10px; }
     .spark { display: block; margin-top: 6px; }
+    /* In één oogopslag — samenvattingskaart bovenaan */
+    .sum-outside { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-end; margin: 10px 0 4px; }
+    .sum-outside-rh { flex: 1; min-width: 180px; }
+    .sum-outside-rh-val { font-family: "JetBrains Mono", monospace; font-size: 20px; margin-top: 2px; }
+    .sum-outside-rh-val span { font-size: 12px; color: var(--ink-soft); }
+    .sum-table { width: 100%; border-collapse: collapse; margin-top: 16px; font-family: "JetBrains Mono", monospace; font-size: 13px; }
+    .sum-table th { text-align: left; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 400; color: var(--ink-soft); padding: 0 8px 6px; border-bottom: 1px solid #2a241b33; }
+    .sum-table td { padding: 9px 8px; border-bottom: 1px dashed #2a241b22; }
+    .sum-table tr:last-child td { border-bottom: none; }
+    .sum-table .sum-r { text-align: right; }
+    .sum-room { color: var(--ink); }
+    .sum-adv { letter-spacing: 0.06em; }
+    .sum-now { font-weight: 600; }
     /* tijdlijn */
     .tl-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
     .tl-name { font-family: "JetBrains Mono", monospace; font-size: 12px; width: 96px; flex: none; color: var(--ink-soft); }
@@ -50,6 +63,8 @@
     .banner { margin: 8px 16px; }
     .tl-name { width: 72px; }
     .tl-axis { margin-left: 84px; }
+    .sum-table { font-size: 11px; }
+    .sum-table th, .sum-table td { padding-left: 4px; padding-right: 4px; }
   }
   </style>
 </head>

@@ -98,7 +98,7 @@ jobs:
 
           # Alle doeltijden zijn Europe/Amsterdam lokaal (minuten sinds middernacht).
           tick () {
-            local h m nowm day_start evening_epoch
+            local h m nowm day_start evening_epoch rem rem_min
             h=$(TZ=Europe/Amsterdam date +%H)
             m=$(TZ=Europe/Amsterdam date +%M)
             nowm=$(( 10#$h * 60 + 10#$m ))
@@ -137,6 +137,39 @@ jobs:
             # Verwarming — 21:00
             if [ "$nowm" -ge 1260 ] && ! handled_since heating-temp-notify.yml "$day_start"; then
               dispatch heating-temp-notify.yml
+            fi
+
+            # Zonwering-plan — 08:15 (na de weerbriefing, vóór de eerste zonlast)
+            if [ "$nowm" -ge 495 ] && ! handled_since shade-notify.yml "$day_start"; then
+              dispatch shade-notify.yml -f mode=plan
+            fi
+
+            # Zonwering-reminder — zodra reminder_at (uit de door plan-mode
+            # gecommitte shade_state.json) bereikt is. De orchestrator leest hier
+            # alleen WANNEER — het script hervalideert alles zelf en is idempotent
+            # (reminder_sent in de state), dus herhaalde dispatches tot de
+            # state-commit landt zijn goedkope no-ops.
+            rem=$(gh api "repos/${GH_REPO}/contents/shade_state.json" --jq '.content' 2>/dev/null \
+                  | base64 -d 2>/dev/null \
+                  | jq -r --arg today "$(TZ=Europe/Amsterdam date +%F)" \
+                      'select(.date == $today and .plan_sent == true and .reminder_sent != true)
+                       | .reminder_at // empty' 2>/dev/null) || rem=""
+            if [ -n "${rem:-}" ]; then
+              rem_min=$(( 10#${rem%%:*} * 60 + 10#${rem##*:} ))
+              if [ "$nowm" -ge "$rem_min" ]; then
+                dispatch shade-notify.yml -f mode=reminder
+              fi
+            fi
+
+            # Teds nachtvoorspelling — 18:45 (vóór peuter-bedtijd ~19:00)
+            if [ "$nowm" -ge 1125 ] && ! handled_since night-forecast.yml "$day_start"; then
+              dispatch night-forecast.yml
+            fi
+
+            # Weekjournaal — zondag 20:00
+            if [ "$(TZ=Europe/Amsterdam date +%u)" = "7" ] && [ "$nowm" -ge 1200 ] \
+               && ! handled_since weekjournaal.yml "$day_start"; then
+              dispatch weekjournaal.yml
             fi
           }
 

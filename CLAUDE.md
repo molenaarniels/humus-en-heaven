@@ -1,6 +1,6 @@
 # Humus & Heaven — Project Overview
 
-This repo contains eight independent automation pipelines, all running on GitHub Actions (most notify via Telegram; Project 7's Telegram is optional and Project 8 has none). They share Telegram/WU/Gist secrets and a few **deliberate read-only** data hand-offs (Project 5 reads Project 1's `data.json`; Project 8 reads Project 6's `window_data.json`), but are otherwise separate.
+This repo contains eleven independent automation pipelines, all running on GitHub Actions (most notify via Telegram; Project 7's Telegram is optional and Project 8 has none). They share Telegram/WU/Gist secrets and a few **deliberate read-only** data hand-offs (Project 5 reads Project 1's `data.json`; Project 8 reads Project 6's `window_data.json`; Projects 9/10 reuse Project 8's pure helpers + artefacts read-only; Project 11 aggregates the published artefacts of 1/5/7/8), but are otherwise separate. The daily jobs are fired at their local target time by the **Timing Orchestrator** (`.github/workflows/orchestrator.yml`, a self-driven 15-min klok-loop); each project keeps a ~30–60 min later fallback cron + a dedup guard-job.
 
 ---
 
@@ -368,13 +368,74 @@ It's a **grey-box multi-zone airflow network + 2-node RC thermal model with onli
 - **Reported openings** are graded (`closed`/`tilt`/`open` or 0..1; `tilt`→`tilt_frac`) and **timestamped** (a snapshot holds until the next), so the model knows what was open during each past interval.
 
 ### data schema (additive only — never break existing fields)
-`airflow_data.json`: `generated_at`, `as_of_local`, `source`, `model_version` (git short-SHA of the producing runner), `weather` (outside temp/RH, `outside_source` — `wu`/`open-meteo` for the now temp+RH, wind speed/dir/gust, sun az/el, `neighbor_temp` — the dynamic party-wall anchor, `wu_solar_scale` — the WU/OM glas-drive rescale applied this run, or null), `openings`, `controls` (elements + current state, for the modal), `ac` (`room` — the room with the mobile AC now, or null; `rooms[]` — `{id,label}` sensor-room options for the modal dropdown), `rooms.<id>` (`actual_temp`, `predicted_temp` (sensor-space), `predicted_air_temp` (debiased true air node; == `predicted_temp` when `sensor_outdoor_frac`=0), `sensor_outdoor_frac`, `predicted_mass_temp`, `error`, `ach`, `solar_w` (solar gain W, energy in), `env_w`/`vent_w` (signed W exchanged with outside — envelope conduction + ventilation; − = heat leaving the room, the counterpart to `solar_w`), `trend_c_per_h` (predicted-temp rate of change, °C/h; + warming, − cooling — drives the room-outline colour on the floor-plan), `party_w` (net W from neighbours), `internal_w` (internal gains W), `humidity`, `comfort_low/high`, `ac` (bool — the mobile AC is in this room now → dropped from calibration), `ac_excluded_samples` (count dropped from the fit this run), `stair_gradient_c_per_m`/`stair_crown_c`/`predicted_temp_top`/`predicted_temp_bottom` (only on `"stratify"` zones — the vertical-gradient display split + solar crown), `predicted_series[]`, `actual_series[]`, `params`), `flows[]` (per-opening m³/s for the floor-plan), `suggestion` (`instructions[]`, `ranked[]`, `keep_closed`, `headline`), `learned` (`params`, `rmse`, `rmse_history` — entries carry `t`/`rmse`/`held`/`version`, plus `recomputed`/`rmse_logged` on points healed by `backfill_rmse_history`), `house_meta`. `airflow_learned.json` mirrors `params`/`rmse`/`rmse_history` plus `updated_at` + `model_version`.
+`airflow_data.json`: `generated_at`, `as_of_local`, `source`, `model_version` (git short-SHA of the producing runner), `weather` (outside temp/RH, `outside_source` — `wu`/`open-meteo` for the now temp+RH, wind speed/dir/gust, sun az/el, `neighbor_temp` — the dynamic party-wall anchor, `wu_solar_scale` — the WU/OM glas-drive rescale applied this run, or null), `openings`, `controls` (elements + current state, for the modal), `ac` (`room` — the room with the mobile AC now, or null; `rooms[]` — `{id,label}` sensor-room options for the modal dropdown), `rooms.<id>` (`actual_temp`, `predicted_temp` (sensor-space), `predicted_air_temp` (debiased true air node; == `predicted_temp` when `sensor_outdoor_frac`=0), `sensor_outdoor_frac`, `predicted_mass_temp`, `error`, `ach`, `solar_w` (solar gain W, energy in), `solar_by_window` (additive — the distribution of the room's solar over its windows, `{wid: {label, w}}`, a now-snapshot at the step sun position feeding the raam-tooltip; indicative, doesn't bookkeep exactly to the time-averaged `solar_w`), `env_w`/`vent_w` (signed W exchanged with outside — envelope conduction + ventilation; − = heat leaving the room, the counterpart to `solar_w`), `trend_c_per_h` (predicted-temp rate of change, °C/h; + warming, − cooling — drives the room-outline colour on the floor-plan), `party_w` (net W from neighbours), `internal_w` (internal gains W), `humidity`, `comfort_low/high`, `ac` (bool — the mobile AC is in this room now → dropped from calibration), `ac_excluded_samples` (count dropped from the fit this run), `stair_gradient_c_per_m`/`stair_crown_c`/`predicted_temp_top`/`predicted_temp_bottom` (only on `"stratify"` zones — the vertical-gradient display split + solar crown), `predicted_series[]`, `actual_series[]`, `params`), `flows[]` (per-opening m³/s for the floor-plan), `suggestion` (`instructions[]`, `ranked[]`, `keep_closed`, `headline`), `learned` (`params`, `rmse`, `rmse_history` — entries carry `t`/`rmse`/`held`/`version`, plus `recomputed`/`rmse_logged` on points healed by `backfill_rmse_history`), `house_meta`. `airflow_learned.json` mirrors `params`/`rmse`/`rmse_history` plus `updated_at` + `model_version`.
 
 ### Reporting interaction (the inverse loop)
 The dashboard "Stel ramen/roosters in" modal writes a timestamped snapshot to `house_openings.json` in the **non-secret `GIST_ID` Gist** (same browser `gist_id`+`gh_token` localStorage pattern as the soil/mowing modals), then `workflow_dispatch`es `airflow-notify.yml`. The browser is the only writer of the log; Python reads it read-only. The same modal also carries an **❄️ airco-dropdown** that writes the `ac_room` key into the snapshot (which room holds the single mobile AC, or "" = none) — see the AC bullet under the per-run flow.
 
 ### Relation to other projects
-Fully isolated: the **only** dependency is the read-only consumption of `docs/window_data.json` (it never imports `window_advisor`'s tado/main path — only the pure helpers `convert_rh`, `ROOM_COMFORT`, `RH_HARD_CAP`, and the WU current-obs fetch `fetch_wu_current_temp`), and **nothing else depends on Project 8**. Reuses `wu_bias.correct_temp` (WU outside-now temp/RH refinement, see Per-run flow step 2), `GIST_ID`/`GIST_TOKEN` (openings log) and `WU_*` secrets. No new secrets, no Telegram, no tado auth.
+Fully isolated: the **only** dependency is the read-only consumption of `docs/window_data.json` (it never imports `window_advisor`'s tado/main path — only the pure helpers `convert_rh`, `ROOM_COMFORT`, `RH_HARD_CAP`, and the WU current-obs fetch `fetch_wu_current_temp`). **Projects 9 and 10 depend on Project 8 read-only**: they import its pure helpers (`per_window_solar`, `sun_position`, `facade_irradiance`, `build_timeline`/`simulate`, `merged_params`, the loaders) and P10 reads `docs/airflow_learned.json` — neither ever writes Project 8's artefacts or state. Reuses `wu_bias.correct_temp` (WU outside-now temp/RH refinement, see Per-run flow step 2), `GIST_ID`/`GIST_TOKEN` (openings log) and `WU_*` secrets. No new secrets, no Telegram, no tado auth. `build_timeline` has an additive `end_h` param (default 2.0 = the old lookahead; P10 stretches it to next morning).
+
+---
+
+## Project 9: Zonwering-adviseur (Shade Advisor)
+
+**Goal:** On warm days, tell per window when to close (and reopen) the operable sun shading — one morning day-plan message plus a single reminder at the first close-moment. Pure sun geometry + Open-Meteo forecast; no thermal simulation, no tado.
+
+### Files
+- `shade_advisor.py` — plan/reminder brain (env `SHADE_MODE=plan|reminder`, like the sandbox morning/evening pattern)
+- `shade_state.json` — tiny day-state (plan sent, reminder time/sent), committed by the action; the orchestrator reads `reminder_at` from it via `gh api` (timing only — the script re-validates everything and is idempotent)
+- `.github/workflows/shade-notify.yml` — orchestrator target 08:15 (plan) + fallback cron 08:40 + guard-job; reminder is purely orchestrator-dispatched (no own cron); `contents: write` (commits the state)
+
+### Logic
+- Considers **all windows with an operable `shade` layer** in `house_model.json` (runtime-derived, no hardcoded list): per 15-min step over today 06:00–22:00 the **avoidable gain** `ΔW = transmitted(current reported stand) − transmitted(fully closed)` via `airflow_model.per_window_solar`. Coverage-lamella: delta is closed-vs-current-stand, not vs bare glass. Already-reported-dicht windows fall out naturally (ΔW≈0).
+- Close interval per window = hysteresis span (`SHADE_CLOSE_WM 150` in, `SHADE_OPEN_WM 80` out; biggest-integral span wins). Day matters = day-max ≥ `SHADE_WARM_DAY_C 22.0` (mirror of `WARM_DAY_MAX` — below it solar gain is free heating) **and** ≥1 window with ≥ `SHADE_MIN_DELTA_WH 500` Wh avoidable.
+- **Reminder** (first close-moment): only sent when the predicted load actually materializes now (`SHADE_MATERIALIZE_FRAC 0.6` × threshold on the current Open-Meteo radiation; overcast → hold and retry next dispatch, past the window's open-time → give up silently). One reminder/day max; repeated dispatches are no-ops on the state.
+- Reads the openings log (with the reported `*_shade` stands) read-only from the `GIST_ID` Gist, like Project 8. Telegram to the privé-chat. `DRY_RUN=1` prints (state is still written).
+
+### Relation to other projects
+Read-only on Project 8's pure helpers (`per_window_solar`, `sun_position`, `fetch_weather`, `openings_at`, `load_house`, `load_openings_log`) + `house_model.json` + the openings-Gist. Never writes any Project 8 artefact. No new secrets.
+
+---
+
+## Project 10: Teds nachtvoorspelling (Night Forecast)
+
+**Goal:** Evening Telegram message (orchestrator target 18:45, before peuter-bedtime ~19:00) predicting Ted's room temperature overnight with the calibrated twin, plus a raam-open-vs-dicht scenario and a tog/slaapzak-advies.
+
+### Files
+- `night_forecast.py` — forward sim + scenario's + tog table + message; stateless, **no artifact** (v1 is Telegram-only; a predicted-vs-actual verification log is a natural later extension)
+- `.github/workflows/night-forecast.yml` — orchestrator target 18:45 + fallback cron 19:15 + guard-job; `contents: read`; in-job retry sleeps 300s (not 600) so a retried message still lands near bedtime
+
+### Logic
+- `build_timeline(..., end_h=hours-until-tomorrow-08:00)` (~13h at 18:45) with 24h warmup history (mass-node equilibration, the `main()` pattern); `fetch_weather`'s `forecast_days=2` covers the horizon. Params via `merged_params(house, load_learned())`; seed from the actual tado temps in `window_data.json` (`collect_actual`), missing rooms → outside temp. **Must rebind `am._NEIGHBOR_TEMP`** via `neighbor_temp_estimate` (simulate() reads the module global — the easy-to-forget step, covered by a test).
+- **Two scenario sims**: future timeline steps get `ted_small_window` forced `open` resp. `dicht` (past keeps the reported log; the original timeline is not mutated). Night stats over 21:00–08:00: temps at 23:00/03:00/07:00 + min/max/mean.
+- **Recommendation** vs the Ted comfort band (`window_advisor.ROOM_COMFORT["Ted"]` 17–18°): open iff it doesn't sink below the band-low overnight and ends 07:00 no warmer than closed. Message shows the delta ("raampje open scheelt −1.3° om 07:00").
+- **Tog table** (`TOG_TABLE`, standard toddler sleeping-bag guidance) on the recommended scenario's night-mean: ≥24° 0.5 tog · ≥21° 1.0 · ≥18° 2.5 lange pyjama · ≥16° 2.5 warm · else 3.5.
+- **Send gate:** always in `SEASON_MONTHS` (mei–sep); outside only when the predicted night-max ≥ `NIGHT_INTEREST_C 19.0`. Deliberately **no WU refinement** (forecast-driven sim, tado seed → keeps WU secrets out of this workflow). `DRY_RUN=1` prints.
+
+### Relation to other projects
+Read-only on Project 8 (pure helpers + `docs/airflow_learned.json`) and Project 6's `docs/window_data.json` (seed/now-temp) + `ROOM_COMFORT`. Openings log read-only from the Gist. Writes nothing. No new secrets.
+
+---
+
+## Project 11: Weekjournaal (Weekly Digest)
+
+**Goal:** One Sunday-evening Telegram digest (orchestrator target zondag 20:00) summarizing the week across the pipelines — pure aggregation of the already-published artefacts, no new data fetching.
+
+### Files
+- `weekjournaal.py` — per-section pure functions over the local checkout artefacts (env-path overrides for tests)
+- `.github/workflows/weekjournaal.yml` — fallback cron zo 20:40 + guard-job; `contents: read`; no in-job retry (no external API besides Telegram, which has its own retry)
+
+### Sections (each independently optional — missing/stale artefact → section silently omitted)
+- 🌱 **Tuinwater** (`docs/data.json`): week-window (today−6..today, non-forecast days) Σ precip / Σ ET0 / Σ per-zone irrigation + current `lawn_status`/`shrubs_status` depletion.
+- 🌾 **Maaien** (`docs/mowing_data.json`): mows this week from `mowings`, `accum_today` vs `params.READY_GU_effective`, next-mow prediction / maairijp / winterrust.
+- 🧠 **Tweeling** (`docs/airflow_learned.json`): RMSE now vs the last non-`held` point ≥ `RMSE_LOOKBACK_D 6.5` days back (fallback: earliest) + skill + trend arrow.
+- 🌤️ **Weer** (`docs/data.json`): Tmax range (bias-corrected where available), week precip, warmest day.
+- 📡 **Station** (`docs/accuracy_data.json`): overall bias one-liner, only when the (manual-dispatch) check is younger than `STATION_MAX_AGE_D 30` — stale → omitted rather than misleading.
+- All sections `None` → no message. Defensive truncation at `MAX_LEN 4000` (< Telegram's 4096; `send_telegram` doesn't chunk).
+
+### Relation to other projects
+Read-only aggregation of the published artefacts of Projects 1, 5, 7, 8 from the local checkout (the `mowing_advisor` `open()`-pattern). Stateless. Telegram secrets only.
 
 ---
 

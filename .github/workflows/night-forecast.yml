@@ -1,0 +1,81 @@
+name: Teds nachtvoorspelling
+
+on:
+  schedule:
+    # Fallback ~30 min ná het orchestrator-doel (18:45 Amsterdam). Normaal
+    # dispatcht de Timing Orchestrator dit al; deze cron vuurt alleen als de
+    # orchestrator uitviel. 19:15 is laat voor bedtijd ~19:00, maar beter dan
+    # stilte. De guard-job dedupt.
+    - cron: "15 19 * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print zonder Telegram te sturen"
+        type: boolean
+        default: false
+
+jobs:
+  # Dedup t.o.v. de orchestrator: skip de fallback-cron als deze workflow vandaag
+  # al een (niet-mislukte) run had. Alleen op `schedule` — handmatige en
+  # orchestrator-dispatches (beide workflow_dispatch) draaien altijd door.
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      handled: ${{ steps.check.outputs.handled }}
+    steps:
+      - name: Skip if already handled today
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          since=$(TZ=Europe/Amsterdam date -d "today 00:00" +%s)
+          others=$(gh run list --workflow night-forecast.yml -L 40 \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }}
+                   and (.createdAt|fromdateiso8601) >= $since
+                   and .conclusion != \"failure\" and .conclusion != \"cancelled\"
+                   and .conclusion != \"timed_out\" and .conclusion != \"startup_failure\")] | length")
+          if [ "${others:-0}" -gt 0 ]; then
+            echo "handled=1" >> "$GITHUB_OUTPUT"
+            echo "Al gedraaid vandaag (${others} run(s)) — orchestrator deed dit al, sla over."
+          fi
+
+  notify:
+    needs: guard
+    if: needs.guard.outputs.handled != '1'
+    runs-on: ubuntu-latest
+    # Stateless: leest alleen de checkout (window_data/learned) + Gist, commit niets.
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run night forecast
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        # Eén herkansing na 5 min (korter dan de gebruikelijke 10: het bericht
+        # moet nog vóór/rond bedtijd ~19:00 landen). run_guarded alert pas bij
+        # de 2e mislukking (fail_threshold=2).
+        run: |
+          python night_forecast.py || {
+            echo "::warning::eerste poging mislukt — herkansing over 5 min"
+            sleep 300
+            python night_forecast.py
+          }

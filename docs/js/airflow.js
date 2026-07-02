@@ -109,6 +109,9 @@ function render() {
   Object.entries(d.rooms || {}).forEach(([rid, r]) => {
     const adv = (r.actual_temp!=null && r.predicted_temp!=null);
     const errCls = r.error==null ? "" : (r.error>=0 ? "err-pos" : "err-neg");
+    // Per-raam zon-verdeling (additief veld; oudere JSON zonder → geen tooltip).
+    const sunTip = Object.values(r.solar_by_window || {})
+      .map(w => `${w.label} ${fmt(w.w,0)} W`).join(" · ").replace(/["<>]/g, "'");
     html += `<div class="specimen-card">
       <div class="corner-mark">${r.label || rid}</div>
       <div class="big-num">${fmt(r.predicted_temp)}<span>°C model</span></div>
@@ -119,7 +122,7 @@ function render() {
       ${r.ac ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">❄️ airco aan — niet gekalibreerd (model heeft geen koel-term)</div>` : ""}
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
-        <span class="ctl-sub">zon in</span><span class="num">${fmt(r.solar_w,0)} W</span>
+        <span class="ctl-sub">zon in</span><span class="num"${sunTip?` title="${sunTip}"`:""}>${fmt(r.solar_w,0)} W</span>
         <span class="ctl-sub">RV</span><span class="num">${fmt(r.humidity,0)}%</span>
       </div>
       ${energyRow(r)}

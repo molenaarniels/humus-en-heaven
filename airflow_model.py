@@ -1795,6 +1795,20 @@ def default_params(house: dict) -> dict:
     return p
 
 
+def merged_params(house: dict, learned: dict) -> dict:
+    """Geleerde params aangevuld met priors voor nieuwe kamers/keys (additief, robuust).
+    Gedeeld door main() en night_forecast.py zodat de merge-logica niet dubbel bestaat."""
+    params = learned.get("params") or default_params(house)
+    base = default_params(house)
+    for g in GLOBAL_PARAMS:
+        params.setdefault(g, base[g])
+    for rid in house.get("rooms", {}):
+        params.setdefault(rid, base[rid])
+        for k in PER_ROOM_PARAMS:
+            params[rid].setdefault(k, PRIORS[k])
+    return params
+
+
 def load_openings_log() -> list[dict]:
     gist_id = os.getenv("GIST_ID")
     token = os.getenv("GIST_TOKEN")
@@ -1866,19 +1880,40 @@ def wu_solar_scale_factor(k: float | None, age_h: float,
     return 1.0 + (k - 1.0) * w
 
 
+def per_window_solar(house: dict, states: dict, sun_az: float, sun_el: float,
+                     direct: float, diffuse: float, beam_iam: bool = False) -> dict[str, float]:
+    """W getransmitteerd door elk raam (τ·shading·shade·I·glas_m²), key = raam-id.
+    Pure momentopname op één zonpositie; de per-kamer `irr` in build_timeline is de
+    som hiervan per kamer. Hergebruikt door het zonwering-advies (shade_advisor.py)
+    en het additieve dashboard-veld `solar_by_window`."""
+    out = {}
+    for wid, w in house.get("windows", {}).items():
+        shade = _shade_factor(wid, w, states)
+        # I = invallende straling op het glas (W/m²) — fysica-symbool.
+        I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), sun_az, sun_el,  # noqa: E741
+                              direct, diffuse, w.get("tilt_deg", 90.0),
+                              bool(w.get("diffuse_only", False)),
+                              w.get("horizon_elevation_deg", 0.0), beam_iam)
+        out[wid] = GLASS_TRANSMITTANCE * shade * I * w.get(
+            "glass_m2", GLASS_AREA_FRACTION * w.get("area_m2", 1.0))
+    return out
+
+
 def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                    window_h: float, wu_solar_scale: float | None = None,
-                   beam_iam: bool = False) -> list[dict]:
+                   beam_iam: bool = False, end_h: float = 2.0) -> list[dict]:
     """Bouw een 15-minuten-raster van drivers over het kalibratievenster t/m nu,
-    plus een korte vooruitblik. Per stap: T_out, per-kamer instraling (door het glas),
-    wind, en de gerapporteerde openingen-toestand op dat moment."""
+    plus een vooruitblik van `end_h` uur (default de korte 2u voor de afgeleide-
+    temp-projectie; night_forecast.py rekt hem op tot morgenochtend). Per stap:
+    T_out, per-kamer instraling (door het glas), wind, en de gerapporteerde
+    openingen-toestand op dat moment."""
     rows = [r for r in weather["hourly"] if r["T_out"] is not None]
     if not rows:
         return []
     start = now - _timedelta_h(window_h)
     grid = []
     t = start
-    end = now + _timedelta_h(2.0)   # korte vooruitblik voor de afgeleide-temp-projectie
+    end = now + _timedelta_h(end_h)
     lat, lon = _LAT, _LON
     while t <= end:
         T_out = _interp_hourly(rows, t, "T_out")
@@ -1905,20 +1940,14 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
             if sc != 1.0:
                 s_direct = (s_direct or 0.0) * sc
                 s_diffuse = (s_diffuse or 0.0) * sc
+            pw = per_window_solar(house, st, s_az, s_el, s_direct, s_diffuse, beam_iam)
+            tot_room = {rid: 0.0 for rid in irr}
+            for wid, w in house.get("windows", {}).items():
+                rid = w.get("room")
+                if rid in tot_room:
+                    tot_room[rid] += pw[wid]
             for rid in irr:
-                tot = 0.0
-                for wid, w in house.get("windows", {}).items():
-                    if w.get("room") != rid:
-                        continue
-                    shade = _shade_factor(wid, w, st)
-                    # I = invallende straling op het glas (W/m²) — fysica-symbool.
-                    I = facade_irradiance(w.get("facade_azimuth_deg", 0.0), s_az, s_el,  # noqa: E741
-                                          s_direct, s_diffuse, w.get("tilt_deg", 90.0),
-                                          bool(w.get("diffuse_only", False)),
-                                          w.get("horizon_elevation_deg", 0.0), beam_iam)
-                    tot += GLASS_TRANSMITTANCE * shade * I * w.get(
-                        "glass_m2", GLASS_AREA_FRACTION * w.get("area_m2", 1.0))
-                irr[rid] += tot / SOLAR_SUBSTEPS
+                irr[rid] += tot_room[rid] / SOLAR_SUBSTEPS
             if roof_rooms:
                 # Plat dak (tilt 0) → azimut-onafhankelijk; één waarde voor alle dak-kamers.
                 roof_i = facade_irradiance(0.0, s_az, s_el, s_direct, s_diffuse, 0.0)
@@ -2027,6 +2056,13 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         "humidity": rd.get("humidity"),
         "ach": fresh_ach,
         "solar_w": round(now_step["irr"].get(rid, 0.0), 0) if now_step else None,
+        # Additief: de verdeling van de zonwinst over de ramen van deze kamer (W, snapshot
+        # op nu) — voedt de raam-tooltip op de kamerkaart en maakt zichtbaar wélk raam de
+        # winst binnenlaat (en dus welke zonwering helpt).
+        "solar_by_window": {wid: {"label": w.get("label", wid),
+                                  "w": round(ctx.get("pw_now", {}).get(wid, 0.0), 0)}
+                            for wid, w in house.get("windows", {}).items()
+                            if w.get("room") == rid},
         # Energie naar buiten (W, signed): schil-conductie + ventilatie-uitwisseling.
         # − = de kamer verliest warmte (koelt af) langs deze weg; tegenhanger van solar_w.
         "env_w": env_w,
@@ -2084,6 +2120,15 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         now_step = last_step
     ta_all = sim.get("Ta_now", sim["Ta"])
     tm_all = sim.get("Tm_now", sim["Tm"])
+    # Per-raam zon-doorval op nu (W, additief veld voor de raam-tooltip op de kamerkaart).
+    # Momentopname op de stap-zonpositie — telt dus niet exact op tot het tijdsgemiddelde
+    # (en evt. WU-herschaalde) `solar_w` van de stap; het is de verdeling, niet de boekhouding.
+    pw_now = {}
+    if now_step is not None:
+        wx_now = now_step.get("weather", {})
+        pw_now = per_window_solar(house, now_step["states"], now_step["sun_az"],
+                                  now_step["sun_el"], wx_now.get("direct") or 0.0,
+                                  wx_now.get("diffuse") or 0.0, beam_iam=True)
     ctx = {
         "zpar": _zone_thermal_params(house, params),
         "ta_all": ta_all, "tm_all": tm_all, "now_step": now_step,
@@ -2091,6 +2136,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
         "ac_room": ac_room, "ac_excluded": ac_excluded or {},
         "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
+        "pw_now": pw_now,                  # per-raam zon-doorval nu → solar_by_window
     }
     rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                                           actual, now, ctx)
@@ -2347,15 +2393,7 @@ def main():
     print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C")
 
     learned = load_learned()
-    params = learned.get("params") or default_params(house)
-    # Zorg dat nieuwe kamers/keys een prior krijgen (additief, robuust).
-    base = default_params(house)
-    for g in GLOBAL_PARAMS:
-        params.setdefault(g, base[g])
-    for rid in house.get("rooms", {}):
-        params.setdefault(rid, base[rid])
-        for k in PER_ROOM_PARAMS:
-            params[rid].setdefault(k, PRIORS[k])
+    params = merged_params(house, learned)
 
     since = now - _timedelta_h(CALIB_WINDOW_H)
     actual = collect_actual(house, wd, since)

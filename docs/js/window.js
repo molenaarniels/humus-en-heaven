@@ -111,7 +111,8 @@ function summaryHTML(d) {
     const adv = `<span class="sum-adv" style="color:${open ? "var(--moss)" : "var(--clay)"};">${open ? "● Open" : "○ Dicht"}</span>`;
     const tempCell = r.inside == null ? "–"
       : `<span class="sum-now">${r.inside.toFixed(1)}°</span>`
-        + `<span class="sum-arrow" style="color:${trendColor(r.trend)}"> → </span>`
+        + ` <span class="sum-rate">${trendArrow(r.trend)}</span>`
+        + `<span class="sum-arrow"> → </span>`
         + `<span>${proj1hT(r.inside, r.trend)}</span>`;
     const vent = r.vent_rh == null ? ""
       : ` <span style="color:${ventColor(r.humidity, r.vent_rh)}" title="Buitenlucht omgerekend naar kamertemperatuur — de luchtvochtigheid die de kamer benadert als je ventileert. Lager dan binnen = ventileren droogt de kamer uit.">(${r.vent_rh}% buiten)</span>`;

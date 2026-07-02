@@ -425,13 +425,13 @@ function drawMainChart(days, zone, FC, WP) {
             title: items => { const r = days[items[0].dataIndex]; return `${r.date}${r.forecast ? ' (voorspelling)' : ''}${r.hasWU ? ' · jouw station' : ''}`; },
             label: ctx => {
               const r = days[ctx.dataIndex];
-              if (ctx.dataset.label.includes("Regen")) return `Regen: ${r.precip.toFixed(1)} mm`;
+              if (ctx.dataset.label.includes("Regen")) return `Regen: ${(r.precip ?? 0).toFixed(1)} mm`;
               if (ctx.dataset.label.includes("Irrigatie")) return r[`${zone}_irrigation`] ? `💧 ${r[`${zone}_irrigation`].toFixed(1)} mm` : null;
               if (ctx.dataset.label.includes("ERA5")) {
                 const v = r[`era5_theta_${zone}`];
                 return v != null ? `ERA5 θ: ${v.toFixed(3)} (referentie)` : null;
               }
-              if (ctx.dataset.label.includes("θ")) return `θ: ${r[`${zone}_theta`].toFixed(3)} · Dep: ${r[`${zone}_depletion`].toFixed(1)}% · ETc: ${r[`${zone}_ETc`].toFixed(2)} mm · Kc: ${r[`${zone}_Kc`]?.toFixed(2)}`;
+              if (ctx.dataset.label.includes("θ")) return `θ: ${r[`${zone}_theta`]?.toFixed(3)} · Dep: ${r[`${zone}_depletion`]?.toFixed(1)}% · ETc: ${r[`${zone}_ETc`]?.toFixed(2)} mm · Kc: ${r[`${zone}_Kc`]?.toFixed(2)}`;
               return null;
             },
           },

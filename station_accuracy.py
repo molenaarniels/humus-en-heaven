@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -69,11 +70,25 @@ def fetch_wu_hourly(station_id: str, api_key: str, days: int) -> Dict[str, dict]
             f"?stationId={station_id}&format=json&units=m"
             f"&date={d.strftime('%Y%m%d')}&numericPrecision=decimal&apiKey={api_key}"
         )
+        # Kleine retry per dag (buiten http_util: de apiKey zit in de URL-string).
+        # Zonder retry laat een transiente 5xx die dag stilletjes uit de kalibratie-
+        # steekproef vallen — en dit script ís de kalibratiebron voor wu_bias.
+        r = None
+        for attempt, pause in ((1, 2), (2, 5), (3, 0)):
+            try:
+                r = requests.get(url, timeout=20)
+                if r.status_code == 200:
+                    break
+                print(f"[WU] {d} status {r.status_code} (poging {attempt})")
+            except Exception as e:
+                # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+                print(f"[WU] {d} poging {attempt} failed: {sanitize_error(e)}")
+                r = None
+            if pause:
+                time.sleep(pause)
+        if r is None or r.status_code != 200:
+            continue
         try:
-            r = requests.get(url, timeout=20)
-            if r.status_code != 200:
-                print(f"[WU] {d} status {r.status_code}")
-                continue
             for obs in r.json().get("observations", []):
                 ts = obs.get("obsTimeUtc")
                 if not ts:

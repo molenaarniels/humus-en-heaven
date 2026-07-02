@@ -38,10 +38,10 @@ from datetime import date, datetime, timedelta, timezone
 
 
 import shared_const
-from shared_const import parse_date, utc_now_iso
+from shared_const import format_date_nl, local_today, parse_date, utc_now_iso
 from gist_io import read_json as gist_read_json
 from http_util import get_json
-from notify import run_guarded, send_telegram
+from notify import run_guarded, sanitize_error, send_telegram
 
 # =============================================================================
 # Configuratie — alle tunables staan hier bovenaan.
@@ -104,9 +104,6 @@ SOIL_MAX_AGE_H = 36.0
 LATITUDE = shared_const.LATITUDE
 LONGITUDE = shared_const.LONGITUDE
 
-NL_DAYS = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
-NL_MONTHS = ["", "jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
-
 
 # =============================================================================
 # Maai-log (GitHub Gist, read-only) — spiegelt load_irrigations_from_gist.
@@ -153,7 +150,7 @@ def load_soil_days() -> tuple[list[dict], str] | None:
         with open(SOIL_DATA_PATH) as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"[soil] kon {SOIL_DATA_PATH} niet lezen: {e}")
+        print(f"[soil] kon {SOIL_DATA_PATH} niet lezen: {sanitize_error(e)}")
         return None
     days = data.get("days") or []
     if not days:
@@ -195,7 +192,7 @@ def fetch_gdd_fallback() -> list[dict]:
         "timezone": "Europe/Amsterdam",
     }
     d = get_json(url, params, timeout=10, label="open-meteo")["daily"]
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     days = []
     for i, day in enumerate(d["time"]):
         days.append({
@@ -480,10 +477,6 @@ def save_state(state: dict) -> None:
 # Berichtopbouw.
 # =============================================================================
 
-def _format_date_nl(d: date) -> str:
-    return f"{NL_DAYS[d.weekday()]} {d.day} {NL_MONTHS[d.month]}"
-
-
 def _dashboard_link() -> str:
     dash = os.getenv("DASHBOARD_URL")
     if not dash:
@@ -511,7 +504,7 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
     if kind == "ready_today":
         body = (
             "✂️ <b>Tijd om te maaien!</b>\n"
-            f"Het gras is sinds {_format_date_nl(last_mow)} flink gegroeid. "
+            f"Het gras is sinds {format_date_nl(last_mow)} flink gegroeid. "
             f"Vandaag {describe_day(today_day)} — prima maaidag.\n"
             f"{len_line}"
         )
@@ -520,7 +513,7 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
         body = (
             "✂️ <b>Het gras is maairijp</b>, maar vandaag is geen goede maaidag "
             f"({describe_day(today_day)}).\n"
-            f"🌤️ Beste dag: <b>{_format_date_nl(parse_date(opt['date']))}</b> "
+            f"🌤️ Beste dag: <b>{format_date_nl(parse_date(opt['date']))}</b> "
             f"({opt['reason']}).\n"
             f"{len_line}"
         )
@@ -528,11 +521,11 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
         when = ""
         if optimal:
             when = (f"\n🌤️ Eerstvolgende goede maaidag: "
-                    f"<b>{_format_date_nl(parse_date(optimal['date']))}</b> "
+                    f"<b>{format_date_nl(parse_date(optimal['date']))}</b> "
                     f"({optimal['reason']}).")
         around = ""
         if predicted:
-            around = f" (rond {_format_date_nl(parse_date(predicted))})"
+            around = f" (rond {format_date_nl(parse_date(predicted))})"
         body = (
             "🌱 <b>Het gras is bijna maairijp.</b>\n"
             f"Nog een paar groeidagen te gaan{around}. Plan alvast een droge "
@@ -544,7 +537,7 @@ def build_message(kind: str, last_mow: date, today: date, today_day: dict,
         when = ""
         if optimal:
             when = (f"\n🌤️ Eerstvolgende goede dag: "
-                    f"<b>{_format_date_nl(parse_date(optimal['date']))}</b> "
+                    f"<b>{format_date_nl(parse_date(optimal['date']))}</b> "
                     f"({optimal['reason']}).")
         body = (
             f"⚠️ <b>Gras staat lang</b> — al {days_since} dagen niet gemaaid.\n"
@@ -573,7 +566,7 @@ def find_today_index(days: list[dict], today: date) -> int:
 
 def run() -> dict:
     """Voert de hele analyse uit en geeft een resultaat-dict terug (voor main + tests)."""
-    today = date.today()
+    today = local_today()
     mowings = load_mowings_from_gist()
 
     soil = load_soil_days()

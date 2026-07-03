@@ -943,6 +943,76 @@ def filter_ac_samples(actual: dict, acc: list[tuple], ac_room_now: str | None,
     return out, excluded
 
 
+# ── Verwarmings-uitsluiting (auto, gedreven door de tado-verwarmingsvlag) ─────────────
+# Spiegelbeeld van de airco-uitsluiting, maar dán warm: het thermische model heeft géén
+# verwarmingsterm, dus een kamer die actief gestookt wordt (b.v. Ted's kamer op een avond
+# met een driftbui, of gewoon de cv 's winters) leest wármer dan de fysica kan verklaren.
+# Fitten op die warmte zou de kamer-params + de gedeelde globalen + RMSE/leercurve vervuilen.
+#
+# Anders dan de airco (die je handmatig in de modal meldt) komt deze status rechtstreeks uit
+# de tado-API: Project 6 schrijft per history-sample in window_data.json een `heat`-vlag (en
+# de huidige `heating`-status per kamer). De uitsluiting is dus PER SAMPLE en exact getimed —
+# géén guard-venster nodig zoals bij de airco. In de winter, wanneer er doorgaans gestookt
+# wordt, vallen die samples vanzelf weg en kalibreert de tweeling schoon op de stook-vrije
+# momenten; buiten het stookseizoen verandert er niets.
+
+
+def collect_heating_on(house: dict, wd: dict, since: datetime) -> dict[str, set]:
+    """Per sensorkamer de tijdstippen (datetime) sinds `since` waarop tado meldde dat er
+    gestookt werd (`heat`-vlag in de window_data.json-history). Leeg → geen stook-samples.
+    Leest dezelfde history als `collect_actual`, zodat de tijdstippen exact matchen."""
+    out: dict[str, set] = {}
+    for rid, room in house.get("rooms", {}).items():
+        wd_key = room.get("from_window_data")
+        if not wd_key or wd_key not in wd.get("rooms", {}):
+            continue
+        on = set()
+        for s in wd["rooms"][wd_key].get("history", []):
+            try:
+                ts = datetime.fromisoformat(s["t"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if ts >= since and s.get("temp") is not None and s.get("heat"):
+                on.add(ts)
+        if on:
+            out[rid] = on
+    return out
+
+
+def heating_now(house: dict, wd: dict) -> dict[str, bool]:
+    """Per sensorkamer of tado nú meldt dat er gestookt wordt (`heating`-vlag op de kamer in
+    window_data.json) — voor de dashboard-chip + de 'niet-gekalibreerd'-melding."""
+    out: dict[str, bool] = {}
+    for rid, room in house.get("rooms", {}).items():
+        wd_key = room.get("from_window_data")
+        if wd_key and wd_key in wd.get("rooms", {}):
+            out[rid] = bool(wd["rooms"][wd_key].get("heating"))
+    return out
+
+
+def filter_heating_samples(actual: dict, heat_on: dict[str, set]) -> tuple[dict, dict]:
+    """Laat per kamer de tado-samples vallen waarop er volgens de log gestookt werd. Geeft
+    (gefilterde actual-kopie, {kamer: #weggelaten}). Leeg `heat_on` → ongewijzigd. Een kamer
+    die volledig wegvalt (heel het venster gestookt) verdwijnt uit `actual` (niet gekalibreerd),
+    net als de airco-kamer — ze wordt nog wél gesimuleerd + getoond (seed uit seed_src)."""
+    if not heat_on:
+        return actual, {}
+    out: dict = {}
+    excluded: dict = {}
+    for rid, samples in actual.items():
+        on = heat_on.get(rid)
+        if not on:
+            out[rid] = samples
+            continue
+        kept = [(ts, v) for ts, v in samples if ts not in on]
+        dropped = len(samples) - len(kept)
+        if dropped:
+            excluded[rid] = dropped
+        if kept:
+            out[rid] = kept
+    return out, excluded
+
+
 def _default_frac(element: dict, kind: str) -> float:
     """Basistoestand vóór enige rapportage: ramen dicht, binnendeuren open, roosters
     op trickle-stand (tenzij het huismodel een `default_state` geeft)."""
@@ -2080,6 +2150,10 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         # samples zijn deze run om die reden uit de fit gevallen. Voor de "niet-gekalibreerd"-chip.
         "ac": (rid == ctx.get("ac_room")),
         "ac_excluded_samples": ctx.get("ac_excluded", {}).get(rid, 0),
+        # Verwarming: staat de tado-verwarming nu aan in deze kamer (→ uit de kalibratie gelaten),
+        # en hoeveel samples zijn deze run om die reden uit de fit gevallen. Voor de stook-chip.
+        "heating": bool(ctx.get("heat_now", {}).get(rid)),
+        "heat_excluded_samples": ctx.get("heat_excluded", {}).get(rid, 0),
         # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
         # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
         "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
@@ -2094,7 +2168,8 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
 def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     actual, now, rmse_now, learning_held=False, baseline=None,
                     skill=None, rmse_baseline=None, wx=None, checkpoint=None,
-                    fell_back=False, ac_room=None, ac_excluded=None) -> dict:
+                    fell_back=False, ac_room=None, ac_excluded=None,
+                    heat_now=None, heat_excluded=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -2135,6 +2210,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "int_profile_now": internal_gain_profile(now),
         "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
         "ac_room": ac_room, "ac_excluded": ac_excluded or {},
+        "heat_now": heat_now or {}, "heat_excluded": heat_excluded or {},
         "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
         "pw_now": pw_now,                  # per-raam zon-doorval nu → solar_by_window
     }
@@ -2415,6 +2491,18 @@ def main():
     if ac_excluded:
         print(f"[airco] kamer nu = {ac_room_now or '—'}; samples uit de fit gelaten: {ac_excluded}")
 
+    # Verwarming: spiegelbeeld van de airco, maar auto-gedreven door de tado-verwarmingsvlag in
+    # window_data.json (Project 6 schrijft 'm per sample). Het model heeft geen verwarmingsterm,
+    # dus een gestookte kamer leest te warm → laat die samples per stuk uit de fit vallen. Geen
+    # guard nodig (de vlag is exact getimed). Kamer blijft gesimuleerd + getoond (seed uit seed_src).
+    heat_on = collect_heating_on(house, wd, since)
+    heat_now = heating_now(house, wd)
+    actual, heat_excluded = filter_heating_samples(actual, heat_on)
+    if heat_excluded:
+        rooms_heating = [rid for rid, on in heat_now.items() if on]
+        print(f"[verwarming] kamers nu aan = {rooms_heating or '—'}; "
+              f"samples uit de fit gelaten: {heat_excluded}")
+
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
     timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H,
@@ -2510,7 +2598,8 @@ def main():
                            actual, now, rmse_now, learning_held=learning_held, baseline=baseline,
                            skill=skill, rmse_baseline=rmse_baseline, wx=wx_summary,
                            checkpoint=ckpt, fell_back=fell_back,
-                           ac_room=ac_room_now, ac_excluded=ac_excluded)
+                           ac_room=ac_room_now, ac_excluded=ac_excluded,
+                           heat_now=heat_now, heat_excluded=heat_excluded)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

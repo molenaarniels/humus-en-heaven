@@ -120,6 +120,7 @@ function render() {
         fout <span class="num ${errCls}">${r.error==null?"—":(r.error>0?"+":"")+r.error.toFixed(1)+"°"}</span>
       </div>
       ${r.ac ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">❄️ airco aan — niet gekalibreerd (model heeft geen koel-term)</div>` : ""}
+      ${r.heating ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">🔥 verwarming aan — niet gekalibreerd (model heeft geen verwarmingsterm)</div>` : ""}
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
         <span class="ctl-sub">zon in</span><span class="num"${sunTip?` title="${sunTip}"`:""}>${fmt(r.solar_w,0)} W</span>

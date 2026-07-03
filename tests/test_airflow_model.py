@@ -680,6 +680,60 @@ def test_filter_ac_samples_guard_window():
     assert excl2 == {} and filt2["b"] == actual["b"]
 
 
+# ── 10d. Verwarmings-uitsluiting (auto, uit de tado heat-vlag) ───────────────────────
+def _heat_house():
+    return {
+        "location": {"lat": 52.09, "lon": 5.12},
+        "rooms": {"ted": {"from_window_data": "Ted", "volume_m3": 30, "exterior_wall_m2": 10,
+                          "plan_xy": [0, 0]},
+                  "bath": {"from_window_data": "Shower", "volume_m3": 18, "exterior_wall_m2": 6,
+                           "plan_xy": [1, 0]}},
+        "junctions": {}, "windows": {}, "vents": {}, "doors": {},
+    }
+
+
+def test_collect_heating_on_en_filter():
+    now = datetime(2026, 1, 15, 22, 0, tzinfo=am.TZ)
+    since = now - timedelta(hours=5)
+    ts = [now - timedelta(hours=h) for h in range(4, -1, -1)]   # 5 samples, elk uur
+    # Ted stookt op de laatste 2 samples; de badkamer nooit.
+    wd = {"rooms": {
+        "Ted": {"heating": True, "history": [
+            {"t": ts[0].isoformat(), "temp": 18.0},
+            {"t": ts[1].isoformat(), "temp": 18.5},
+            {"t": ts[2].isoformat(), "temp": 19.0},
+            {"t": ts[3].isoformat(), "temp": 20.5, "heat": 1},
+            {"t": ts[4].isoformat(), "temp": 21.5, "heat": 1},
+        ]},
+        "Shower": {"heating": False, "history": [
+            {"t": ts[i].isoformat(), "temp": 22.0} for i in range(5)]},
+    }}
+    house = _heat_house()
+    heat_on = am.collect_heating_on(house, wd, since)
+    assert heat_on["ted"] == {ts[3], ts[4]}
+    assert "bath" not in heat_on                       # badkamer stookte niet
+    assert am.heating_now(house, wd) == {"ted": True, "bath": False}
+
+    actual = {"ted": [(t, 0.0) for t in ts], "bath": [(t, 0.0) for t in ts]}
+    filt, excl = am.filter_heating_samples(actual, heat_on)
+    assert excl == {"ted": 2}                           # twee stook-samples weg
+    assert len(filt["ted"]) == 3 and len(filt["bath"]) == 5
+    assert all(t not in heat_on["ted"] for t, _ in filt["ted"])
+    # Lege heat_on → ongewijzigd (backwards-compatibel met oude JSON zonder heat-vlag).
+    filt2, excl2 = am.filter_heating_samples(actual, {})
+    assert excl2 == {} and filt2 == actual
+
+
+def test_filter_heating_drops_room_when_all_heated():
+    now = datetime(2026, 1, 15, 22, 0, tzinfo=am.TZ)
+    ts = [now - timedelta(hours=h) for h in range(3, -1, -1)]
+    actual = {"ted": [(t, 21.0) for t in ts]}
+    heat_on = {"ted": set(ts)}                          # heel het venster gestookt
+    filt, excl = am.filter_heating_samples(actual, heat_on)
+    assert "ted" not in filt                            # kamer valt uit de kalibratie
+    assert excl["ted"] == 4
+
+
 def test_railed_params_flags_bounds():
     params = am.default_params(_toy_house())
     params["cp_shelter"] = am.BOUNDS["cp_shelter"][0]      # op de vloer

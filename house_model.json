@@ -99,6 +99,18 @@
       "stratify": true,
       "_note": "geen tado-sensor → niet gekalibreerd, wél gesimuleerd. Vangt de skylight-zon en drijft het schoorsteeneffect tussen de verdiepingen. Één gemengde knoop voor de kalibratie/airflow, maar met 'stratify': true legt het model een begrensde, niet-leerbare verticale gradiënt op (warme lucht bovenin): de gerapporteerde predicted_temp blijft het koker-gemiddelde, maar boven/onder worden apart getoond (predicted_temp_top/bottom) en elke verdiepingsdeur mengt tegen de lucht op zíjn hoogte i.p.v. het vlakke gemiddelde. Een volledige verdieping-per-verdieping-zone-split blijft afgewezen (geen sensor in de koker om sub-zone-temps op te ijken).",
       "plan_h": 3
+    },
+    "bath": {
+      "from_window_data": "Shower",
+      "volume_m3": 18,
+      "exterior_wall_m2": 6,
+      "floor": 0,
+      "plan_xy": [
+        1,
+        3
+      ],
+      "label": "Badkamer (douche)",
+      "_sensor": "tado-sensor 'Shower' → nu een gekalibreerde kamer (was junctie). Raamloos: geen zonwinst, deur meestal dicht + mechanische afzuiging. De douche geeft warmte-/vochtpieken; de tweeling laat samples waarin er gestookt wordt (heat-vlag uit window_data.json) uit de fit vallen."
     }
   },
   "junctions": {
@@ -110,15 +122,6 @@
         2
       ],
       "label": "Gang/hal"
-    },
-    "bath": {
-      "floor": 0,
-      "volume_m3": 18,
-      "plan_xy": [
-        1,
-        3
-      ],
-      "label": "Badkamer (geen ramen)"
     }
   },
   "windows": {

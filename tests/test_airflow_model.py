@@ -458,6 +458,21 @@ def test_suggest_opens_when_outside_cooler():
     assert any(i["action"] == "open" for i in sugg["instructions"])
 
 
+def test_suggest_survives_none_room_temp():
+    # Een sensorkamer kan in room_now staan mét waarde None: tado-uitval, of een
+    # window_data.json die de kamer nog niet kent (net-toegevoegde sensor terwijl de
+    # loop-checkout nog oude data heeft — de 6×-crash van 2026-07-03). room_now.get(key,
+    # fallback) valt dan niet terug (de key bestáát) en None crashte air_density() in
+    # solve_network. De zone-temp moet op de buitentemp terugvallen, niet crashen.
+    house = _toy_house()
+    params = am.default_params(house)
+    room_now = {house["rooms"][r]["from_window_data"]: 27.0 for r in house["rooms"]}
+    room_now[next(iter(room_now))] = None
+    sugg = am.suggest(house, params, {"wind_speed": 3.0, "wind_dir": 200.0, "gust": 5.0, "precip": 0.0},
+                      room_now, 16.0, 55.0, 16.0)
+    assert sugg["headline"]   # geen crash; er komt gewoon een advies uit
+
+
 # ── 8. Robuust leren: anomalie-poort + Huber ─────────────────────────────────────────
 
 def _hist(*rmses):

@@ -415,13 +415,12 @@ Read-only on Project 8's pure helpers (`per_window_solar`, `sun_position`, `fetc
 
 ### Logic
 - `build_timeline(..., end_h=hours-until-tomorrow-08:00)` (~13h at 18:45) with 24h warmup history (mass-node equilibration, the `main()` pattern); `fetch_weather`'s `forecast_days=2` covers the horizon. Params via `merged_params(house, load_learned())`; seed from the actual tado temps in `window_data.json` (`collect_actual`), missing rooms → outside temp. **Must rebind `am._NEIGHBOR_TEMP`** via `neighbor_temp_estimate` (simulate() reads the module global — the easy-to-forget step, covered by a test).
-- **Two scenario sims**: future timeline steps get `ted_small_window` forced `open` resp. `dicht` (past keeps the reported log; the original timeline is not mutated). Night stats over 21:00–08:00: temps at 23:00/03:00/07:00 + min/max/mean.
-- **Recommendation** vs the Ted comfort band (`window_advisor.ROOM_COMFORT["Ted"]` 17–18°): open iff it doesn't sink below the band-low overnight and ends 07:00 no warmer than closed. Message shows the delta ("raampje open scheelt −1.3° om 07:00").
-- **Tog table** (`TOG_TABLE`, standard toddler sleeping-bag guidance) on the recommended scenario's night-mean: ≥24° 0.5 tog · ≥21° 1.0 · ≥18° 2.5 lange pyjama · ≥16° 2.5 warm · else 3.5.
-- **Send gate:** always in `SEASON_MONTHS` (mei–sep); outside only when the predicted night-max ≥ `NIGHT_INTEREST_C 19.0`. Deliberately **no WU refinement** (forecast-driven sim, tado seed → keeps WU secrets out of this workflow). `DRY_RUN=1` prints.
+- **Two scenario sims**: future timeline steps get `ted_small_window` forced `open` resp. `dicht` (past keeps the reported log; the original timeline is not mutated; `ted_vent`, the rooster, stays open in both — it's never toggled). **`dicht` is the assumed real state and drives the whole message**: door + small window closed overnight, only the rooster ventilating, is the normal routine, so its stats are the headline forecast and the tog advice. `open` is computed purely as an **informational** comparison ("raampje ook open zou −1.3° schelen om 07:00") — it is not a recommendation to actually open it, and no comfort-band gating is applied to it. If the openings log currently reports the small window open, the header flags the mismatch ("voorspelling gaat uit van dicht").
+- **Tog table** (`TOG_TABLE`, standard toddler sleeping-bag guidance) on the `dicht`-scenario's night-mean: ≥24° 0.5 tog · ≥21° 1.0 · ≥18° 2.5 lange pyjama · ≥16° 2.5 warm · else 3.5.
+- **Send gate:** always in `SEASON_MONTHS` (mei–sep); outside only when the predicted night-max ≥ `NIGHT_INTEREST_C 19.0`. Deliberately **no WU refinement** (forecast-driven sim, tado seed → keeps WU secrets out of this workflow). `DRY_RUN=1` prints. Sent to the **group chat** (`TELEGRAM_CHAT_GROUP_ID`), like the weather briefing — not the privé-chat.
 
 ### Relation to other projects
-Read-only on Project 8 (pure helpers + `docs/airflow_learned.json`) and Project 6's `docs/window_data.json` (seed/now-temp) + `ROOM_COMFORT`. Openings log read-only from the Gist. Writes nothing. No new secrets.
+Read-only on Project 8 (pure helpers + `docs/airflow_learned.json`) and Project 6's `docs/window_data.json` (seed/now-temp). Openings log read-only from the Gist. Writes nothing. No new secrets — reuses `TELEGRAM_CHAT_GROUP_ID` (weather-briefing's secret) instead of the privé `TELEGRAM_CHAT_ID`.
 
 ---
 
@@ -485,7 +484,7 @@ Five small cross-project Python modules (everything else is self-contained):
 ## Shared secrets (GitHub Actions)
 - `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project + window advisor)
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — soil, sandbox, heating, mowing + window advisor (raam-advies + operational alerts, privé-chat)
-- `TELEGRAM_CHAT_GROUP_ID` — weather briefing (group chat)
+- `TELEGRAM_CHAT_GROUP_ID` — weather briefing + night forecast (group chat)
 - `GIST_ID`, `GIST_TOKEN` — soil project (irrigation log) + mowing advisor (mow log, same Gist) + airflow twin (opening log `house_openings.json`, same Gist, read-only from Python); `GIST_TOKEN` also used by the window advisor
 - `TADO_GIST_ID` — **separate secret Gist** for the window advisor: rotating tado refresh token (`tado_token.json`) + per-room advice state (`window_state.json`)
 - `GITHUB_TOKEN` — automatic, sandbox project

@@ -926,6 +926,47 @@ def test_checkpoint_degradation_accumulates_before_fallback():
     assert params == {"living": {"c_air": 9.0}}
 
 
+def test_reseat_checkpoint_shape():
+    cur = {"living": {"c_air": 1.2}}
+    out = am.reseat_checkpoint(cur, skill=-0.9, rmse_now=0.58, version="v3", now_iso="t5",
+                               last_fallback="t4")
+    assert out["params"] == cur and out["params"] is not cur          # diepe kopie
+    assert out["skill"] == -0.9 and out["rmse"] == 0.58
+    assert out["degraded_runs"] == 0
+    assert out["reseated"] == "t5" and out["t"] == "t5"
+    assert out["last_fallback"] == "t4"                                # laatste échte fallback blijft
+    nan_out = am.reseat_checkpoint(cur, skill=None, rmse_now=float("nan"), version="v3",
+                                   now_iso="t5")
+    assert nan_out["rmse"] is None
+
+
+def test_reseated_checkpoint_breaks_fallback_loop():
+    """De fallback-lus (regressie): een fossiel optimum (skill geoogst op een gunstig venster /
+    oudere code-versie) blijft in kalm weer onbereikbaar, dus zonder her-zeteling valt elke
+    FALLBACK_AFTER runs dezelfde fossiele-params-terugzetting. Na een verworpen fallback +
+    reseat ligt de lat op het huidige niveau en degradeert er niets meer."""
+    fossil = {"params": {"living": {"c_air": 9.9}}, "skill": 0.8, "degraded_runs": 0}
+    cur = {"living": {"c_air": 1.2}}
+    ckpt = fossil
+    for i in range(am.FALLBACK_AFTER):
+        params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=-1.0, rmse_now=0.6,
+                                              version="v3", now_iso=f"t{i}")
+    assert fb is True                                       # de lus zoals in het wild
+    # main() verwerpt 'm (fossiel past slechter op het huidige venster) en her-zetelt:
+    ckpt = am.reseat_checkpoint(cur, skill=-1.0, rmse_now=0.6, version="v3", now_iso="t9")
+    # Zelfde kalm-weer-skill erna: binnen de marge van het her-gezetelde optimum → geen
+    # degradatie meer, geen nieuwe fallback — de lus is gebroken.
+    for i in range(am.FALLBACK_AFTER + 2):
+        params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=-1.0, rmse_now=0.6,
+                                              version="v3", now_iso=f"u{i}")
+        assert fb is False
+    assert ckpt["degraded_runs"] == 0
+    # Een écht betere run daarna legt gewoon weer een nieuw optimum vast.
+    params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=0.2, rmse_now=0.4,
+                                          version="v3", now_iso="u99")
+    assert fb is False and ckpt["skill"] == 0.2 and ckpt["t"] == "u99"
+
+
 # ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
 def test_window_naive_baseline_is_time_bounded():
     t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)

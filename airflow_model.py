@@ -179,6 +179,15 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
 CKPT_MIN_SKILL_GAIN = 0.01   # checkpoint pas bijwerken als de skill ≥ dit beter is (ruismarge)
 FALLBACK_SKILL_DROP = 0.15   # skill ≥ dit ónder de checkpoint-skill telt als 'verslechterd'
 FALLBACK_AFTER      = 8       # zoveel opeenvolgende verslechterde runs (~2u) → terugvallen
+# Een fallback wordt vóór adoptie tegen de werkelijkheid gehouden (main): de checkpoint-params
+# moeten op het HUIDIGE venster ook echt beter passen dan de zojuist geleerde params. Zonder die
+# check ontstond een fallback-lus: een verouderd optimum (fossiel van een oudere code-versie,
+# skill geoogst op een gunstig/informatief weer-venster) bleef onbereikbaar in kalm weer — skill
+# is daar structureel negatief omdat persistentie op een vlak venster bijna perfect is — zodat
+# elke ~FALLBACK_AFTER runs de fossiele params werden teruggezet (RMSE 0.6 → 1.9°C), het online
+# leren ze in een uur terugkalibreerde, en de cyclus opnieuw begon (gediagnosticeerd juli 2026).
+# Een verworpen fallback her-zetelt het checkpoint op de huidige params (reseat_checkpoint):
+# de lat ligt weer op een haalbaar niveau en een écht regressie-vangnet blijft bestaan.
 
 
 def checkpoint_step(ckpt: dict, params: dict, skill: float | None,
@@ -207,6 +216,19 @@ def checkpoint_step(ckpt: dict, params: dict, skill: float | None,
         return params, ckpt, False
     ckpt["degraded_runs"] = 0
     return params, ckpt, False
+
+
+def reseat_checkpoint(params: dict, skill, rmse_now: float, version: str, now_iso: str,
+                      last_fallback=None) -> dict:
+    """Nieuw checkpoint op de HUIDIGE params — de uitkomst van een verworpen fallback: het
+    opgeslagen optimum bleek een fossiel (past op het huidige venster slechter dan wat net
+    geleerd is), dus de skill-lat wordt terug op een haalbaar niveau gelegd. `reseated` stempelt
+    dit (additief) zodat een her-zeteling op het dashboard te onderscheiden is van een gewoon
+    nieuw optimum; `last_fallback` behoudt de laatste écht uitgevoerde fallback."""
+    return {"params": json.loads(json.dumps(params)), "skill": skill,
+            "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
+            "version": version, "t": now_iso, "degraded_runs": 0,
+            "last_fallback": last_fallback, "reseated": now_iso}
 
 
 def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dict:
@@ -2370,7 +2392,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     "wx": wx or None,
                     "checkpoint": {k: (checkpoint or {}).get(k)
                                    for k in ("skill", "rmse", "version", "t",
-                                             "degraded_runs", "last_fallback")}
+                                             "degraded_runs", "last_fallback", "reseated")}
                     if checkpoint else None,
                     "fell_back": bool(fell_back)},
         # Volledige geometrie (additief) zodat de browser-speeltuin (airflow.html) hetzelfde
@@ -2644,10 +2666,16 @@ def main():
 
     # Beste-params-checkpoint + auto-fallback (zie checkpoint_step). Alléén op écht-geleerde
     # runs: een gepauzeerde (held) run veranderde de params niet en moet niet als verslechtering
-    # tellen. Bij een fallback hermergen we priors voor nieuwe keys en herberekenen we de RMSE.
+    # tellen. Bij een fallback hermergen we priors voor nieuwe keys, herberekenen we de RMSE en
+    # houden we het resultaat tegen de werkelijkheid: passen de checkpoint-params op het huidige
+    # venster NIET beter dan wat net geleerd is, dan is het optimum een fossiel → fallback
+    # verwerpen en het checkpoint her-zetelen op de huidige params (breekt de fallback-lus,
+    # zie de toelichting bij FALLBACK_AFTER).
     ckpt = learned.get("checkpoint") or {}
     fell_back = False
     if actual and not learning_held and rmse_now == rmse_now:
+        learned_params = params
+        prev_fallback = ckpt.get("last_fallback")
         params, ckpt, fell_back = checkpoint_step(ckpt, params, skill, rmse_now,
                                                   model_version(), now.isoformat())
         if fell_back:
@@ -2655,10 +2683,20 @@ def main():
                 params.setdefault(rid, default_params(house)[rid])
                 for k in PER_ROOM_PARAMS:
                     params[rid].setdefault(k, PRIORS[k])
-            rmse_now = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
-            skill = skill_score(rmse_now, rmse_baseline)
-            print(f"[checkpoint] {FALLBACK_AFTER} runs verslechterd → teruggevallen op de "
-                  f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}).")
+            rmse_fb = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
+            if rmse_fb == rmse_fb and rmse_fb <= rmse_now:
+                rmse_now = rmse_fb
+                skill = skill_score(rmse_now, rmse_baseline)
+                print(f"[checkpoint] {FALLBACK_AFTER} runs verslechterd → teruggevallen op de "
+                      f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}).")
+            else:
+                params = learned_params
+                fell_back = False
+                ckpt = reseat_checkpoint(learned_params, skill, rmse_now, model_version(),
+                                         now.isoformat(), last_fallback=prev_fallback)
+                print(f"[checkpoint] fallback verworpen: checkpoint-params passen slechter op "
+                      f"het huidige venster ({rmse_fb:.3f} vs {rmse_now:.3f} °C) — verouderd "
+                      f"optimum; checkpoint her-gezeteld op de huidige params (skill {skill}).")
         elif ckpt.get("t") == now.isoformat():
             print(f"[checkpoint] nieuw skill-optimum vastgelegd (skill {skill}, "
                   f"RMSE {rmse_now:.3f} °C).")

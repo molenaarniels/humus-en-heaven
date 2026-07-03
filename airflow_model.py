@@ -1721,7 +1721,14 @@ def suggest(house: dict, params: dict, weather: dict, room_now: dict,
     if len(windows) > 10:
         windows = windows[:10]   # houd de enumeratie behapbaar (2^n)
 
-    zone_temps = {z: room_now.get(_wd_key(house, z), outside_temp) for z in zones}
+    # None-veilig: een sensorkamer kan in room_now staan mét waarde None (tado-uitval, of een
+    # window_data.json die de kamer nog niet kent — b.v. een net toegevoegde sensor terwijl de
+    # loop-checkout nog een oude window_data heeft). `.get(key, fallback)` valt dan NIET terug
+    # (de key bestaat), en een None-temp crasht air_density() in solve_network.
+    zone_temps = {}
+    for z in zones:
+        t_z = room_now.get(_wd_key(house, z))
+        zone_temps[z] = t_z if t_z is not None else outside_temp
 
     def comfort(room_id):
         wd = _wd_key(house, room_id)

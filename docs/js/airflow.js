@@ -2,6 +2,7 @@
 // (CONFIG + Gist/token-logica komen uit js/shared.js)
 const OPENINGS_FILE = "house_openings.json";
 const AC_STATE_KEY = "ac_room";   // sleutel in de snapshot: kamer met de mobiele airco (of "")
+const PAUSE_STATE_KEY = "paused"; // sleutel in de snapshot: huis-breed gepauzeerd? (bool)
 // COLORS-palet komt uit js/theme.js (geladen vóór dit script).
 const state = { data: null, tempChart: null, rmseChart: null, pending: {} };
 
@@ -47,6 +48,11 @@ function render() {
   document.getElementById("source-label").textContent =
     `Bijgewerkt ${asOf.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})} · bron: model + tado`;
 
+  // — Pauze-badge: zichtbaar zolang het huis nu gepauzeerd is, onafhankelijk van de modal. —
+  document.getElementById("banner-slot").innerHTML = d.paused
+    ? `<div class="banner banner-warn">⏸️ Gepauzeerd sinds ${d.paused_since ? new Date(d.paused_since).toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"}) : "onbekend"} — de tweeling voorspelt door maar leert dit venster niet mee. Zet de pauze uit in de modal zodra de standen weer betrouwbaar te melden zijn.</div>`
+    : "";
+
   const rmse = d.learned && d.learned.rmse != null ? d.learned.rmse : null;
   let html = "";
 
@@ -65,7 +71,8 @@ function render() {
       <span class="chip-strong num">${rmse!=null?rmse.toFixed(2)+"°C":"—"}</span>
       <span class="ctl-sub">${learnTrendText(d)}</span>
     </div>
-    ${(d.learned&&d.learned.held)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog${d.learned.baseline_rmse!=null?` (norm ~${d.learned.baseline_rmse.toFixed(2)}°)`:''}. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
+    ${(d.learned&&d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — het huis staat op pauze. Het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
+    ${(d.learned&&d.learned.held&&!d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog${d.learned.baseline_rmse!=null?` (norm ~${d.learned.baseline_rmse.toFixed(2)}°)`:''}. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
   </div>`;
 
   // — Suggestie —
@@ -121,6 +128,7 @@ function render() {
       </div>
       ${r.ac ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">❄️ airco aan — niet gekalibreerd (model heeft geen koel-term)</div>` : ""}
       ${r.heating ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">🔥 verwarming aan — niet gekalibreerd (model heeft geen verwarmingsterm)</div>` : ""}
+      ${r.paused ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">⏸️ gepauzeerd — niet gekalibreerd (standen niet betrouwbaar gemeld)</div>` : ""}
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
         <span class="ctl-sub">zon in</span><span class="num"${sunTip?` title="${sunTip}"`:""}>${fmt(r.solar_w,0)} W</span>
@@ -846,6 +854,11 @@ async function openReport() {
     catch (e) { console.warn("Live Gist-status ophalen mislukt, val terug op dashboard:", e); }
   }
   const stateOf = (c) => (live && (c.id in live)) ? live[c.id] : c.state;
+  // — Pauze-toggle: huis-breed "Normaal"/"Gepauzeerd". Grijst de AC-dropdown + het hele
+  // ramen/roosters/deuren-blok uit zolang gepauzeerd (zie applyPauseGrayOut). Moet vóór
+  // buildAcDropdown draaien, want de pauze-rij staat erboven en de grijze-uit-stand moet al
+  // gezet zijn zodra de rest van de modal rendert.
+  buildPauseToggle(live);
   // — Airco-dropdown: kies de kamer met de mobiele unit (of geen). Opties uit de server
   // (alleen sensorkamers); valt terug op de sensorkamers uit house_meta. Huidige stand uit de
   // live Gist-log, anders uit het dashboard. Wordt als `ac_room` in de snapshot meebewaard.
@@ -873,6 +886,38 @@ async function openReport() {
     e.target.classList.add("active");
     state.pending[id] = e.target.dataset.v;
   }));
+}
+// Vul de pauze-toggle: "Normaal"/"Gepauzeerd" (seg-knoppen, geen dropdown — huis-breed, geen
+// kamer-keuze). Huidige stand uit de live Gist-log (anders het dashboard). Zet ook meteen de
+// grijze-uit-stand op #ac-row + #ctl-list als de modal met een al-actieve pauze opent. De keuze
+// wordt als `paused` (bool) in state.pending meegeschreven.
+function buildPauseToggle(live) {
+  const seg = document.getElementById("pause-seg");
+  if (!seg) return;
+  const d = state.data || {};
+  const liveHas = live && (PAUSE_STATE_KEY in live);
+  const cur = liveHas ? !!live[PAUSE_STATE_KEY] : !!d.paused;
+  state.pending[PAUSE_STATE_KEY] = cur;
+  applyPauseGrayOut(cur);
+  seg.querySelectorAll("button").forEach(b => {
+    b.classList.toggle("active", (b.dataset.v === "true") === cur);
+  });
+  seg.querySelectorAll("button").forEach(b => b.addEventListener("click", e => {
+    const v = e.target.dataset.v === "true";
+    seg.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+    e.target.classList.add("active");
+    state.pending[PAUSE_STATE_KEY] = v;
+    applyPauseGrayOut(v);
+  }));
+}
+// Grijs de AC-dropdown + het hele ramen/roosters/deuren-blok uit (pointer-events + opacity via
+// .disabled) zodra gepauzeerd — alleen deze toggle en het tijdstip blijven bedienbaar, zodat je
+// later kunt terugdateren om de écht opgetreden standen alsnog te melden.
+function applyPauseGrayOut(paused) {
+  const acRow = document.getElementById("ac-row");
+  const ctlList = document.getElementById("ctl-list");
+  if (acRow) acRow.classList.toggle("disabled", paused);
+  if (ctlList) ctlList.classList.toggle("disabled", paused);
 }
 // Vul de airco-dropdown: "geen" + elke sensorkamer. Opties uit d.ac.rooms (server), met
 // terugval op de sensorkamers in house_meta. Huidige keuze uit de live Gist-log (anders het

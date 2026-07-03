@@ -76,6 +76,14 @@ AC_STATE_KEY = "ac_room"
 # trekt zowel haar eigen params als de gedeelde globalen scheef). Daarom laten we, zodra een kamer
 # nú de airco heeft, óók haar samples van de laatste AC_GUARD_H uur vallen — ongeacht de log-timing.
 AC_GUARD_H = 6.0
+# Speciale sleutel in een openingen-log-snapshot: is het huis nu gepauzeerd (huis-breed, geen
+# room-id)? True zolang iemand anders — niet de betrouwbare melder — thuis kan zijn; niemand
+# meldt dan de raam/rooster/deur-standen betrouwbaar. Voorwaarts geaccumuleerd zoals ac_room.
+# Anders dan AC_STATE_KEY raakt dit ALLE kamers tegelijk (het is geen kamer-uitsluiting maar een
+# leer-gate — zie main), en anders dan de AC-guard is géén apart guard-venster nodig: een nog-
+# actieve pauze is per definitie open-eindig tot nu (zie paused_intervals) en sluit recente
+# samples dus vanzelf uit.
+PAUSE_STATE_KEY = "paused"
 
 # ── Fysische constanten ─────────────────────────────────────────────────────────────
 CP_AIR = 1005.0    # J/(kg·K)
@@ -1054,6 +1062,97 @@ def filter_heating_samples(actual: dict, heat_on: dict[str, set]) -> tuple[dict,
             out[rid] = samples
             continue
         kept = [(ts, v) for ts, v in samples if ts not in on]
+        dropped = len(samples) - len(kept)
+        if dropped:
+            excluded[rid] = dropped
+        if kept:
+            out[rid] = kept
+    return out, excluded
+
+
+# ── Pauze-uitsluiting (huis-breed, handmatig via de modal) ───────────────────────────
+# Spiegelbeeld van de AC-/verwarmings-uitsluiting, maar huis-breed i.p.v. per kamer: als iemand
+# anders thuis is en de ramen/roosters/deuren bedient zonder dat te melden, is de openingen-log
+# voor de hele duur onbetrouwbaar — niet slechts voor één kamer. In plaats van een kamer-
+# uitsluiting is dit dus een LEER-GATE (naast de bestaande anomalie-poort `should_hold_learning`
+# in main): calibrate()/checkpoint_step/backfill_rmse_history slaan een gepauzeerd venster over,
+# maar de voorspelling (simulate()) blijft gewoon draaien — de fout wordt nog getoond, alleen
+# niet gebruikt om te leren. Geleerde params worden dus nooit gereset of gedegradeerd tijdens
+# een pauze: ze bevriezen exact waar ze stonden en leren verder vanaf dat punt zodra hervat.
+
+
+def _norm_paused(value) -> bool:
+    """Normaliseer de gerapporteerde pauze-stand naar een bool."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    return s in ("true", "1", "paused", "gepauzeerd", "aan", "ja")
+
+
+def pause_changes(log: list[dict]) -> list[tuple]:
+    """Chronologische (tijdstip, paused-bool) wijzigingen uit de openingen-log: elk snapshot
+    dat de `paused`-sleutel zet. Voorwaarts uit te lezen met `paused_at`."""
+    out = []
+    for entry in log:
+        st = entry.get("states", {}) or {}
+        if PAUSE_STATE_KEY not in st:
+            continue
+        try:
+            t = datetime.fromisoformat(entry["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        out.append((t, _norm_paused(st[PAUSE_STATE_KEY])))
+    out.sort(key=lambda c: c[0])
+    return out
+
+
+def paused_at(changes: list[tuple], when: datetime) -> bool:
+    """Was het huis gepauzeerd op tijdstip `when` (voorwaarts geaccumuleerd)? Vóór de eerste
+    melding: niet gepauzeerd (False)."""
+    val = False
+    for t, v in changes:
+        if t <= when:
+            val = v
+        else:
+            break
+    return val
+
+
+def paused_intervals(changes: list[tuple], now: datetime) -> list[tuple]:
+    """Zet de boolean-wisselingen om in (start, eind)-tupels waarin het huis gepauzeerd was. Een
+    nog-actieve pauze (geen latere 'uit'-melding) loopt open-eindig door tot `now` — dat sluit
+    recente samples vanzelf uit, zónder apart guard-venster zoals bij de airco (die guard bestaat
+    juist omdát een 'staat nu hier'-melding niet met een interval-eind samenvalt; hier IS
+    'nu, nog actief' letterlijk het interval-eind)."""
+    intervals = []
+    start = None
+    for t, v in changes:
+        if v and start is None:
+            start = t
+        elif not v and start is not None:
+            intervals.append((start, t))
+            start = None
+    if start is not None:
+        intervals.append((start, now))
+    return intervals
+
+
+def filter_paused_samples(actual: dict, intervals: list[tuple]) -> tuple[dict, dict]:
+    """Laat, huis-breed, de tado-samples vallen die binnen een gepauzeerd interval liggen —
+    niemand betrouwbaars meldt dan de raam/rooster/deur-stand, dus fitten daarop zou een
+    onbekende open/dicht-aanname in de kalibratie brengen. Anders dan filter_ac_samples/
+    filter_heating_samples (per kamer) raakt dit ALLE kamers evenveel. Geeft (gefilterde
+    actual-kopie, {kamer: #weggelaten}) — zelfde vorm als de AC/verwarmings-filters, voor
+    schema-consistentie. Lege `intervals` → ongewijzigd (backwards-compatibel). Een kamer wier
+    hele venster binnen een pauze valt, verdwijnt uit `actual` (net als bij AC/verwarming) — ze
+    wordt nog wél gesimuleerd + getoond (seed uit seed_src)."""
+    if not intervals:
+        return actual, {}
+    out: dict = {}
+    excluded: dict = {}
+    for rid, samples in actual.items():
+        kept = [(ts, v) for ts, v in samples
+                if not any(start <= ts <= end for start, end in intervals)]
         dropped = len(samples) - len(kept)
         if dropped:
             excluded[rid] = dropped
@@ -2253,6 +2352,11 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         # en hoeveel samples zijn deze run om die reden uit de fit gevallen. Voor de stook-chip.
         "heating": bool(ctx.get("heat_now", {}).get(rid)),
         "heat_excluded_samples": ctx.get("heat_excluded", {}).get(rid, 0),
+        # Pauze: is het huis nu gepauzeerd (huis-breed → gelijk voor elke kamer, i.t.t. ac/
+        # heating), en hoeveel samples zijn deze kamer deze run om die reden uit de fit
+        # gevallen. Voor de "niet-gekalibreerd (gepauzeerd)"-chip.
+        "paused": bool(ctx.get("paused_now")),
+        "pause_excluded_samples": ctx.get("pause_excluded", {}).get(rid, 0),
         # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
         # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
         "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
@@ -2268,7 +2372,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     actual, now, rmse_now, learning_held=False, baseline=None,
                     skill=None, rmse_baseline=None, wx=None, checkpoint=None,
                     fell_back=False, ac_room=None, ac_excluded=None,
-                    heat_now=None, heat_excluded=None) -> dict:
+                    heat_now=None, heat_excluded=None,
+                    paused_now=False, paused_since=None, pause_excluded=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -2310,6 +2415,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "veff": params.get("vent_eff", 1.0), "rho_cp": 1.2 * CP_AIR,
         "ac_room": ac_room, "ac_excluded": ac_excluded or {},
         "heat_now": heat_now or {}, "heat_excluded": heat_excluded or {},
+        "paused_now": paused_now, "pause_excluded": pause_excluded or {},
         "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
         "pw_now": pw_now,                  # per-raam zon-doorval nu → solar_by_window
     }
@@ -2333,7 +2439,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             print(f"[leercurve] {n_fixed} punt(en) herberekend tegen de gecorrigeerde openingen-log.")
     if rmse_now == rmse_now:   # niet-NaN
         entry = {"t": now.isoformat(), "rmse": round(rmse_now, 3),
-                 "held": bool(learning_held), "version": model_version()}
+                 "held": bool(learning_held), "paused": bool(paused_now),
+                 "version": model_version()}
         # Log-vingerafdruk over het eigen venster: de poort waarop backfill_rmse_history dit
         # punt later herberekent (alléén als de openingen-log in dat venster verandert).
         if openings_log:
@@ -2373,6 +2480,10 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         },
         "openings": states_now,
         "controls": _controls(house, states_now),
+        # Pauze: is het huis nu gepauzeerd (huis-breed, via de modal-toggle), en sinds wanneer
+        # (ISO, null als niet gepauzeerd) — voedt de "⏸️ Gepauzeerd sinds HH:MM"-banner.
+        "paused": bool(paused_now),
+        "paused_since": paused_since.isoformat() if paused_since else None,
         # Airco: in welke kamer de ene mobiele unit nu staat (of None) + de keuzelijst voor de
         # modal-dropdown (alleen sensorkamers — alleen díé worden gekalibreerd, dus alleen daar
         # doet de airco-uitsluiting ertoe).
@@ -2388,6 +2499,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     if (rmse_baseline is not None and rmse_baseline == rmse_baseline) else None,
                     "skill": skill,
                     "rmse_history": rmse_hist, "held": bool(learning_held),
+                    "paused": bool(paused_now),
                     "baseline_rmse": round(baseline, 3) if baseline is not None else None,
                     "wx": wx or None,
                     "checkpoint": {k: (checkpoint or {}).get(k)
@@ -2611,6 +2723,16 @@ def main():
         print(f"[verwarming] kamers nu aan = {rooms_heating or '—'}; "
               f"samples uit de fit gelaten: {heat_excluded}")
 
+    # Pauze: huis-breed "niemand betrouwbaar meldt de standen nu" (iemand anders is thuis).
+    # Spiegelbeeld van AC/verwarming maar huis-breed i.p.v. per kamer — zie filter_paused_samples.
+    pchanges = pause_changes(log)
+    p_intervals = paused_intervals(pchanges, now)
+    paused_now = paused_at(pchanges, now)
+    paused_since = p_intervals[-1][0] if paused_now and p_intervals else None
+    actual, pause_excluded = filter_paused_samples(actual, p_intervals)
+    if pause_excluded:
+        print(f"[pauze] gepauzeerd nu = {paused_now}; samples uit de fit gelaten: {pause_excluded}")
+
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
     timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H,
@@ -2643,12 +2765,17 @@ def main():
         # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
         # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
         rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
-        learning_held, baseline = should_hold_learning(rmse_cur, learned.get("rmse_history", []))
+        anomaly_held, baseline = should_hold_learning(rmse_cur, learned.get("rmse_history", []))
+        learning_held = anomaly_held or paused_now
         if learning_held:
             rmse_now = rmse_cur
-            print(f"[leren] fout anomaal hoog ({rmse_cur:.2f}°C vs norm {baseline:.2f}°C) → "
-                  "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
-                  "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
+            if paused_now:
+                print(f"[pauze] gepauzeerd → parameters vastgehouden (RMSE {rmse_cur:.2f}°C); "
+                      "niemand betrouwbaars meldt nu de standen, dit venster leert niet mee.")
+            if anomaly_held:
+                print(f"[leren] fout anomaal hoog ({rmse_cur:.2f}°C vs norm {baseline:.2f}°C) → "
+                      "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
+                      "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
         else:
             params, rmse_now = calibrate(house, params, timeline, seed, actual,
                                          solar_mean=wx_summary.get("solar_mean"))
@@ -2658,6 +2785,11 @@ def main():
                 print(f"[saturatie] params op hun grens: {', '.join(rails)}")
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
+    # Defensief: als het héle kalibratievenster gepauzeerd was, kan `actual` volledig leeg zijn
+    # (filter_paused_samples liet dan elke kamer vallen) → de if-tak hierboven werd overgeslagen
+    # en `learning_held` bleef False. Zet 'm alsnog zodat checkpoint/backfill/dashboard een
+    # gepauzeerd huis nooit als "geleerd" behandelen.
+    learning_held = learning_held or paused_now
 
     # Weer-genormaliseerde skill t.o.v. een persistentie-baseline — de apples-to-apples
     # kwaliteitsmaat die niet met de weersmoeilijkheid meebeweegt.
@@ -2723,7 +2855,9 @@ def main():
                            skill=skill, rmse_baseline=rmse_baseline, wx=wx_summary,
                            checkpoint=ckpt, fell_back=fell_back,
                            ac_room=ac_room_now, ac_excluded=ac_excluded,
-                           heat_now=heat_now, heat_excluded=heat_excluded)
+                           heat_now=heat_now, heat_excluded=heat_excluded,
+                           paused_now=paused_now, paused_since=paused_since,
+                           pause_excluded=pause_excluded)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

@@ -749,6 +749,82 @@ def test_filter_heating_drops_room_when_all_heated():
     assert excl["ted"] == 4
 
 
+# ── 10e. Pauze-uitsluiting (huis-breed, handmatig via de modal) ──────────────────────
+def test_norm_paused():
+    assert am._norm_paused(True) is True
+    assert am._norm_paused(False) is False
+    assert am._norm_paused("true") is True
+    assert am._norm_paused("gepauzeerd") is True
+    assert am._norm_paused("") is False
+    assert am._norm_paused("uit") is False
+
+
+def test_pause_changes_and_paused_at():
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    log = [
+        {"t": t0.isoformat(), "states": {"w": "open", am.PAUSE_STATE_KEY: True}},
+        {"t": (t0 + timedelta(hours=2)).isoformat(), "states": {am.PAUSE_STATE_KEY: False}},
+        {"t": (t0 + timedelta(hours=5)).isoformat(), "states": {am.PAUSE_STATE_KEY: True}},
+    ]
+    chg = am.pause_changes(log)
+    assert am.paused_at(chg, t0 - timedelta(hours=1)) is False   # vóór eerste melding
+    assert am.paused_at(chg, t0 + timedelta(hours=1)) is True
+    assert am.paused_at(chg, t0 + timedelta(hours=3)) is False
+    assert am.paused_at(chg, t0 + timedelta(hours=6)) is True
+    # Log zonder paused-sleutel → geen wijzigingen.
+    assert am.pause_changes([{"t": t0.isoformat(), "states": {"w": "open"}}]) == []
+
+
+def test_paused_intervals_open_ended_when_still_active():
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    now = t0 + timedelta(hours=6)
+    chg = [(t0, True), (t0 + timedelta(hours=2), False), (t0 + timedelta(hours=5), True)]
+    intervals = am.paused_intervals(chg, now)
+    assert intervals == [(t0, t0 + timedelta(hours=2)), (t0 + timedelta(hours=5), now)]
+    # Nooit gepauzeerd → geen intervallen.
+    assert am.paused_intervals([], now) == []
+    # Volledig afgesloten (geen actieve pauze op `now`) → laatste interval sluit netjes af,
+    # geen extra open-eindig interval.
+    chg2 = [(t0, True), (t0 + timedelta(hours=2), False)]
+    assert am.paused_intervals(chg2, now) == [(t0, t0 + timedelta(hours=2))]
+
+
+def test_filter_paused_samples_drops_all_rooms_house_wide():
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=am.TZ)
+    intervals = [(now - timedelta(hours=4), now - timedelta(hours=1))]
+    actual = {
+        "a": [(now - timedelta(hours=h), 22.0) for h in range(6, 0, -1)],
+        "b": [(now - timedelta(hours=h), 23.0) for h in range(6, 0, -1)],
+    }
+    filt, excl = am.filter_paused_samples(actual, intervals)
+    # Uren 4,3,2,1 vallen binnen het interval → 4 samples weg per kamer, huis-breed.
+    assert excl == {"a": 4, "b": 4}
+    assert len(filt["a"]) == 2 and len(filt["b"]) == 2
+    assert all(t < now - timedelta(hours=4) or t > now - timedelta(hours=1) for t, _ in filt["a"])
+    # Lege intervals → ongewijzigd (backwards-compatibel).
+    filt2, excl2 = am.filter_paused_samples(actual, [])
+    assert excl2 == {} and filt2 == actual
+
+
+def test_filter_paused_samples_drops_room_entirely_when_fully_paused():
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=am.TZ)
+    ts = [now - timedelta(hours=h) for h in range(3, -1, -1)]
+    actual = {"a": [(t, 21.0) for t in ts]}
+    intervals = [(ts[0], now)]   # heel het venster gepauzeerd
+    filt, excl = am.filter_paused_samples(actual, intervals)
+    assert "a" not in filt
+    assert excl["a"] == 4
+
+
+def test_openings_fingerprint_changes_on_paused_correction():
+    t0 = datetime(2026, 6, 1, 8, 0, tzinfo=am.TZ)
+    log = [{"t": t0.isoformat(), "states": {"w": "open"}}]
+    log_corrected = [{"t": t0.isoformat(), "states": {"w": "open", am.PAUSE_STATE_KEY: True}}]
+    fp1 = am.openings_fingerprint(log, t0 - timedelta(hours=1), t0 + timedelta(hours=1))
+    fp2 = am.openings_fingerprint(log_corrected, t0 - timedelta(hours=1), t0 + timedelta(hours=1))
+    assert fp1 != fp2
+
+
 def test_railed_params_flags_bounds():
     params = am.default_params(_toy_house())
     params["cp_shelter"] = am.BOUNDS["cp_shelter"][0]      # op de vloer

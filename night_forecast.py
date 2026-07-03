@@ -10,10 +10,14 @@ de nacht doorkomt:
    rekt de vooruitblik op; fetch_weather's forecast_days=2 dekt de horizon ruim.
 2. **Raam-scenario** — twee sims: `ted_small_window` open vs dicht vanaf nu
    (toekomstige timeline-stappen krijgen een overschreven states-dict; het
-   verleden houdt de gemelde log). Het verschil om 07:00 + de comfortband
-   (window_advisor.ROOM_COMFORT["Ted"]) bepalen het advies.
-3. **Tog/slaapzak-advies** — het nachtgemiddelde van het aanbevolen scenario
-   door de standaard peuter-slaapzaktabel.
+   verleden houdt de gemelde log; `ted_vent` (het rooster) blijft in beide
+   ongemoeid open). **Dicht is de aanname voor de echte nacht** — deur en
+   raampje gaan 's nachts standaard dicht, alleen het rooster staat open — dus
+   dat scenario is het hoofdbericht + de basis voor het slaapzakadvies. Open
+   blijft louter een informatieve vergelijking ("zou dit schelen"), geen advies
+   om het raampje ook echt open te zetten.
+3. **Tog/slaapzak-advies** — het nachtgemiddelde van het dicht-scenario door de
+   standaard peuter-slaapzaktabel.
 
 Bewust GEEN WU-verfijning (de sim is forecast-gedreven en de seed komt van
 tado — het station voegt hier niets toe en zo blijven de WU-secrets uit deze
@@ -21,7 +25,8 @@ workflow) en geen dashboard-artefact (v1 is stateless; alleen Telegram).
 
 Verzend-poort: in het zomerseizoen (mei–sep) elke avond; daarbuiten alleen als
 de voorspelde nacht-max ≥ NIGHT_INTEREST_C (een warme najaarsnacht telt nog,
-een stabiele gestookte winternacht niet).
+een stabiele gestookte winternacht niet). Gaat naar de **groepschat**
+(`TELEGRAM_CHAT_GROUP_ID`), net als de weerbriefing — niet naar de privé-chat.
 """
 
 import os
@@ -30,7 +35,6 @@ from datetime import datetime, timedelta
 import airflow_model as am
 from notify import run_guarded, send_telegram
 from shared_const import TZ, format_date_nl
-from window_advisor import ROOM_COMFORT
 
 ROOM_ID = "ted"                  # zone-id in house_model.json
 WINDOW_ID = "ted_small_window"   # het openbare raampje voor het scenario
@@ -92,16 +96,6 @@ def night_stats(series: list[tuple], now: datetime) -> dict | None:
     return stats
 
 
-def recommend(open_stats: dict, closed_stats: dict, low: float, high: float) -> str:
-    """"open" of "dicht": open alleen als het niet onder de comfort-ondergrens zakt
-    én om 07:00 niet warmer eindigt dan dicht (koelen is het doel)."""
-    o7 = open_stats["marks"].get(7, open_stats["min"])
-    c7 = closed_stats["marks"].get(7, closed_stats["min"])
-    if open_stats["min"] < low:
-        return "dicht"
-    return "open" if o7 <= c7 else "dicht"
-
-
 def tog_advice(night_mean: float) -> tuple[str, str]:
     for floor, tog, clothing in TOG_TABLE:
         if floor is None or night_mean >= floor:
@@ -110,10 +104,12 @@ def tog_advice(night_mean: float) -> tuple[str, str]:
 
 
 def build_message(now: datetime, inside_now: float | None, out_min: float | None,
-                  rec: str, rec_stats: dict, other_stats: dict,
-                  reported_open: bool, low: float, high: float) -> str:
-    """Het avondbericht. `rec_stats` = het aanbevolen scenario, `other_stats` het
-    andere; `reported_open` = de huidige gemelde raampje-stand (voor de kopregel)."""
+                  closed_stats: dict, open_stats: dict,
+                  reported_open: bool) -> str:
+    """Het avondbericht. `closed_stats` = het hoofdscenario (deur + raampje
+    dicht, rooster open — de aanname voor een echte nacht); `open_stats` is
+    puur een informatieve vergelijking. `reported_open` = de huidige gemelde
+    raampje-stand (waarschuwt als die van de aanname afwijkt)."""
     d = format_date_nl(now.date())
     lines = [f"🌙 <b>Teds nacht</b> — {d}"]
     ctx = []
@@ -124,31 +120,24 @@ def build_message(now: datetime, inside_now: float | None, out_min: float | None
     if ctx:
         lines.append(" · ".join(ctx))
 
-    stand = "raampje open" if rec == "open" else "raampje dicht"
-    zoals = " (zoals gemeld)" if (rec == "open") == reported_open else ""
-    marks = rec_stats["marks"]
+    afwijking = (" (raampje staat nu open — voorspelling gaat uit van dicht)"
+                if reported_open else "")
+    marks = closed_stats["marks"]
     mark_txt = " · ".join(f"{hh:02d}:00 <b>{marks[hh]:.1f}°</b>"
                           for hh in MARKS if hh in marks)
-    lines.append(f"\nVoorspelling ({stand}{zoals}):")
-    lines.append(f"{mark_txt}  (min {rec_stats['min']:.1f}°)")
+    lines.append(f"\nVoorspelling (deur + raampje dicht, rooster open){afwijking}:")
+    lines.append(f"{mark_txt}  (min {closed_stats['min']:.1f}°)")
 
-    o7 = (rec_stats if rec == "open" else other_stats)["marks"].get(7)
-    c7 = (other_stats if rec == "open" else rec_stats)["marks"].get(7)
+    o7 = open_stats["marks"].get(7)
+    c7 = closed_stats["marks"].get(7)
     if o7 is not None and c7 is not None:
         delta = o7 - c7
-        lines.append(f"\n🪟 Raampje open scheelt <b>{delta:+.1f}°</b> om 07:00 "
-                     f"(dicht: {c7:.1f}°)")
-    if rec == "open":
-        lines.append(f"→ <b>Open laten</b> — koelt richting de {low:.0f}–{high:.0f}°-band, "
-                     f"zakt niet onder {low:.0f}°.")
-    else:
-        reden = ("zou onder de comfort-ondergrens zakken"
-                 if other_stats["min"] < low else "koelt dicht net zo goed")
-        lines.append(f"→ <b>Dicht houden</b> — open {reden}.")
+        lines.append(f"\n🪟 Raampje ook open zou <b>{delta:+.1f}°</b> schelen om 07:00 "
+                     f"({o7:.1f}° i.p.v. {c7:.1f}°)")
 
-    tog, clothing = tog_advice(rec_stats["mean"])
+    tog, clothing = tog_advice(closed_stats["mean"])
     lines.append(f"\n👶 Slaapzak: <b>{tog} + {clothing}</b> "
-                 f"(nachtgemiddeld ~{rec_stats['mean']:.0f}°)")
+                 f"(nachtgemiddeld ~{closed_stats['mean']:.0f}°, deur + raampje dicht)")
     return "\n".join(lines)
 
 
@@ -201,12 +190,10 @@ def main() -> None:
         print("[teds-nacht] Geen nachtvenster in de sim-serie → stop.")
         raise SystemExit(1)
 
-    low, high = ROOM_COMFORT.get(WD_KEY, (17.0, 18.0))
-    rec = recommend(stats["open"], stats["dicht"], low, high)
-    rec_stats = stats[rec]
-    other = stats["dicht" if rec == "open" else "open"]
+    closed_stats = stats["dicht"]
+    open_stats = stats["open"]
 
-    # Huidige gemelde raampje-stand (voor de "zoals gemeld"-kopregel).
+    # Huidige gemelde raampje-stand (voor de afwijking-kopregel).
     w = house["windows"][WINDOW_ID]
     rep = am.openings_at(log, now).get(WINDOW_ID)
     frac = am._open_frac(rep, w) if rep is not None else am._default_frac(w, "window")
@@ -222,14 +209,15 @@ def main() -> None:
         print(f"[teds-nacht] buiten seizoen en koele nacht (max {night_max:.1f}°) — stil.")
         return
 
-    msg = build_message(now, inside_now, out_min, rec, rec_stats, other,
-                        reported_open, low, high)
+    msg = build_message(now, inside_now, out_min, closed_stats, open_stats,
+                        reported_open)
     print(msg)
     if os.environ.get("DRY_RUN") == "1":
         print("DRY_RUN=1, niet verzonden.")
         return
-    send_telegram(msg)
+    send_telegram(msg, chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"))
 
 
 if __name__ == "__main__":
-    run_guarded(main, "teds-nacht", fail_threshold=2)
+    run_guarded(main, "teds-nacht", chat_id=os.getenv("TELEGRAM_CHAT_GROUP_ID"),
+               fail_threshold=2)

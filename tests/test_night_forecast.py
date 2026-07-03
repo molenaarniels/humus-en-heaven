@@ -115,20 +115,6 @@ def test_night_stats_extraction():
     assert nf.night_stats([], NOW) is None
 
 
-def test_recommend_floor_and_cooling():
-    low, high = 17.0, 18.0
-    open_cools = {"min": 18.2, "max": 22.0, "mean": 20.0, "marks": {7: 18.4}}
-    closed = {"min": 20.0, "max": 22.5, "mean": 21.0, "marks": {7: 20.5}}
-    assert nf.recommend(open_cools, closed, low, high) == "open"
-    # Open zakt onder de comfort-ondergrens → dicht, ook al koelt het meer.
-    te_koud = {"min": 16.4, "max": 21.0, "mean": 18.0, "marks": {7: 16.6}}
-    assert nf.recommend(te_koud, closed, low, high) == "dicht"
-    # Open eindigt warmer dan dicht (kan 's zomers bij warme nacht) → dicht.
-    warmer = {"min": 20.8, "max": 23.0, "mean": 21.5, "marks": {7: 21.8}}
-    closed_koeler = {"min": 20.0, "max": 22.0, "mean": 21.0, "marks": {7: 21.0}}
-    assert nf.recommend(warmer, closed_koeler, low, high) == "dicht"
-
-
 def test_tog_table_boundaries():
     assert nf.tog_advice(24.0) == ("0.5 tog", "korte pyjama of alleen romper")
     assert nf.tog_advice(21.0) == ("1.0 tog", "korte pyjama")
@@ -146,17 +132,26 @@ def test_season_gate():
 
 
 def test_message_format():
-    rec = {"min": 18.9, "max": 22.8, "mean": 20.4,
-           "marks": {23: 21.8, 3: 20.1, 7: 19.0}}
-    other = {"min": 20.1, "max": 23.0, "mean": 21.2,
-             "marks": {23: 22.0, 3: 21.0, 7: 20.3}}
-    msg = nf.build_message(NOW, 22.5, 14.2, "open", rec, other,
-                           reported_open=True, low=17.0, high=18.0)
-    assert "Teds nacht" in msg and "zoals gemeld" in msg
+    closed = {"min": 18.5, "max": 21.0, "mean": 19.5,
+             "marks": {23: 20.5, 3: 19.5, 7: 18.8}}
+    open_ = {"min": 17.0, "max": 20.5, "mean": 18.3,
+             "marks": {23: 20.0, 3: 18.5, 7: 17.5}}
+    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, reported_open=True)
+    assert "Teds nacht" in msg
+    assert "raampje dicht" in msg and "voorspelling gaat uit van dicht" in msg
     assert "23:00" in msg and "07:00" in msg
-    assert "-1.3°" in msg and "Open laten" in msg
-    assert "2.5 tog" in msg                              # nachtgemiddeld 20.4° → 18–21-band
+    assert "-1.3°" in msg                       # open zou 18.8 → 17.5 = -1.3° schelen
+    assert "2.5 tog" in msg                     # nachtgemiddeld (dicht) 19.5° → 18–21-band
     assert len(msg) < 4096
+
+
+def test_message_format_matches_reported_stand():
+    closed = {"min": 18.5, "max": 21.0, "mean": 19.5,
+             "marks": {23: 20.5, 3: 19.5, 7: 18.8}}
+    open_ = {"min": 17.0, "max": 20.5, "mean": 18.3,
+             "marks": {23: 20.0, 3: 18.5, 7: 17.5}}
+    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, reported_open=False)
+    assert "voorspelling gaat uit van dicht" not in msg
 
 
 # ── main(): buur-anker-rebind via de gemockte seams ──────────────────────────────────

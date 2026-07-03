@@ -926,6 +926,47 @@ def test_checkpoint_degradation_accumulates_before_fallback():
     assert params == {"living": {"c_air": 9.0}}
 
 
+def test_reseat_checkpoint_shape():
+    cur = {"living": {"c_air": 1.2}}
+    out = am.reseat_checkpoint(cur, skill=-0.9, rmse_now=0.58, version="v3", now_iso="t5",
+                               last_fallback="t4")
+    assert out["params"] == cur and out["params"] is not cur          # diepe kopie
+    assert out["skill"] == -0.9 and out["rmse"] == 0.58
+    assert out["degraded_runs"] == 0
+    assert out["reseated"] == "t5" and out["t"] == "t5"
+    assert out["last_fallback"] == "t4"                                # laatste échte fallback blijft
+    nan_out = am.reseat_checkpoint(cur, skill=None, rmse_now=float("nan"), version="v3",
+                                   now_iso="t5")
+    assert nan_out["rmse"] is None
+
+
+def test_reseated_checkpoint_breaks_fallback_loop():
+    """De fallback-lus (regressie): een fossiel optimum (skill geoogst op een gunstig venster /
+    oudere code-versie) blijft in kalm weer onbereikbaar, dus zonder her-zeteling valt elke
+    FALLBACK_AFTER runs dezelfde fossiele-params-terugzetting. Na een verworpen fallback +
+    reseat ligt de lat op het huidige niveau en degradeert er niets meer."""
+    fossil = {"params": {"living": {"c_air": 9.9}}, "skill": 0.8, "degraded_runs": 0}
+    cur = {"living": {"c_air": 1.2}}
+    ckpt = fossil
+    for i in range(am.FALLBACK_AFTER):
+        params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=-1.0, rmse_now=0.6,
+                                              version="v3", now_iso=f"t{i}")
+    assert fb is True                                       # de lus zoals in het wild
+    # main() verwerpt 'm (fossiel past slechter op het huidige venster) en her-zetelt:
+    ckpt = am.reseat_checkpoint(cur, skill=-1.0, rmse_now=0.6, version="v3", now_iso="t9")
+    # Zelfde kalm-weer-skill erna: binnen de marge van het her-gezetelde optimum → geen
+    # degradatie meer, geen nieuwe fallback — de lus is gebroken.
+    for i in range(am.FALLBACK_AFTER + 2):
+        params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=-1.0, rmse_now=0.6,
+                                              version="v3", now_iso=f"u{i}")
+        assert fb is False
+    assert ckpt["degraded_runs"] == 0
+    # Een écht betere run daarna legt gewoon weer een nieuw optimum vast.
+    params, ckpt, fb = am.checkpoint_step(ckpt, cur, skill=0.2, rmse_now=0.4,
+                                          version="v3", now_iso="u99")
+    assert fb is False and ckpt["skill"] == 0.2 and ckpt["t"] == "u99"
+
+
 # ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
 def test_window_naive_baseline_is_time_bounded():
     t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)
@@ -937,30 +978,103 @@ def test_window_naive_baseline_is_time_bounded():
     assert leeg != leeg                                                      # geen samples → NaN
 
 
-def test_backfill_recomputes_in_horizon_points_only():
-    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
-    # Gecorrigeerde residuen: klein (0.1°C) over het hele ~48u buffer-venster, elk uur een sample.
+def _backfill_fixture(now):
+    """Gedeelde ingrediënten: kleine (0.1°C) gecorrigeerde residuen + actuals over ~48u,
+    en een openingen-log met één snapshot ruim vóór het venster."""
     timed_res = [(now - timedelta(hours=h), 0.1) for h in range(48, -1, -1)]
     actual = {"a": [(now - timedelta(hours=h), 20.0 + (h % 3)) for h in range(48, -1, -1)]}
+    log = [{"t": (now - timedelta(days=10)).isoformat(), "states": {"w1": "closed"}}]
+    return timed_res, actual, log
+
+
+def test_backfill_recomputes_in_horizon_points_on_log_change():
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    timed_res, actual, log = _backfill_fixture(now)
     history = [
-        {"t": (now - timedelta(hours=6)).isoformat(), "rmse": 2.0},    # in horizon, vervuild
-        {"t": (now - timedelta(hours=50)).isoformat(), "rmse": 2.0},   # buiten horizon → bevroren
-        {"t": (now - timedelta(hours=3)).isoformat(), "rmse": 0.11},   # in horizon, al goed → ongemoeid
+        {"t": (now - timedelta(hours=6)).isoformat(), "rmse": 2.0,     # in horizon, vervuild
+         "log_fp": "oude-log"},
+        {"t": (now - timedelta(hours=50)).isoformat(), "rmse": 2.0,    # buiten horizon → bevroren
+         "log_fp": "oude-log"},
+        {"t": (now - timedelta(hours=3)).isoformat(), "rmse": 0.11,    # in horizon, al goed → ongemoeid
+         "log_fp": "oude-log"},
     ]
-    changed = am.backfill_rmse_history(history, timed_res, actual, now)
+    changed = am.backfill_rmse_history(history, timed_res, actual, now, log)
     assert changed == 1
     p_fixed, p_frozen, p_ok = history
     assert p_fixed["rmse"] == pytest.approx(0.1, abs=1e-6)              # naar de echte model-skill
     assert p_fixed["rmse_logged"] == 2.0 and p_fixed["recomputed"] is True
     assert p_frozen["rmse"] == 2.0 and "recomputed" not in p_frozen     # grond-waarheid weg → bevroren
+    assert p_frozen["log_fp"] == "oude-log"                             # buiten horizon: niet gestempeld
     assert p_ok["rmse"] == 0.11 and "recomputed" not in p_ok            # < DELTA → geen gechurn
+    assert p_ok["log_fp"] != "oude-log"                                 # maar wél opnieuw gestempeld
 
 
-def test_backfill_noop_without_residuals():
+def test_backfill_freezes_points_when_log_unchanged():
+    """De churn-bug (regressie): één run met een slechte sim mag de curve NIET naar zijn
+    eigen foutniveau herschrijven zolang de openingen-log niet veranderde."""
     now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    _, actual, log = _backfill_fixture(now)
+    # Sim van déze run is 2°C mis (transiënte input-hapering / mislukte kalibratiestap)…
+    timed_res = [(now - timedelta(hours=h), 2.0) for h in range(48, -1, -1)]
+    t_p = now - timedelta(hours=6)
+    fp = am.openings_fingerprint(log, t_p - timedelta(hours=am.CALIB_WINDOW_H), t_p)
+    history = [{"t": t_p.isoformat(), "rmse": 0.6, "skill": 0.4, "log_fp": fp}]
+    # …maar de log is ongewijzigd → het punt blijft exact staan.
+    assert am.backfill_rmse_history(history, timed_res, actual, now, log) == 0
+    assert history[0]["rmse"] == 0.6 and history[0]["skill"] == 0.4
+    assert "recomputed" not in history[0] and "rmse_logged" not in history[0]
+
+
+def test_backfill_heals_legacy_recomputed_points_once():
+    """Punten van vóór de vingerafdruk-poort die door de churn-bug zijn overschreven:
+    eenmalig terug naar de als-gelogde waarde, daarna gestempeld en bevroren."""
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    timed_res, actual, log = _backfill_fixture(now)
+    t_p = now - timedelta(hours=6)
+    history = [
+        {"t": t_p.isoformat(), "rmse": 1.9, "rmse_logged": 0.6, "rmse_naive": 1.2,
+         "recomputed": True},                                          # vervuild → herstellen
+        {"t": (now - timedelta(hours=3)).isoformat(), "rmse": 0.55},   # nooit aangeraakt → stempel
+    ]
+    changed = am.backfill_rmse_history(history, timed_res, actual, now, log)
+    assert changed == 1
+    p_heal, p_stamp = history
+    assert p_heal["rmse"] == 0.6 and "recomputed" not in p_heal
+    assert p_heal["skill"] == pytest.approx(1 - 0.6 / 1.2, abs=1e-3)   # skill mee-hersteld
+    assert p_heal["log_fp"] and p_stamp["log_fp"]                       # beide bevroren op de log-stand
+    assert p_stamp["rmse"] == 0.55
+    # Tweede run, zelfde log: alles blijft nu staan (geen dubbele heal, geen churn).
+    assert am.backfill_rmse_history(history, timed_res, actual, now, log) == 0
+    assert p_heal["rmse"] == 0.6
+
+
+def test_backfill_noop_without_residuals_or_log():
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    timed_res, actual, log = _backfill_fixture(now)
     history = [{"t": (now - timedelta(hours=1)).isoformat(), "rmse": 1.0}]
-    assert am.backfill_rmse_history(history, [], {}, now) == 0
+    assert am.backfill_rmse_history(history, [], {}, now, log) == 0
+    # Lege log (nog geen meldingen óf transiënte Gist-leesfout): sim op default-standen
+    # → historie volledig ongemoeid, ook geen stempel.
+    assert am.backfill_rmse_history(history, timed_res, actual, now, []) == 0
     assert history[0]["rmse"] == 1.0 and "recomputed" not in history[0]
+    assert "log_fp" not in history[0]
+
+
+def test_openings_fingerprint_tracks_only_window_relevant_changes():
+    now = datetime(2026, 6, 18, 18, 0, tzinfo=am.TZ)
+    start, end = now - timedelta(hours=48), now
+    log = [{"t": (now - timedelta(days=10)).isoformat(), "states": {"w1": "closed"}}]
+    fp0 = am.openings_fingerprint(log, start, end)
+    assert fp0 == am.openings_fingerprint(list(log), start, end)       # deterministisch
+    # Teruggedateerde melding ín het venster → andere vingerafdruk.
+    binnen = log + [{"t": (now - timedelta(hours=12)).isoformat(), "states": {"w1": "open"}}]
+    assert am.openings_fingerprint(binnen, start, end) != fp0
+    # Melding ná het venster raakt dit venster niet.
+    erna = log + [{"t": (now + timedelta(hours=1)).isoformat(), "states": {"w1": "open"}}]
+    assert am.openings_fingerprint(erna, start, end) == fp0
+    # Oudere log-edit die de beginstand wijzigt telt wél mee (openings_at op start).
+    ervoor = [{"t": (now - timedelta(days=10)).isoformat(), "states": {"w1": "open"}}]
+    assert am.openings_fingerprint(ervoor, start, end) != fp0
 
 
 # ════════════════════════════════════════════════════════════════════════════════════

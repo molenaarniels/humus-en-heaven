@@ -401,8 +401,11 @@ STAIR_STRAT_MAX_GRAD = 0.7   # °C/m — klem (gemeten kamer-helling piekte op ~
 # 28.4° naast office 24.3° — fysisch onmogelijk over een open deur). Q_ex = C·A·√(g·H·ΔT/T̄) per
 # open koker-deur, uitgewisseld tegen de koker-lucht op déúrhoogte (γ-offset, consistent met de
 # stratificatie). Deur dicht → geen term → de skylight-/dakwarmte poolt bovenin (de "pocket").
-# Bewust alleen op de deuren van stratify-zones (scope/risico); telt mee in dezelfde gdoor-route
-# (× vent_eff) als de netto-advectie.
+# Bewust alleen op de deuren van stratify-zones (scope/risico). Gaat als eigen geleiding in
+# gdoor, BUITEN de geleerde × vent_eff om: dit is een fysieke orifice-term (zelfde argument als
+# de vaste `cd`), en de netto-advectie-efficiency erover heen schalen dempte de pinning ~3× —
+# de sensorloze koker bleef daardoor ~1°C ónder zijn open-deur-kamers hangen (onderkant kouder
+# dan ted bij open deur, het spiegelbeeld van de 28.4°-float die deze term juist moest fixen).
 BUOY_EXCH_C = 0.14      # ≈ Cd/3 met doorway-Cd ~0.42 (Brown–Solvason interzonale convectie)
 DOOR_HEIGHT_M = 2.0     # m — verticale maat van een binnendeur (drijft de stack in de deuropening)
 # Zon-kroon voor de top-weergave: de skylight-/dak-zon landt bovenin de koker; met de office-deur
@@ -1245,10 +1248,13 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         mix = door_mix(house, net["flows"], ops)
         # Trappenhuis-stratificatie: γ = kleinste-kwadraten-helling door de OPEN-deur-kamers
         # (proxy-meting van het profiel), plus de Brown–Solvason-counterflow per open koker-deur —
-        # de tweerichtings-menging die het netto-netwerkdebiet mist. De counterflow gaat in `mix`
-        # vóór de gdoor-opbouw (zelfde × vent_eff route); deur dicht → geen term → warmte poolt
-        # bovenin. Leeg `strat` (geen opt-in) → alles ongewijzigd.
+        # de tweerichtings-menging die het netto-netwerkdebiet mist. De counterflow is een fysiek
+        # orifice-verschijnsel (zelfde argument als de vaste `cd`) en gaat dus BUITEN de geleerde
+        # × vent_eff om — die efficiency hoort bij de netto-advectie; erover heen schalen dempte
+        # de pinning ~3× en liet de sensorloze koker onder zijn open-deur-kamers zweven. Deur
+        # dicht → geen term → warmte poolt bovenin. Leeg `strat` (geen opt-in) → alles ongewijzigd.
         strat_step = {}
+        ex_mix = {}
         if strat:
             door_area = {}
             for op in ops:
@@ -1267,9 +1273,12 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                                                  Ta.get(other, T_out))
                     if q_ex > 0.0:
                         key = (sid, other) if (sid, other) in mix else (other, sid)
-                        mix[key] = mix.get(key, 0.0) + q_ex
-        # Advectieve geleiding per (zone↔zone) deur (W/K) en per zone naar buiten (vent).
+                        ex_mix[key] = ex_mix.get(key, 0.0) + q_ex
+        # Advectieve geleiding per (zone↔zone) deur (W/K) en per zone naar buiten (vent);
+        # de buoyancy-counterflow komt er ongedempt (zonder × vent_eff) bovenop.
         gdoor = {key: rho_cp * qm * veff for key, qm in mix.items()}
+        for key, q_ex in ex_mix.items():
+            gdoor[key] = gdoor.get(key, 0.0) + rho_cp * q_ex
         gvent = {z: rho_cp * fresh.get(z, 0.0) * veff for z in zones}
         # Het γ-hoogte-offset als energie-behoudende symmetrische bron in b[] (+ kamer, − koker):
         # elke verdiepingsdeur mengt tegen T_koker + γ·(z − z_mid) i.p.v. het vlakke gemiddelde.
@@ -2104,8 +2113,15 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                        if (rid, o) in open_pairs or (o, rid) in open_pairs}
         gamma = _stair_gamma(strat_info, ta_all, open_others)
         crown = stair_crown(now_step.get("irr_roof", {}).get(rid, 0.0))
+        # Pin-fout per open deur: koker-lucht op deurhoogte minus de kamer-lucht (− = koker leest
+        # kouder dan de kamer op die verdieping). Diagnostiek voor hoe strak de counterflow de
+        # koker aan zijn open-deur-kamers pint; hoort ~0 te zijn bij open deuren. Additief veld.
+        pin_err = {o: round(ta_now + gamma * (strat_info["doors"][o] - strat_info["z_mean"])
+                            - ta_all[o], 2)
+                   for o in sorted(open_others) if ta_all.get(o) is not None}
         strat_extra = {
             "stair_gradient_c_per_m": round(gamma, 3),
+            "stair_pin_error_c": pin_err,
             # Zon-kroon: extra °C bovenop de γ-lijn voor de bovenste meters (boven de hoogste
             # deur), gedreven door de dak-/skylight-instraling nu; 's avonds 0. Additief veld.
             "stair_crown_c": round(crown, 2),

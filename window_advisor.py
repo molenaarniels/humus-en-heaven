@@ -44,7 +44,13 @@ from shared_const import utc_now_iso
 from wu_bias import correct_temp
 
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
+# ROOMS = de kamers waarvoor we koeladvies geven (raam open/dicht + Telegram).
 ROOMS = ["Living room", "Ted", "hotties", "office"]
+# SENSOR_ROOMS = álle tado-zones die we uitlezen en in window_data.json publiceren, óók de
+# raamloze badkamer ("Shower") die er enkel als sensor bij zit: geen koeladvies (geen raam om
+# te openen), maar wél gepubliceerd zodat de ventilatie-tweeling (Project 8) haar temp +
+# verwarmingsstatus kan gebruiken. Advies/Telegram blijft strikt op ROOMS.
+SENSOR_ROOMS = ROOMS + ["Shower"]
 
 # ── Beslis-parameters (hysterese om flapping te voorkomen) ─────────────────────
 COMFORT_HIGH = 23.5   # °C — standaard-comfortgrens (fallback voor kamers buiten ROOM_COMFORT)
@@ -258,12 +264,31 @@ def _tado_get(path: str, access_token: str) -> dict:
     return r.json()
 
 
+def parse_heating(state: dict) -> tuple[bool, float | None]:
+    """Lees de verwarmingsstatus uit een tado zone-`/state`-respons: (aan?, vermogen%).
+
+    Driver = het gemeten verwarmingsvermogen `activityDataPoints.heatingPower.percentage`
+    (0..100) — dat is de directe "wordt er nú actief verwarmd"-uitlezing. `aan` = vermogen > 0,
+    óf (bij een zone zonder heatingPower-datapunt) `setting.power == "ON"` mét een setpoint. Het
+    model heeft geen verwarmingsterm, dus deze vlag laat de tweeling die kamer uit de kalibratie
+    houden zolang er gestookt wordt. None-vermogen bij een zone die het datapunt niet levert."""
+    adp = state.get("activityDataPoints", {}) or {}
+    power_pct = (adp.get("heatingPower") or {}).get("percentage")
+    if power_pct is not None:
+        return power_pct > 0.0, power_pct
+    # Geen gemeten vermogen → val terug op de aan/uit-stand van de thermostaat.
+    setting = state.get("setting", {}) or {}
+    on = str(setting.get("power", "")).upper() == "ON" and setting.get("temperature") is not None
+    return on, None
+
+
 def fetch_room_temps(access_token: str) -> dict[str, dict]:
-    """Geeft per kamer in ROOMS: {"inside": °C, "humidity": %}."""
+    """Geeft per kamer in SENSOR_ROOMS: {"inside": °C, "humidity": %, "heating": bool,
+    "heating_power": %|None} — de badkamer ("Shower") zit er als sensor-only kamer bij."""
     home_id = _tado_get("/me", access_token)["homes"][0]["id"]
     zones   = _tado_get(f"/homes/{home_id}/zones", access_token)
 
-    wanted = {name.lower(): name for name in ROOMS}
+    wanted = {name.lower(): name for name in SENSOR_ROOMS}
     out: dict[str, dict] = {}
     for z in zones:
         canonical = wanted.get((z.get("name") or "").lower())
@@ -273,9 +298,11 @@ def fetch_room_temps(access_token: str) -> dict[str, dict]:
         sdp   = state.get("sensorDataPoints", {}) or {}
         inside = (sdp.get("insideTemperature") or {}).get("celsius")
         humid  = (sdp.get("humidity") or {}).get("percentage")
-        out[canonical] = {"inside": inside, "humidity": humid}
+        heating, heat_pct = parse_heating(state)
+        out[canonical] = {"inside": inside, "humidity": humid,
+                          "heating": heating, "heating_power": heat_pct}
 
-    missing = [r for r in ROOMS if r not in out]
+    missing = [r for r in SENSOR_ROOMS if r not in out]
     if missing:
         print(f"[tado] Niet gevonden als zone: {missing}", file=sys.stderr)
     return out
@@ -696,6 +723,7 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     d = rooms_data.get(room) or {}
     inside   = d.get("inside")
     humidity = d.get("humidity")
+    heating  = bool(d.get("heating"))
     od = ctx["od"]
 
     prev_hist = (prev_room_dash.get(room) or {}).get("history", [])
@@ -704,6 +732,11 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
         sample = {"t": now.isoformat(), "temp": round(inside, 1)}
         if humidity is not None:
             sample["hum"] = round(humidity)  # binnen-RH → vochttrend op het scatterplot
+        # Verwarmingsvlag per sample (additief; afwezig = niet stoken). De ventilatie-tweeling
+        # laat de samples waarin gestookt werd uit haar kalibratie vallen — het thermische model
+        # heeft geen verwarmingsterm, dus een gestookte kamer leest warmer dan de fysica verklaart.
+        if heating:
+            sample["heat"] = 1
         hist = _append_trim(prev_hist, sample)
 
     low, high = comfort_band(room)
@@ -739,6 +772,10 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     return {
         "inside":         round(inside, 1) if inside is not None else None,
         "humidity":       round(humidity) if humidity is not None else None,
+        # Verwarmingsstatus nu (additief): vlag + gemeten vermogen%. Voedt de tweeling-uitsluiting
+        # en kan op het dashboard getoond worden. Afwezig in oudere JSON → geen verwarming.
+        "heating":        heating,
+        "heating_power":  round(d.get("heating_power")) if d.get("heating_power") is not None else None,
         "vent_rh":        round(vent_rh) if vent_rh is not None else None,
         "rh_offset":      round(rh_off, 2),
         "rh_veto":        rh_veto,
@@ -815,7 +852,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "fc": fc, "hourly": om["hourly"],
     }
     rooms_out = {room: _room_dashboard_row(room, rooms_data, prev_room_dash, now, ctx)
-                 for room in ROOMS}
+                 for room in SENSOR_ROOMS}
 
     return {
         "generated_at":   utc_now_iso(),
@@ -905,9 +942,12 @@ def main():
 
     # Koeladvies is alleen zinvol op warme dagen. Onder de drempel én geen warme
     # kamer → niets doen (change-only voorkomt verder ruis).
+    # Alleen de advies-kamers (ROOMS) mogen de gate opheffen — de sensor-only badkamer telt niet
+    # mee (geen raam om te openen; een warme douche mag geen koeladvies-run forceren).
     warm_room = any(
-        (d["inside"] is not None and d["inside"] > comfort_band(room)[1])
-        for room, d in rooms_data.items()
+        ((rooms_data.get(room) or {}).get("inside") is not None
+         and rooms_data[room]["inside"] > comfort_band(room)[1])
+        for room in ROOMS
     )
     gated = (dmax is None or dmax < WARM_DAY_MAX) and not warm_room
     gate_reason = "koele dag — advies onderdrukt" if gated else "warme dag"

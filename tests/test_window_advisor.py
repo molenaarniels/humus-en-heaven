@@ -58,6 +58,29 @@ def test_convert_rh_none_propagatie_en_clamp():
     assert convert_rh(100.0, 30.0, 10.0) == 100.0  # koudere kamer: geklemd op 100
 
 
+# ── parse_heating (tado-verwarmingsstatus) ─────────────────────────────────────
+def test_parse_heating_uit_vermogen():
+    # Gemeten verwarmingsvermogen is de primaire driver: > 0 → aan.
+    assert wa.parse_heating({"activityDataPoints": {"heatingPower": {"percentage": 42.0}}}) == (True, 42.0)
+    assert wa.parse_heating({"activityDataPoints": {"heatingPower": {"percentage": 0.0}}}) == (False, 0.0)
+
+
+def test_parse_heating_fallback_op_power_stand():
+    # Zonder heatingPower-datapunt: val terug op de aan/uit-stand + setpoint.
+    st_on = {"setting": {"power": "ON", "temperature": {"celsius": 21.0}}}
+    st_off = {"setting": {"power": "OFF"}}
+    assert wa.parse_heating(st_on) == (True, None)
+    assert wa.parse_heating(st_off) == (False, None)
+    assert wa.parse_heating({}) == (False, None)
+
+
+def test_shower_is_sensor_only_room():
+    # De badkamer zit als sensor-only kamer in SENSOR_ROOMS maar niet in de advies-ROOMS
+    # (raamloos → geen koeladvies/Telegram).
+    assert "Shower" in wa.SENSOR_ROOMS
+    assert "Shower" not in wa.ROOMS
+
+
 # ── open_desire ────────────────────────────────────────────────────────────────
 
 def test_open_desire_koeltrigger_met_marge():

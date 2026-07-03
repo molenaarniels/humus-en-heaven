@@ -333,38 +333,48 @@ function drawChart() {
   const hist = (d.outside_history || []).filter(p => p.temp != null);
   const fut = (d.forecast || []).map((f, i) => ({ ...f, i })).filter(f => f.is_future);
 
-  // Echte tijdstippen per punt; de x-as wordt op dagen uitgelijnd via de tick-callback.
-  const times = [...hist.map(p => new Date(p.t)), ...fut.map(f => new Date(f.dt))];
-  const labels = times.map((_, i) => i);   // index-labels; opmaak gebeurt in ticks.callback
-  const nPast = hist.length;
+  // Echte tijdstippen als x-waarde (time-scale) i.p.v. index-labels: de historie (elk kwartier)
+  // en de forecast (elk uur) hebben een verschillende sample-dichtheid, dus een index-as zou de
+  // forecast-helft 4x te smal tekenen — met een time-scale staat elk punt op zijn echte moment.
+  const histT = hist.map(p => new Date(p.t).getTime());
+  const futT  = fut.map(f => new Date(f.dt).getTime());
+  const nowMs = new Date(d.as_of_local).getTime();
 
   // Terugkijkend (verleden): weerstation (gemeten) vs. Open-Meteo (ruw model) — zo zie je
   // wanneer ze uiteenlopen. Vooruit (toekomst): ruw model vs. geijkt (wat de adviseur gebruikt).
   // De "gebruikt"-lijn is in het verleden gelijk aan het station (er wordt niet teruggeijkt);
   // de stationscorrectie raakt alleen de voorspelling.
-  const measured = [...hist.map(p => p.temp),                       ...fut.map(() => null)];
-  const used     = [...hist.map(p => p.temp),                       ...fut.map(f => f.out_corr)];
-  const model    = [...hist.map(p => p.om != null ? p.om : null),   ...fut.map(f => f.out_raw)];
+  const measured = hist.map((p, i) => ({ x: histT[i], y: p.temp }));
+  const used     = [...hist.map((p, i) => ({ x: histT[i], y: p.temp })),
+                    ...fut.map((f, i) => ({ x: futT[i], y: f.out_corr }))];
+  const model    = [...hist.map((p, i) => ({ x: histT[i], y: p.om != null ? p.om : null })),
+                    ...fut.map((f, i) => ({ x: futT[i], y: f.out_raw }))];
 
   const roomData = rooms.map((name, ri) => {
     const r = d.rooms[name];
     return {
       label: name,
-      data: [...hist.map(() => null), ...fut.map(f => (r.proj && r.proj[f.i] != null) ? r.proj[f.i] : null)],
+      data: fut.map((f, i) => ({ x: futT[i], y: (r.proj && r.proj[f.i] != null) ? r.proj[f.i] : null })),
       borderColor: ROOM_COLORS[ri % ROOM_COLORS.length],
       borderWidth: 1.2, borderDash: [3,3], pointRadius: 0, tension: 0.3, spanGaps: true,
     };
   });
 
-  const dayFmt  = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short" });
   const fullFmt = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+  // Dual grid: middernacht is de "hoofdlijn" (dikker, donkerder + daglabel), elk 6e uur
+  // daartussen een lichte hulplijn met een kaal uur-label (24u-notatie, geen minuten — altijd
+  // hele uren omdat de time-scale hier op stepSize:6h staat).
+  const isMidnight = (ms) => new Date(ms).getHours() === 0;
+  const dayFmt = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+  const hourFmt = (ms) => { const t = new Date(ms); return `${String(t.getHours()).padStart(2, "0")}:00`; };
 
   const P = d.params;
   state.chart?.destroy();
   const ctx = document.getElementById("temp-chart").getContext("2d");
   state.chart = new Chart(ctx, {
     type: "line",
-    data: { labels, datasets: [
+    data: { datasets: [
       { label: "weerstation (gemeten)", data: measured, borderColor: COLORS.rain, backgroundColor: COLORS.rain + "18",
         borderWidth: 2.2, pointRadius: 0, tension: 0.3, fill: false, spanGaps: false },
       { label: "gebruikt (geijkt)", data: used, borderColor: COLORS.moss,
@@ -384,7 +394,7 @@ function drawChart() {
           titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
           bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
           callbacks: {
-            title: items => { const t = times[items[0].dataIndex]; return t ? fullFmt.format(t) : ""; },
+            title: items => items.length ? fullFmt.format(new Date(items[0].parsed.x)) : "",
             label: c => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°`,
           },
         },
@@ -393,25 +403,24 @@ function drawChart() {
             label: { content: `comfort ${P.COMFORT_HIGH}°`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.dry, backgroundColor: "transparent" } },
           warmday: { type: "line", yMin: P.WARM_DAY_MAX, yMax: P.WARM_DAY_MAX, borderColor: COLORS.sun, borderWidth: 1, borderDash: [2,4],
             label: { content: `warme dag ${P.WARM_DAY_MAX}°`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.sun, backgroundColor: "transparent" } },
-          now: { type: "line", xMin: nPast - 0.5, xMax: nPast - 0.5, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4],
+          now: { type: "line", xMin: nowMs, xMax: nowMs, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4],
             label: { content: "nu →", display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink, backgroundColor: "transparent" } },
         }},
       },
       scales: {
         x: {
+          type: "time",
+          time: { unit: "hour", stepSize: 6, displayFormats: { hour: "HH:mm" } },
           // Verticale lijnen op hele dagen (middernacht, sterk) en op 06/12/18u (zwak).
           grid: {
-            color: (c) => { const t = times[c.index]; if (!t) return "transparent";
-              if (t.getHours() === 0) return "#2a241b40"; if (t.getHours() % 6 === 0) return "#2a241b12"; return "transparent"; },
-            lineWidth: (c) => { const t = times[c.index]; return t && t.getHours() === 0 ? 1.5 : 1; },
+            color: (c) => isMidnight(c.tick.value) ? "#2a241b40" : "#2a241b14",
+            lineWidth: (c) => isMidnight(c.tick.value) ? 1.5 : 1,
           },
           ticks: {
             autoSkip: false, maxRotation: 0,
             font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft,
-            // Datum (weekdag) op middernacht, anders alleen het hele uur op 06/12/18u.
-            callback: (value, index) => { const t = times[index]; if (!t) return "";
-              const h = t.getHours(); if (h === 0) return dayFmt.format(t);
-              if (h % 6 === 0) return String(h).padStart(2, "0") + "u"; return ""; },
+            // Datum (weekdag) op middernacht, anders het hele uur als simpel "HH:00".
+            callback: (value) => isMidnight(value) ? dayFmt.format(new Date(value)) : hourFmt(value),
           },
         },
         y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },

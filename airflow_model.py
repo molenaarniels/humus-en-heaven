@@ -36,6 +36,7 @@ Bronnen / env:
 Pure stdlib + requests, geen numpy.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -103,14 +104,17 @@ RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
 # Achteraf-herstel van de leercurve. Een leercurve-punt werd berekend met de openingen-log zoals
 # díé toen luidde; meld je een raamwijziging te laat (of date je 'm terug), dan zat de oude fout
 # door een verkeerde open/dicht-aanname verhoogd in de curve — model-skill verward met meld-fouten.
-# Daarom herberekenen we elke run de RMSE/skill van de punten die nog binnen het herstel-horizon
-# (CALIB_WINDOW_H) vallen tegen de HUIDIG gecorrigeerde log + params. Punten ouder dan de horizon
-# bevriezen: hun tado-grond-waarheid is uit het ~48u window_data-buffer gerold en valt niet meer te
-# herberekenen — een harde datalimiet, geen keuze.
+# Daarom herberekenen we de RMSE/skill van de punten die nog binnen het herstel-horizon
+# (CALIB_WINDOW_H) vallen tegen de HUIDIG gecorrigeerde log + params — maar alléén de punten
+# waarvan de log in hun venster daadwerkelijk is gewijzigd (vingerafdruk-poort `log_fp`, zie
+# openings_fingerprint/backfill_rmse_history); zonder log-correctie bevriest een punt, hoe anders
+# de huidige sim ook uitvalt. Punten ouder dan de horizon bevriezen sowieso: hun tado-grond-waarheid
+# is uit het ~48u window_data-buffer gerold en valt niet meer te herberekenen — een harde
+# datalimiet, geen keuze.
 RMSE_BACKFILL_MIN_SAMPLES = 8     # te weinig overlap met de bewaarde actuals → punt ongemoeid laten
-RMSE_BACKFILL_DELTA       = 0.25  # °C — alleen overschrijven als de waarde ≥ dit verschuift, zodat
-                                  # een echte log-correctie de curve heelt maar gewone param-
-                                  # microdrift 'm niet elke run laat churnen
+RMSE_BACKFILL_DELTA       = 0.25  # °C — ook bij een log-wijziging alleen overschrijven als de
+                                  # waarde ≥ dit verschuift (correctie zonder materieel effect
+                                  # raakt het punt niet aan)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 # Tikhonov-regularisatie: trek elke leerbare schaal zacht naar zijn prior (1.0, cp_shelter 0.5)
 # zodat zwak-identificeerbare parameters (milde-weer-degeneratie tussen ua_env/ua_party/q_int)
@@ -882,6 +886,26 @@ def openings_at(log: list[dict], when: datetime) -> dict:
     return state
 
 
+def openings_fingerprint(log: list[dict], start: datetime, end: datetime) -> str:
+    """Deterministische vingerafdruk van de openingen-log zoals die het venster
+    [start, end] raakt: de voorwaarts-geaccumuleerde toestand op `start` (een oudere
+    log-edit die de beginstand wijzigt telt dus mee) + alle snapshots ín het venster.
+    Verandert alléén wanneer een log-correctie de sim over dit venster écht anders
+    maakt — de poort waarop `backfill_rmse_history` een leercurve-punt herberekent.
+    Sim-drift (params, weerdata, WU-herschaling) raakt de vingerafdruk níét."""
+    entries = []
+    for entry in log:
+        try:
+            t = datetime.fromisoformat(entry["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if start < t <= end:
+            entries.append((t.isoformat(), entry.get("states", {}) or {}))
+    entries.sort(key=lambda e: e[0])
+    payload = json.dumps([openings_at(log, start), entries], sort_keys=True, default=str)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
 def _norm_ac_room(value) -> str | None:
     """Normaliseer de gerapporteerde AC-kamer naar een room-id, of None (geen airco)."""
     if value is None:
@@ -1548,21 +1572,33 @@ def timed_residuals_from_sim(house, timeline, sim, actual: dict) -> list:
     return out
 
 
-def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: datetime) -> int:
+def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: datetime,
+                          log: list[dict]) -> int:
     """Herbereken in-place de RMSE/skill van elk leercurve-punt dat nog binnen het herstel-horizon
     (t ≥ now − CALIB_WINDOW_H) valt, tegen de HUIDIG gecorrigeerde openingen-log + params (via de
     al-uitgevoerde simulatie in `timed_res`). Zo verdwijnt de door een verkeerde open/dicht-aanname
     opgeblazen fout van een achteraf rechtgezette/teruggedateerde melding uit de curve — de leercurve
     toont dan model-skill i.p.v. meld-fouten.
 
-    Alleen overschrijven als de waarde ≥ RMSE_BACKFILL_DELTA verschuift (een echte log-correctie
-    heelt; gewone param-microdrift churnt de curve niet) én het deel-venster genoeg overlap
-    (≥ RMSE_BACKFILL_MIN_SAMPLES) met de bewaarde actuals heeft. De oorspronkelijk gelogde waarde
-    blijft één keer
-    bewaard (`rmse_logged`) en herberekende punten worden gemarkeerd (`recomputed`). Punten ouder dan
-    de horizon bevriezen: hun tado-grond-waarheid is uit het ~48u window_data-buffer gerold. Geeft
-    het aantal gewijzigde punten terug."""
-    if not timed_res:
+    De poort is de openingen-log zélf, niet de sim-waarde: elk punt draagt een vingerafdruk
+    (`log_fp`, `openings_fingerprint` over zijn eigen venster) en wordt alléén herberekend
+    wanneer die verschuift — d.w.z. wanneer een melding in dat venster is teruggedateerd,
+    rechtgezet of toegevoegd. Zonder log-wijziging bevriest het punt, hoe anders de huidige
+    simulatie ook uitpakt. (De eerdere Δ≥0.25°C-poort vergeleek sim-waarden en liet zo één
+    run met een slechte fit — transiënte input-hapering, mislukte kalibratiestap — de hele
+    zichtbare curve naar zijn eigen foutniveau herschrijven, elke run opnieuw: churn i.p.v.
+    heling. De Δ-drempel blijft als tweede poort zodat een log-correctie zonder materieel
+    effect het punt niet aanraakt.)
+
+    Punten zónder `log_fp` (van vóór deze poort): één keer terug naar hun als-gelogde waarde
+    (`rmse_logged`, als een eerdere poort-loze herberekening ze had overschreven) en dan
+    gestempeld — heelt de door de churn-bug vervuilde curve bij deploy. Een lege log (nog
+    geen meldingen, óf een transiënte Gist-leesfout) → alles ongemoeid: juist dan is de sim
+    op default-standen gebouwd en zou herberekenen de curve vergiftigen. De oorspronkelijk
+    gelogde waarde blijft één keer bewaard (`rmse_logged`), herberekende punten worden
+    gemarkeerd (`recomputed`). Punten ouder dan de horizon bevriezen: hun tado-grond-waarheid
+    is uit het ~48u window_data-buffer gerold. Geeft het aantal gewijzigde punten terug."""
+    if not timed_res or not log:
         return 0
     horizon = now - _timedelta_h(CALIB_WINDOW_H)
     earliest = timed_res[0][0]
@@ -1574,6 +1610,24 @@ def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: dat
             continue
         if t_p < horizon or t_p > now:
             continue
+        fp = openings_fingerprint(log, t_p - _timedelta_h(CALIB_WINDOW_H), t_p)
+        stored_fp = p.get("log_fp")
+        if stored_fp is None:
+            # Punt van vóór de vingerafdruk-poort: herstel eenmalig de als-gelogde waarde
+            # (een poort-loze herberekening kan 'm met een willekeurige latere sim hebben
+            # overschreven) en bevries 'm op de huidige log-stand.
+            if p.get("recomputed") and p.get("rmse_logged") is not None:
+                p["rmse"] = p["rmse_logged"]
+                sk = skill_score(p["rmse"], p.get("rmse_naive"))
+                if sk is not None:
+                    p["skill"] = sk
+                p.pop("recomputed", None)
+                changed += 1
+            p["log_fp"] = fp
+            continue
+        if stored_fp == fp:
+            continue                     # log ongewijzigd in dit venster → punt bevroren
+        p["log_fp"] = fp                 # log-correctie gezien; hoe dan ook niet opnieuw evalueren
         start = max(t_p - _timedelta_h(CALIB_WINDOW_H), earliest)
         res_win = [r for (t, r) in timed_res if start <= t <= t_p]
         if len(res_win) < RMSE_BACKFILL_MIN_SAMPLES:
@@ -2242,18 +2296,27 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                  for rid, room in house.get("rooms", {}).items()}
 
     rmse_hist = (learned.get("rmse_history") or [])[:]
+    openings_log = load_openings_log_cached()
     # Heel de leercurve achteraf: herbereken in-horizon punten tegen de gecorrigeerde openingen-log
     # (een teruggedateerde/rechtgezette melding haalt zo de oude, vervuilde fout uit de curve).
     # Hergebruikt deze run-simulatie `sim` → geen extra simulatie. Punten buiten de horizon (oudere
-    # grond-waarheid uit het buffer gerold) blijven ongemoeid.
-    if actual:
+    # grond-waarheid uit het buffer gerold) blijven ongemoeid, net als álles op een held-run: de
+    # anomalie-poort zegt dan juist dat log en werkelijkheid vermoedelijk niet kloppen, dus die
+    # verdachte sim mag de historie niet herschrijven.
+    if actual and not learning_held:
         n_fixed = backfill_rmse_history(
-            rmse_hist, timed_residuals_from_sim(house, timeline, sim, actual), actual, now)
+            rmse_hist, timed_residuals_from_sim(house, timeline, sim, actual), actual, now,
+            openings_log)
         if n_fixed:
             print(f"[leercurve] {n_fixed} punt(en) herberekend tegen de gecorrigeerde openingen-log.")
     if rmse_now == rmse_now:   # niet-NaN
         entry = {"t": now.isoformat(), "rmse": round(rmse_now, 3),
                  "held": bool(learning_held), "version": model_version()}
+        # Log-vingerafdruk over het eigen venster: de poort waarop backfill_rmse_history dit
+        # punt later herberekent (alléén als de openingen-log in dat venster verandert).
+        if openings_log:
+            entry["log_fp"] = openings_fingerprint(
+                openings_log, now - _timedelta_h(CALIB_WINDOW_H), now)
         # Additieve context per punt: weer-genormaliseerde skill + persistentie-baseline +
         # weer-samenvatting, zodat de leercurve te lezen is als "model vs. weer".
         if skill is not None:

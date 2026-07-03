@@ -1233,6 +1233,85 @@ def test_stair_gamma_steeper_when_top_hotter():
     assert hot > mild > 0.0
 
 
+def test_counterflow_bypasses_vent_eff():
+    # De counterflow is een fysieke orifice-term (zelfde argument als de vaste CD) en gaat
+    # BUITEN de geleerde × vent_eff om: een laag geleerde meng-efficiëntie mag de koker-pinning
+    # niet mee-dempen (dat liet de sensorloze koker ~1°C ónder zijn open-deur-kamers hangen).
+    house = _strat_house()
+    zones = list(house["rooms"])
+    seed = {z: 20.0 for z in zones}
+    irr = {"top": 0.0, "bot": 0.0, "shaft": 400.0}
+    tl = _strat_timeline(irr)
+    p_hi = am.default_params(house)
+    p_hi["vent_eff"] = 1.0
+    p_lo = am.default_params(house)
+    p_lo["vent_eff"] = 0.1
+    hi = am.simulate(house, p_hi, tl, seed, calib_only_rooms={"top", "bot"})
+    lo = am.simulate(house, p_lo, tl, seed, calib_only_rooms={"top", "bot"})
+    gap_hi = hi["Ta"]["shaft"] - max(hi["Ta"]["top"], hi["Ta"]["bot"])
+    gap_lo = lo["Ta"]["shaft"] - max(lo["Ta"]["top"], lo["Ta"]["bot"])
+    # Ook met vent_eff op zijn ondergrens blijft de koker aan de open-deur-kamers gepind …
+    assert gap_lo < 4.0
+    # … en de pinning-sterkte hangt er nauwelijks van af (vóór de fix schaalde het gat ~×10 mee).
+    assert abs(gap_lo - gap_hi) < 1.0
+
+
+def _strat_dashboard_row(states=None, irr_roof=0.0, ta_all=None, rid="shaft"):
+    # Minimale, deterministische aanroep van _room_dashboard_row: ta_all wordt met de hand
+    # gezet zodat γ/pin-fout/top/onder exact narekenbaar zijn.
+    house = _strat_house()
+    params = am.default_params(house)
+    tl = _strat_timeline({"top": 0.0, "bot": 0.0, "shaft": 0.0}, hours=1, states=states)
+    now_step = tl[-1]
+    now_step["irr_roof"] = {"shaft": irr_roof}
+    ta = ta_all or {"shaft": 23.0, "top": 25.0, "bot": 22.0}
+    ctx = {
+        "zpar": am._zone_thermal_params(house, params),
+        "ta_all": ta, "tm_all": {}, "now_step": now_step,
+        "int_profile_now": 1.0, "veff": 1.0, "rho_cp": 1.2 * am.CP_AIR,
+        "strat": am._stratify_zones(house), "pw_now": {},
+    }
+    return am._room_dashboard_row(rid, house["rooms"][rid], house, params,
+                                  {}, {"series": {}}, tl, {}, now_step["t"], ctx)
+
+
+def test_stair_pin_error_and_display_split():
+    # ta 23/25/22 op deurhoogtes 7/1, z_mean 4, z_lo 1, z_hi 7 → γ exact 0.5 °C/m.
+    row = _strat_dashboard_row()
+    assert row["stair_gradient_c_per_m"] == pytest.approx(0.5)
+    assert row["stair_crown_c"] == 0.0
+    # Weergave-split pivoteert op z_mean; kroon (0) alleen op top.
+    assert row["predicted_temp_top"] == pytest.approx(23.0 + 0.5 * (7.0 - 4.0))
+    assert row["predicted_temp_bottom"] == pytest.approx(23.0 + 0.5 * (1.0 - 4.0))
+    # Pin-fout = koker-op-deurhoogte − kamer, per open deur (− = koker leest kouder).
+    assert row["stair_pin_error_c"] == {"bot": pytest.approx(-0.5), "top": pytest.approx(-0.5)}
+
+
+def test_stair_crown_only_on_top_display():
+    # Dak-instraling → kroon alleen bovenop de γ-lijn; de onderkant blijft ongemoeid.
+    row = _strat_dashboard_row(irr_roof=500.0)
+    crown = am.stair_crown(500.0)
+    assert row["stair_crown_c"] == pytest.approx(round(crown, 2))
+    assert row["predicted_temp_top"] == pytest.approx(23.0 + 0.5 * 3.0 + crown, abs=0.01)
+    assert row["predicted_temp_bottom"] == pytest.approx(23.0 - 0.5 * 3.0)
+
+
+def test_stair_pin_error_empty_when_doors_closed():
+    # Dichte deuren → geen open kamers → γ 0, geen pin-fouten, top == onder == gemiddelde.
+    row = _strat_dashboard_row(states={"top_shaft": "dicht", "bot_shaft": "dicht"})
+    assert row["stair_gradient_c_per_m"] == 0.0
+    assert row["stair_pin_error_c"] == {}
+    assert row["predicted_temp_top"] == pytest.approx(23.0)
+    assert row["predicted_temp_bottom"] == pytest.approx(23.0)
+
+
+def test_no_strat_fields_on_plain_room():
+    # Niet-stratify kamers krijgen de strat-velden niet (additief, alleen op de koker).
+    row = _strat_dashboard_row(rid="top")
+    assert "stair_pin_error_c" not in row
+    assert "predicted_temp_top" not in row
+
+
 # ── 8. Groundwork P9/P10: end_h + per_window_solar + merged_params ──────────────────
 
 def _pw_house():

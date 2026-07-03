@@ -586,6 +586,13 @@ function roomContent(rc, r, z, stack, live) {
     s += `<text x="${cx}" y="${cy}" font-size="9" fill="${COLORS.inkSoft}" text-anchor="middle" letter-spacing="1">↕ schoorsteen</text>`;
     if (r.predicted_temp_top != null && r.predicted_temp_bottom != null) {
       s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">boven ${fmt(r.predicted_temp_top, 1)}° · onder ${fmt(r.predicted_temp_bottom, 1)}° (gem. ${fmt(r.predicted_temp, 1)}°)</text>`;
+      // Grootste pin-fout (koker-op-deurhoogte − kamer, per open deur): hoort ~0 te zijn —
+      // de diagnostiek of de counterflow de koker echt aan zijn open-deur-kamers pint.
+      const pe = r.stair_pin_error_c;
+      if (pe && Object.keys(pe).length) {
+        const worst = Object.entries(pe).reduce((a, b) => (Math.abs(b[1]) > Math.abs(a[1]) ? b : a));
+        s += `<text x="${cx}" y="${cy + 24}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">koppelfout ${worst[1] > 0 ? "+" : ""}${fmt(worst[1], 1)}° (${worst[0]})</text>`;
+      }
     } else {
       s += `<text x="${cx}" y="${cy + 13}" font-size="8" fill="${COLORS.inkSoft}" text-anchor="middle">temp = gem. hele koker</text>`;
     }

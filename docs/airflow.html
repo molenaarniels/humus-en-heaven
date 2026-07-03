@@ -77,6 +77,7 @@
     .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
     .when-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0 10px; border-bottom: 1px dashed #2a241b22; }
     .when-row input, .when-row select { font-family: "JetBrains Mono", monospace; font-size: 13px; padding: 8px 10px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; color: var(--ink); }
+    .when-row.disabled, #ctl-list.disabled { pointer-events: none; opacity: .4; }
     @media (max-width: 680px) {
     header { padding: 24px 16px 12px; }
     .pad, .grid { padding-left: 16px; padding-right: 16px; }
@@ -136,6 +137,19 @@
       <span class="grp-title" style="margin:0;">Tijdstip van wijziging</span>
       <input type="datetime-local" id="report-when">
     </label>
+    <label class="when-row" id="pause-row">
+      <span class="grp-title" style="margin:0;">⏸️ Huis-status</span>
+      <div class="seg" id="pause-seg">
+        <button type="button" data-v="false">Normaal</button>
+        <button type="button" data-v="true">Gepauzeerd</button>
+      </div>
+    </label>
+    <p style="font-style:italic;color:var(--ink-soft);font-size:12px;margin:6px 0 0;" id="pause-explain">
+      Pauzeer als iemand anders thuis is en de standen niet betrouwbaar te melden zijn: het
+      model voorspelt door maar leert dit venster niet. De velden hieronder worden dan grijs —
+      alleen tijdstip en deze knop blijven bedienbaar. Ga je later terug om de écht opgetreden
+      standen alsnog (teruggedateerd) te melden, zet dan op dat tijdstip ook de pauze zelf uit,
+      anders blijft dat venster uit de kalibratie.</p>
     <label class="when-row" id="ac-row">
       <span class="grp-title" style="margin:0;">❄️ Airco staat in</span>
       <select id="ac-select"></select>

@@ -50,10 +50,21 @@ _SECRET_PATTERNS = (
 
 
 def sanitize_error(e: BaseException) -> str:
-    """Render an exception as ``Type: message`` with credentials scrubbed."""
+    """Render an exception as ``Type: message`` with credentials scrubbed.
+
+    Appends any ``add_note``-attached diagnostics (see ``http_util.get_json``'s
+    per-attempt failure tags) so a Telegram alert carries hard evidence
+    (HTTP status / Retry-After / timeout kind) instead of just the last
+    exception's type. Absent notes, output is unchanged from before."""
     msg = str(e)
     for pattern, repl in _SECRET_PATTERNS:
         msg = pattern.sub(repl, msg)
+    notes = getattr(e, "__notes__", None)
+    if notes:
+        note_text = " | ".join(notes)
+        for pattern, repl in _SECRET_PATTERNS:
+            note_text = pattern.sub(repl, note_text)
+        return f"{type(e).__name__}: {msg} [{note_text}]"
     return f"{type(e).__name__}: {msg}"
 
 

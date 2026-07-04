@@ -95,3 +95,24 @@ def test_sanitize_error_patronen():
     out = sanitize_error(e)
     for geheim in ("IABC1", "k123", "12345:AAH-xyz", "0123456789abcdef01"):
         assert geheim not in out
+
+
+def test_sanitize_error_zonder_notes_ongewijzigd():
+    e = Exception("iets ging mis")
+    assert sanitize_error(e) == "Exception: iets ging mis"
+
+
+def test_sanitize_error_met_notes():
+    e = Exception("read timed out")
+    e.add_note("[open-meteo] alle 5 pogingen: ReadTimeout | ReadTimeout | HTTP 429 Retry-After=30")
+    out = sanitize_error(e)
+    assert "read timed out" in out
+    assert "HTTP 429" in out
+    assert "Retry-After=30" in out
+
+
+def test_sanitize_error_scrubt_geheimen_in_notes():
+    e = Exception("mislukt")
+    e.add_note("zag apiKey=geheim123 in de laatste poging")
+    out = sanitize_error(e)
+    assert "geheim123" not in out

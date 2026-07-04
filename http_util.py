@@ -29,7 +29,11 @@ def get_json(url: str, params: dict | None = None, *, timeout: int = 20,
 
     `delays[i]` is de wachttijd vóór poging i+2 (de laatste delay herhaalt als
     er meer pogingen dan delays zijn). Na de laatste mislukte poging raist de
-    onderliggende requests-exceptie."""
+    onderliggende requests-exceptie, verrijkt met een ``add_note`` die per
+    poging het faaltype samenvat (HTTP-status/Retry-After vs. connect/read-
+    timeout vs. overig) — zodat een Telegram-alert (via ``sanitize_error``)
+    harde evidentie toont i.p.v. enkel het laatste excepties-type."""
+    tags = []
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             time.sleep(delays[min(attempt - 2, len(delays) - 1)])
@@ -39,5 +43,28 @@ def get_json(url: str, params: dict | None = None, *, timeout: int = 20,
             return r.json()
         except requests.RequestException as e:
             print(f"[{label}] poging {attempt}/{attempts} mislukt: {sanitize_error(e)}")
+            tags.append(_fail_tag(e))
             if attempt == attempts:
+                e.add_note(f"[{label}] alle {attempts} pogingen: " + " | ".join(tags))
                 raise
+
+
+def _fail_tag(e: requests.RequestException) -> str:
+    """Korte diagnostische tag voor één mislukte poging (meest-specifiek eerst:
+    ``ConnectTimeout``/``ReadTimeout`` zijn geen van beide elkaars superklasse,
+    en ``ConnectTimeout`` is ook een ``ConnectionError`` — vandaar deze volgorde)."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        tag = f"HTTP {e.response.status_code}"
+        retry_after = e.response.headers.get("Retry-After")
+        if retry_after:
+            tag += f" Retry-After={retry_after}"
+        return tag
+    if isinstance(e, requests.ConnectTimeout):
+        return "ConnectTimeout"
+    if isinstance(e, requests.ReadTimeout):
+        return "ReadTimeout"
+    if isinstance(e, requests.Timeout):
+        return "Timeout"
+    if isinstance(e, requests.ConnectionError):
+        return "ConnectionError"
+    return type(e).__name__

@@ -1,6 +1,6 @@
 {
-  "updated_at": "2026-07-04T16:00:00.415677+02:00",
-  "model_version": "442b00d",
+  "updated_at": "2026-07-04T16:01:03.824487+02:00",
+  "model_version": "12ed95d",
   "params": {
     "cp_shelter": 0.20607377324619755,
     "cd": 0.3,
@@ -72,7 +72,7 @@
       "f_air": 0.4
     }
   },
-  "rmse": 0.992,
+  "rmse": 1.003,
   "railed": [
     "living.solar_gain@floor",
     "ted.solar_gain@floor",
@@ -81,6 +81,66 @@
     "office.f_air@floor"
   ],
   "rmse_history": [
+    {
+      "t": "2026-07-01T12:00:00.240424+02:00",
+      "rmse": 1.028,
+      "held": false,
+      "version": "fe9d20b",
+      "skill": -1.955,
+      "rmse_naive": 0.348,
+      "wx": {
+        "tmax": 26.1,
+        "solar_peak": 861,
+        "solar_mean": 202
+      },
+      "rmse_logged": 0.791,
+      "recomputed": true
+    },
+    {
+      "t": "2026-07-01T12:15:00.830943+02:00",
+      "rmse": 1.028,
+      "held": false,
+      "version": "fe9d20b",
+      "skill": -1.955,
+      "rmse_naive": 0.348,
+      "wx": {
+        "tmax": 26.1,
+        "solar_peak": 861,
+        "solar_mean": 202
+      },
+      "rmse_logged": 0.793,
+      "recomputed": true
+    },
+    {
+      "t": "2026-07-01T12:30:00.174035+02:00",
+      "rmse": 1.028,
+      "held": false,
+      "version": "fe9d20b",
+      "skill": -1.955,
+      "rmse_naive": 0.348,
+      "wx": {
+        "tmax": 26.1,
+        "solar_peak": 861,
+        "solar_mean": 204
+      },
+      "rmse_logged": 0.799,
+      "recomputed": true
+    },
+    {
+      "t": "2026-07-01T12:45:01.111311+02:00",
+      "rmse": 1.028,
+      "held": false,
+      "version": "fe9d20b",
+      "skill": -1.955,
+      "rmse_naive": 0.348,
+      "wx": {
+        "tmax": 26.1,
+        "solar_peak": 861,
+        "solar_mean": 204
+      },
+      "rmse_logged": 0.804,
+      "recomputed": true
+    },
     {
       "t": "2026-07-01T13:00:01.106277+02:00",
       "rmse": 1.028,
@@ -3606,75 +3666,14 @@
       }
     },
     {
-      "t": "2026-07-04T15:00:00.243026+02:00",
-      "rmse": 0.979,
+      "t": "2026-07-04T16:01:03.824487+02:00",
+      "rmse": 1.003,
       "held": false,
       "paused": false,
-      "version": "442b00d",
+      "version": "12ed95d",
       "log_fp": "8834f95740442364",
-      "skill": 0.065,
-      "rmse_naive": 1.048,
-      "wx": {
-        "tmax": 24.0,
-        "solar_peak": 871,
-        "solar_mean": 286
-      }
-    },
-    {
-      "t": "2026-07-04T15:15:00.766625+02:00",
-      "rmse": 0.982,
-      "held": false,
-      "paused": false,
-      "version": "442b00d",
-      "log_fp": "8834f95740442364",
-      "skill": 0.127,
-      "rmse_naive": 1.125,
-      "wx": {
-        "tmax": 24.0,
-        "solar_peak": 871,
-        "solar_mean": 286
-      },
-      "fell_back": true
-    },
-    {
-      "t": "2026-07-04T15:30:00.613845+02:00",
-      "rmse": 0.984,
-      "held": false,
-      "paused": false,
-      "version": "442b00d",
-      "log_fp": "8834f95740442364",
-      "skill": 0.121,
-      "rmse_naive": 1.12,
-      "wx": {
-        "tmax": 24.0,
-        "solar_peak": 871,
-        "solar_mean": 286
-      }
-    },
-    {
-      "t": "2026-07-04T15:45:00.597984+02:00",
-      "rmse": 0.985,
-      "held": false,
-      "paused": false,
-      "version": "442b00d",
-      "log_fp": "8834f95740442364",
-      "skill": 0.117,
-      "rmse_naive": 1.116,
-      "wx": {
-        "tmax": 24.0,
-        "solar_peak": 871,
-        "solar_mean": 286
-      }
-    },
-    {
-      "t": "2026-07-04T16:00:00.415677+02:00",
-      "rmse": 0.992,
-      "held": false,
-      "paused": false,
-      "version": "442b00d",
-      "log_fp": "8834f95740442364",
-      "skill": 0.107,
-      "rmse_naive": 1.111,
+      "skill": 0.112,
+      "rmse_naive": 1.129,
       "wx": {
         "tmax": 24.3,
         "solar_peak": 871,
@@ -3758,8 +3757,8 @@
     "rmse": 0.754,
     "version": "ef2058f",
     "t": "2026-07-03T17:45:00.501652+02:00",
-    "degraded_runs": 3,
-    "last_fallback": "2026-07-04T15:15:00.766625+02:00",
+    "degraded_runs": 7,
+    "last_fallback": "2026-07-04T13:15:00.239395+02:00",
     "reseated": "2026-07-03T17:45:00.501652+02:00"
   }
 }

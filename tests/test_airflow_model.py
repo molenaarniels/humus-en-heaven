@@ -599,6 +599,32 @@ def test_simulate_honours_neighbor_temp_global():
         assert warm["Ta"][rid] > cool["Ta"][rid] + 1.0
 
 
+def test_simulate_tm_seed_overrides_default_blend():
+    # Zonder tm_seed start Tm op de warme blend 0.5*(Ta+_NEIGHBOR_TEMP); met tm_seed moet
+    # die per-zone beginwaarde overschreven worden. Eén korte stap (massa-tijdconstante ~uren)
+    # zodat het startverschil nog grotendeels intact is in de output.
+    house = _toy_house()
+    params = am.default_params(house)
+    tl = _const_timeline(20.0, hours=0, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    saved = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = 20.0    # default Tm-blend = 20.0, gelijk aan Ta
+        default_sim = am.simulate(house, params, tl, seed)
+        full_tm_seed = {z: 5.0 for z in zones}
+        seeded_sim = am.simulate(house, params, tl, seed, tm_seed=full_tm_seed)
+        partial_sim = am.simulate(house, params, tl, seed, tm_seed={"a": 5.0})
+    finally:
+        am._NEIGHBOR_TEMP = saved
+
+    for z in zones:
+        assert seeded_sim["Tm"][z] < default_sim["Tm"][z] - 10.0
+    # ontbrekende zone in tm_seed valt terug op het standaardgedrag (additief, geen breuk)
+    assert partial_sim["Tm"]["b"] == pytest.approx(default_sim["Tm"]["b"])
+    assert partial_sim["Tm"]["a"] == pytest.approx(seeded_sim["Tm"]["a"])
+
+
 # ── 10. solar_gain beschermd tegen instorten ─────────────────────────────────────────
 
 def test_solar_gain_floor_and_per_param_ridge():

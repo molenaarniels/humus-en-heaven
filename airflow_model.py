@@ -1352,7 +1352,8 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
 
 def simulate(house: dict, params: dict, timeline: list[dict],
              seed: dict, calib_only_rooms: set | None = None,
-             snapshot_t: datetime | None = None) -> dict:
+             snapshot_t: datetime | None = None,
+             tm_seed: dict | None = None) -> dict:
     """Integreer het 2-knoops thermische model over `timeline` (lijst stappen met drivers).
     Elke stap: {"t", "T_out", "irr": {room: W}, "states", "weather", "dt"}. `seed` =
     {zone: T_start °C}. Geeft per sensorkamer de voorspelde luchttemp-reeks terug.
@@ -1360,6 +1361,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     `snapshot_t` (optioneel): legt de volledige zone-toestand (álle zones, incl. junctions)
     vast op het eerste tijdstip ≥ `snapshot_t` — `Ta_now`/`Tm_now`. Zo kan het dashboard de
     snapshot (ACH, flows, voorspelde temp) op "nu" tonen i.p.v. op de eind-/vooruitblikstap.
+
+    `tm_seed` (optioneel): expliciete beginwaarde voor de massaknoop per zone, voor een
+    caller die 'm al kent (bv. uit een eerdere simulate()-aanloop via `Tm_now`) i.p.v. de
+    standaard warme blend hieronder — puur additief, `None`/ontbrekende zone → ongewijzigd
+    gedrag.
 
     De integratie is *impliciet* (backward Euler): per substap wordt het gekoppelde
     lineaire stelsel voor alle lucht- + massaknopen ineens opgelost (solve_linear). Dat
@@ -1376,7 +1382,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     # Massaknoop richting een warme blend (NEIGHBOR_TEMP) i.p.v. = luchtknoop: met de sim-only
     # WARMUP_H aanloop equilibreert hij ruim vóór het residu-venster (massa-tijdconstante ~uren),
     # zodat zijn beginwaarde geen vrije laagfrequente bias meer is die de fit scheeftrekt.
-    Tm = {z: 0.5 * (Ta[z] + _NEIGHBOR_TEMP) for z in zones}
+    # `tm_seed` overschrijft dit per-zone wanneer een caller de al-geëvolueerde massatemp
+    # heeft (zie docstring); anders ongewijzigd de warme blend.
+    Tm = {z: (tm_seed[z] if tm_seed is not None and tm_seed.get(z) is not None
+              else 0.5 * (Ta[z] + _NEIGHBOR_TEMP))
+          for z in zones}
     out = {rid: [] for rid in rooms if (calib_only_rooms is None or rid in calib_only_rooms)}
 
     n = len(zones)

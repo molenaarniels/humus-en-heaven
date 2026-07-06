@@ -4,18 +4,29 @@ Draait 's avonds (orchestrator-doel 18:45, vóór peuter-bedtijd ~19:00) en
 voorspelt met de gekalibreerde luchtstroom-tweeling (Project 8) hoe Teds kamer
 de nacht doorkomt:
 
-1. **Nachtcurve** — simulate() over de forecast tot morgen 08:00, geseed op de
-   werkelijke tado-temps (window_data.json) met 24u aanloop voor de massaknoop
-   (het main()-patroon van de tweeling). De `end_h`-parameter van build_timeline
-   rekt de vooruitblik op; fetch_weather's forecast_days=2 dekt de horizon ruim.
-2. **Raam-scenario** — twee sims: `ted_small_window` open vs dicht vanaf nu
-   (toekomstige timeline-stappen krijgen een overschreven states-dict; het
-   verleden houdt de gemelde log; `ted_vent` (het rooster) blijft in beide
-   ongemoeid open). **Dicht is de aanname voor de echte nacht** — deur en
-   raampje gaan 's nachts standaard dicht, alleen het rooster staat open — dus
-   dat scenario is het hoofdbericht + de basis voor het slaapzakadvies. Open
-   blijft louter een informatieve vergelijking ("zou dit schelen"), geen advies
-   om het raampje ook echt open te zetten.
+1. **Nachtcurve, in twee fasen** — een *aanloop*-sim van 24u (`WARMUP_H`,
+   geseed op de oudste tado-temp in dat venster) laat de massaknoop
+   equilibreren en re-simuleert het etmaal tot nu met de échte gerapporteerde
+   log + het échte weer (geen scenario). Op "nu" wordt de luchtknoop-toestand
+   gecorrigeerd met de meest recente échte tado-meting per kamer (mits vers
+   genoeg — zie `ANCHOR_MAX_STALENESS_MIN`); de massaknoop-toestand van de
+   aanloop-sim blijft staan (niet meetbaar, wél al geëvolueerd). Pas dán start
+   de *forecast*-sim (nu → morgen 08:00) — zo draagt de nacht-voorspelling
+   geen ongecorrigeerde 24u-drift meer mee. De `end_h`-parameter van
+   build_timeline rekt die tweede fase op; fetch_weather's forecast_days=2
+   dekt de horizon ruim.
+2. **Raam-scenario** — twee forecast-sims: `ted_small_window` open vs dicht
+   vanaf nu (toekomstige timeline-stappen krijgen een overschreven
+   states-dict; `ted_vent` (het rooster) blijft in beide ongemoeid open).
+   **Dicht is de aanname voor de échte nacht** — deur én raampje gaan 's
+   nachts standaard dicht, alleen het rooster staat open, dus dat scenario is
+   het hoofdbericht + de basis voor het slaapzakadvies; de deur naar het
+   trapgat (`ted_stair`) wordt in **beide** scenario's expliciet dichtgezet
+   (niet alleen het raampje varieert) — zonder dat zou de sim 's nachts
+   blijven meekoelen met het (stratifiërende, dak-gekoelde) trapgat terwijl
+   de deur in werkelijkheid dicht gaat. Open blijft louter een informatieve
+   vergelijking ("zou dit schelen"), geen advies om het raampje ook echt open
+   te zetten.
 3. **Tog/slaapzak-advies** — het nachtgemiddelde van het dicht-scenario door de
    standaard peuter-slaapzaktabel.
 
@@ -38,12 +49,14 @@ from shared_const import TZ, format_date_nl
 
 ROOM_ID = "ted"                  # zone-id in house_model.json
 WINDOW_ID = "ted_small_window"   # het openbare raampje voor het scenario
+DOOR_ID = "ted_stair"            # deur naar het trapgat — 's nachts standaard dicht
 WD_KEY = "Ted"                   # sleutel in window_data.json / ROOM_COMFORT
 
 NIGHT_START_H = 21               # nachtvenster: vanavond 21:00 → morgen 08:00
 NIGHT_END_H = 8
 MARKS = (23, 3, 7)               # uur-punten in het bericht
-WARMUP_H = 24.0                  # sim-aanloop zodat de massaknoop equilibreert
+WARMUP_H = 24.0                  # aanloop-sim zodat de massaknoop equilibreert
+ANCHOR_MAX_STALENESS_MIN = 30    # oudere actuele meting → niet vertrouwen, sim-waarde staat
 SEASON_MONTHS = range(5, 10)     # mei–sep: altijd sturen
 NIGHT_INTEREST_C = 19.0          # daarbuiten: alleen bij een warme nacht
 
@@ -68,11 +81,30 @@ def hours_until_morning(now: datetime, end_h: int = NIGHT_END_H) -> float:
 
 
 def scenario_timeline(timeline: list[dict], now: datetime, state: str) -> list[dict]:
-    """Kopie van de timeline waarin het raampje vanaf nu op `state` staat; het
-    verleden (de gemelde log) blijft onaangeroerd, het origineel wordt niet gemuteerd."""
-    return [({**step, "states": {**step["states"], WINDOW_ID: state}}
+    """Kopie van de timeline waarin het raampje vanaf nu op `state` staat én de deur
+    naar het trapgat vanaf nu dicht (de aanname voor een échte nacht, in beide
+    scenario's — alleen het raampje varieert); het verleden (de gemelde log) blijft
+    onaangeroerd, het origineel wordt niet gemuteerd."""
+    return [({**step, "states": {**step["states"], WINDOW_ID: state, DOOR_ID: "dicht"}}
              if step["t"] >= now else step)
             for step in timeline]
+
+
+def anchor_now(ta_now: dict, actual: dict, now: datetime,
+              max_staleness_min: float = ANCHOR_MAX_STALENESS_MIN) -> dict:
+    """Corrigeer de blind-gesimuleerde "nu"-luchttemp per zone (`ta_now`) met de meest
+    recente échte tado-meting uit `actual` (collect_actual-vorm: {zone: [(t, °C), ...]},
+    oplopend gesorteerd), mits die meting binnen `max_staleness_min` van `now` valt.
+    Oudere of ontbrekende metingen laten de gesimuleerde waarde ongemoeid (fail open).
+    Kopie — `ta_now` wordt niet gemuteerd."""
+    corrected = dict(ta_now)
+    for rid, samples in actual.items():
+        if not samples:
+            continue
+        ts, temp = samples[-1]
+        if (now - ts).total_seconds() / 60.0 <= max_staleness_min:
+            corrected[rid] = temp
+    return corrected
 
 
 def night_stats(series: list[tuple], now: datetime) -> dict | None:
@@ -166,25 +198,49 @@ def main() -> None:
 
     log = am.load_openings_log()
     params = am.merged_params(house, am.load_learned())
+    wd = am.load_window_data()
 
-    end_h = hours_until_morning(now)
-    timeline = am.build_timeline(house, weather, log, now, WARMUP_H,
-                                 beam_iam=True, end_h=end_h)
-    if not timeline:
+    # ── Fase 1: aanloop (nu−24u → nu), werkelijk weer + werkelijke log, geen scenario ──
+    # Laat de massaknoop equilibreren en re-simuleert het etmaal tot nu; `end_h=0.0` zodat
+    # het raster exact op `now` eindigt (start = now−WARMUP_H, stap 0.25u → altijd exact).
+    warmup_tl = am.build_timeline(house, weather, log, now, WARMUP_H,
+                                  beam_iam=True, end_h=0.0)
+    if not warmup_tl:
         print("[teds-nacht] Geen weerdata → stop.")
         raise SystemExit(1)
-    print(f"[teds-nacht] timeline t/m {timeline[-1]['t'].isoformat()} (end_h={end_h:.1f})")
 
-    # Seed op de werkelijke tado-temps (het main()-patroon), rest op buiten-temp.
-    wd = am.load_window_data()
     actual = am.collect_actual(house, wd, now - timedelta(hours=WARMUP_H))
-    seed = {rid: s[0][1] for rid, s in actual.items() if s}
+    warmup_seed = {rid: s[0][1] for rid, s in actual.items() if s}   # oudste meting in het venster
     for rid in house.get("rooms", {}):
-        seed.setdefault(rid, timeline[0]["T_out"])
+        warmup_seed.setdefault(rid, warmup_tl[0]["T_out"])
+
+    warmup_sim = am.simulate(house, params, warmup_tl, warmup_seed, snapshot_t=now)
+    ta_now = dict(warmup_sim.get("Ta_now", warmup_sim["Ta"]))
+    tm_now = warmup_sim.get("Tm_now", warmup_sim["Tm"])
+
+    # ── Anker-correctie: vervang de blind gesimuleerde "nu"-luchttemp door de meest
+    # recente échte tado-meting per kamer, mits vers genoeg — anders (stale/ontbrekend)
+    # blijft de gesimuleerde waarde staan (fail open, zoals elders in de repo).
+    corrected = anchor_now(ta_now, actual, now)
+    deltas = {rid: round(v - ta_now[rid], 2) for rid, v in corrected.items()
+             if abs(v - ta_now[rid]) > 0.01}
+    if deltas:
+        print(f"[teds-nacht] anker-correctie (sim → actueel): {deltas}")
+    ta_now = corrected
+
+    # ── Fase 2: forecast (nu → morgen 08:00), scenario-geforceerd, geseed op het anker ──
+    end_h = hours_until_morning(now)
+    fcst_tl = am.build_timeline(house, weather, log, now, 0.0,
+                                beam_iam=True, end_h=end_h)
+    if not fcst_tl:
+        print("[teds-nacht] Geen forecast-data → stop.")
+        raise SystemExit(1)
+    print(f"[teds-nacht] forecast t/m {fcst_tl[-1]['t'].isoformat()} (end_h={end_h:.1f})")
 
     stats = {}
     for state in ("open", "dicht"):
-        sim = am.simulate(house, params, scenario_timeline(timeline, now, state), seed)
+        sim = am.simulate(house, params, scenario_timeline(fcst_tl, now, state),
+                          ta_now, tm_seed=tm_now)
         stats[state] = night_stats(sim["series"].get(ROOM_ID, []), now)
     if not stats["open"] or not stats["dicht"]:
         print("[teds-nacht] Geen nachtvenster in de sim-serie → stop.")
@@ -200,7 +256,7 @@ def main() -> None:
     reported_open = frac > 0.0
 
     inside_now = (wd.get("rooms", {}).get(WD_KEY, {}) or {}).get("inside")
-    night_out = [s["T_out"] for s in timeline
+    night_out = [s["T_out"] for s in fcst_tl
                  if s["t"] >= now and s.get("T_out") is not None]
     out_min = min(night_out) if night_out else None
 

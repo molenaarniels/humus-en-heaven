@@ -20,7 +20,9 @@ HOUSE = {
     "location": {"lat": 52.09, "lon": 5.12},
     "terrain": {},
     "rooms": {"ted": {"label": "Ted", "volume_m3": 32.0, "exterior_wall_m2": 12.0,
-                      "floor": 0, "from_window_data": "Ted"}},
+                      "floor": 0, "from_window_data": "Ted"},
+             "stair": {"label": "Trap", "volume_m3": 20.0, "exterior_wall_m2": 8.0,
+                       "floor": 1}},
     "junctions": {},
     "windows": {
         "ted_window": {"room": "ted", "facade_azimuth_deg": 309.0, "glass_m2": 4.5,
@@ -34,7 +36,11 @@ HOUSE = {
                              "shading": "none"},
     },
     "vents": {},
-    "doors": {},
+    "doors": {
+        "ted_stair": {"between": ["ted", "stair"], "area_m2": 1.8,
+                     "center_height_m": 1.0, "default_state": "open",
+                     "label": "Ted ↔ trap"},
+    },
 }
 
 
@@ -74,10 +80,44 @@ def test_scenario_injection_future_only():
     for orig, sc in zip(tl, open_tl):
         if sc["t"] >= NOW:
             assert sc["states"]["ted_small_window"] == "open"
+            assert sc["states"]["ted_stair"] == "dicht"   # deur dicht in béíde scenario's
             assert sc is not orig                      # kopie, geen mutatie
         else:
             assert sc is orig                          # verleden blijft de log
     assert "ted_small_window" not in tl[-1]["states"]  # origineel ongemuteerd
+    assert "ted_stair" not in tl[-1]["states"]
+
+
+def test_scenario_forces_door_closed_in_both_states():
+    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=4.0,
+                           end_h=6.0)
+    for state in ("open", "dicht"):
+        sc = nf.scenario_timeline(tl, NOW, state)
+        for step in sc:
+            if step["t"] >= NOW:
+                assert step["states"]["ted_stair"] == "dicht"
+
+
+def test_closed_door_retains_more_heat_overnight():
+    # Kille trap (14°, zoals de koudere schacht 's nachts); ted start warm. Met de deur
+    # geforceerd dicht (het echte gedrag) moet ted minder afkoelen dan een controle-run
+    # waarin de deur openblijft.
+    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
+                           end_h=nf.hours_until_morning(NOW))
+    params = am.default_params(HOUSE)
+    seed = {"ted": 24.0, "stair": 14.0}
+
+    door_closed_tl = nf.scenario_timeline(tl, NOW, "dicht")
+    door_open_tl = [({**step, "states": {**step["states"], nf.WINDOW_ID: "dicht"}}
+                     if step["t"] >= NOW else step) for step in tl]
+
+    sim_closed = am.simulate(HOUSE, params, door_closed_tl, seed)
+    sim_open_door = am.simulate(HOUSE, params, door_open_tl, seed)
+    stats_closed = nf.night_stats(sim_closed["series"]["ted"], NOW)
+    stats_open_door = nf.night_stats(sim_open_door["series"]["ted"], NOW)
+
+    assert stats_closed["min"] > stats_open_door["min"]
+    assert stats_closed["mean"] > stats_open_door["mean"]
 
 
 def test_open_window_cools_more_overnight():
@@ -93,6 +133,61 @@ def test_open_window_cools_more_overnight():
         stats[state] = nf.night_stats(sim["series"]["ted"], NOW)
     assert stats["open"]["marks"][7] < stats["dicht"]["marks"][7]
     assert stats["open"]["min"] <= stats["dicht"]["min"]
+
+
+# ── Anker-correctie (Fix 2: 24u-drift terugzetten op de laatste actuele meting) ──────
+
+def test_anchor_now_prefers_fresh_actual():
+    ta_now = {"ted": 20.0, "stair": 15.0}
+    actual = {"ted": [(NOW - timedelta(minutes=10), 22.5)]}
+    corrected = nf.anchor_now(ta_now, actual, NOW)
+    assert corrected["ted"] == 22.5
+    assert corrected["stair"] == 15.0     # geen actual voor stair → ongemoeid
+    assert ta_now["ted"] == 20.0          # input niet gemuteerd
+
+
+def test_anchor_now_uses_newest_sample():
+    ta_now = {"ted": 20.0}
+    actual = {"ted": [(NOW - timedelta(minutes=20), 21.0), (NOW - timedelta(minutes=5), 23.0)]}
+    assert nf.anchor_now(ta_now, actual, NOW)["ted"] == 23.0
+
+
+def test_anchor_now_ignores_stale_actual():
+    ta_now = {"ted": 20.0}
+    stale = {"ted": [(NOW - timedelta(minutes=45), 22.5)]}   # > ANCHOR_MAX_STALENESS_MIN
+    assert nf.anchor_now(ta_now, stale, NOW)["ted"] == 20.0
+
+
+def test_anchor_now_staleness_boundary():
+    ta_now = {"ted": 20.0}
+    just_fresh = {"ted": [(NOW - timedelta(minutes=30), 22.5)]}
+    assert nf.anchor_now(ta_now, just_fresh, NOW)["ted"] == 22.5
+    just_stale = {"ted": [(NOW - timedelta(minutes=30, seconds=1), 22.5)]}
+    assert nf.anchor_now(ta_now, just_stale, NOW)["ted"] == 20.0
+
+
+def test_anchor_now_empty_samples_noop():
+    ta_now = {"ted": 20.0}
+    assert nf.anchor_now(ta_now, {"ted": []}, NOW) == {"ted": 20.0}
+
+
+def test_main_applies_anchor_correction(monkeypatch, capsys):
+    now = datetime.now(TZ)
+    rows = _rows(now)
+    history = [{"t": (now - timedelta(hours=h)).isoformat(), "temp": 24.0}
+              for h in range(24, 0, -4)]
+    # meest recente meting wijkt duidelijk af van wat de blinde 24u-warmup zou opleveren
+    history.append({"t": (now - timedelta(minutes=5)).isoformat(), "temp": 30.0})
+    wd = {"rooms": {"Ted": {"history": history, "inside": 30.0}}}
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(am, "load_openings_log", lambda: [])
+    monkeypatch.setattr(am, "load_learned", dict)
+    monkeypatch.setattr(am, "load_window_data", lambda: wd)
+    nf.main()
+    out = capsys.readouterr().out
+    assert "anker-correctie" in out
 
 
 # ── Nachtstatistiek + advies + tog ───────────────────────────────────────────────────

@@ -370,8 +370,12 @@ def build_narrative(fit: dict, geom: dict, online_cmp: dict | None,
             parts.append("Komt overeen met Project 8's doorlopende kalibratie.")
         else:
             parts.append(f"Wijkt af van Project 8's 48u-kalibratie (jaarschatting {ratio:.1f}× zo hoog) "
-                         "— de jaarschatting is hier vermoedelijk betrouwbaarder (meer weersvariatie "
-                         "over het jaar dan een rollend venster van twee dagen kan vangen).")
+                         "— geen van beide is per definitie de waarheid: Project 8's korte venster kan "
+                         "ua_env/ua_party/q_int onderling verwarren (zie de railed-parameters-diagnose), "
+                         "maar deze jaarfit ziet ook alleen (T_uit − T_in) en niet de buurwarmte apart "
+                         "— als de buurtemperatuur meeschaalt met het buitenweer, kan die warmte-instroom "
+                         "hier deels in de isolatieschatting terechtkomen. Beschouw dit als twee "
+                         "onafhankelijke, elk onvolmaakte metingen, niet als een uitspraak welke wint.")
     return " ".join(parts)
 
 
@@ -463,6 +467,10 @@ def analyse_rooms(house: dict, inputs: dict[str, str]) -> dict:
             "(dezelfde als Project 8's prior); de k-waarde (1/h) zelf is de robuustere, "
             "aannamevrije vergelijking tussen kamers.",
             "De trap-zone heeft geen tado-sensor en wordt hier nooit meegenomen.",
+            "Deze regressie kent geen aparte buurwarmte-term (Project 8's ua_party): als de "
+            "buurtemperatuur meeschaalt met het buitenweer, kan een deel van die warmte-instroom "
+            "hier abusievelijk als 'isolatie' worden gemeten. Zie een grote afwijking van Project 8's "
+            "kalibratie daarom als twee onvolmaakte metingen, niet als een tie-breaker.",
         ],
     }
 

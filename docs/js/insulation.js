@@ -58,6 +58,7 @@ function renderCards(d) {
       <div class="card-title">${room.geometry.label}${rankBadge}</div>
       <div class="big-num">${room.status === "ok" ? room.ua_w_per_k.toFixed(1) : "–"}<span>W/K</span></div>
       <div class="stat-row"><span class="lbl">Per m² buitengevel</span><span>${room.ua_per_m2 != null ? room.ua_per_m2.toFixed(2) + " W/K/m²" : "–"}</span></div>
+      <div class="stat-row"><span class="lbl">'s Nachts (23–06u, geen zon)</span><span>${room.night_fit && room.night_fit.status === "ok" ? room.night_fit.ua_w_per_k.toFixed(1) + " W/K" : "–"}</span></div>
       <div class="stat-row"><span class="lbl">Project 8 (48u online)</span><span>${room.online_compare ? room.online_compare.ua_total_w_per_k.toFixed(1) + " W/K" : "–"}</span></div>
       <div class="stat-row"><span class="lbl">Bruikbare uur-paren</span><span>${room.n_pairs} / ${room.n_hours_total}u</span></div>
       <div class="narrative">${room.narrative}</div>

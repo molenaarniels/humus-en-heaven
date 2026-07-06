@@ -49,7 +49,7 @@ from airflow_model import (
     sun_position,
 )
 from http_util import get_json
-from shared_const import LATITUDE, LONGITUDE, utc_now_iso
+from shared_const import LATITUDE, LONGITUDE, TZ, utc_now_iso
 
 UTC = timezone.utc
 OUT_PATH = os.getenv("INSULATION_DATA_PATH", "docs/insulation_data.json")
@@ -59,6 +59,14 @@ OUT_PATH = os.getenv("INSULATION_DATA_PATH", "docs/insulation_data.json")
 MAX_PLAUSIBLE_DT_PER_H = 2.5
 # Minder dan dit aantal "verwarming-uit"-uur-paren → te weinig signaal, geen schatting.
 MIN_PAIRS = 100
+
+# Nacht-venster (lokale tijd) voor de zon-/bezetting-vrije cross-check-fit: in Nederland
+# gaat de zon nooit vóór ~05:15 op of ná ~22:00 onder, dus 23–06u is het hele jaar door
+# gegarandeerd donker — en typisch ook de rustigste uren (weinig koken/bezoek/elektronica).
+# Dit isoleert de fysica anders dan de dagfit: die mengt schil-verlies met zonwinst én
+# interne warmte in één coëfficiënt; 's nachts blijft vrijwel alleen het schil-verlies over.
+NIGHT_START_H = 23   # vanaf 23:00 lokaal
+NIGHT_END_H = 6       # tot (excl.) 06:00 lokaal
 
 FACADE_STREET = 309.0   # NW — weinig middagzon
 FACADE_GARDEN = 129.0   # ZO — de meeste zon
@@ -216,17 +224,25 @@ def solar_series_per_room(house: dict, weather: dict) -> dict[str, dict[str, flo
 #  Vrije-uitloop-regressie: dT_in/dt = k·(T_out−T_in) + s·I_zon + c
 # ════════════════════════════════════════════════════════════════════════════════════
 
-def fit_room_ua(house: dict, room_id: str, tado_hourly: dict[str, dict],
-                weather_hourly: dict[str, dict], solar_hourly: dict[str, float]) -> dict:
-    room = house["rooms"][room_id]
-    keys = sorted(set(tado_hourly) & set(weather_hourly))
+def _is_night_local(dt_utc: datetime) -> bool:
+    """True als dt_utc (aware, UTC) lokaal (Europe/Amsterdam) in het nacht-venster valt."""
+    h = dt_utc.astimezone(TZ).hour
+    return h >= NIGHT_START_H or h < NIGHT_END_H
 
+
+def _build_pairs(keys: list[str], tado_hourly: dict[str, dict], weather_hourly: dict[str, dict],
+                 solar_hourly: dict[str, float], night_only: bool = False) -> list[tuple]:
+    """Bouwt de (T_uit−T_in, I_zon, dT) regressie-punten uit opeenvolgende, exact-1u-uit-
+    elkaar-liggende 'verwarming-uit' uurparen. `night_only` beperkt tot paren waarvan
+    BEIDE uren lokaal in het nacht-venster vallen (zie NIGHT_START_H/NIGHT_END_H)."""
     pairs = []
     for i in range(len(keys) - 1):
         k0, k1 = keys[i], keys[i + 1]
         t0 = datetime.strptime(k0, "%Y-%m-%dT%H").replace(tzinfo=UTC)
         t1 = datetime.strptime(k1, "%Y-%m-%dT%H").replace(tzinfo=UTC)
         if t1 - t0 != timedelta(hours=1):
+            continue
+        if night_only and not (_is_night_local(t0) and _is_night_local(t1)):
             continue
         r0, r1 = tado_hourly[k0], tado_hourly[k1]
         if not (r0["heating_off"] and r1["heating_off"]):
@@ -239,22 +255,26 @@ def fit_room_ua(house: dict, room_id: str, tado_hourly: dict[str, dict],
         tout_avg = (w0["T_out"] + w1["T_out"]) / 2.0
         i_avg = (solar_hourly.get(k0, 0.0) + solar_hourly.get(k1, 0.0)) / 2.0
         pairs.append((tout_avg - tin_avg, i_avg, dT))
+    return pairs
 
+
+def _fit_from_pairs(pairs: list[tuple], room: dict, n_hours_total: int) -> dict:
     n = len(pairs)
     if n < MIN_PAIRS:
-        return {"status": "insufficient_data", "n_pairs": n, "n_hours_total": len(keys)}
+        return {"status": "insufficient_data", "n_pairs": n, "n_hours_total": n_hours_total}
 
-    # Probeer eerst k + zonwinst + constante (3 onbekenden); een raam-loze kamer of een
-    # venster zonder zonvariantie in de meegegeven reeks maakt de zon-kolom ontaard
-    # (singulier) — val dan terug op k + constante (2 onbekenden) i.p.v. helemaal te
-    # falen: de robuuste primaire grootheid (k, dus UA) heeft de zonterm niet nodig.
+    # Probeer eerst k + zonwinst + constante (3 onbekenden); een raam-loze kamer, een
+    # nacht-only fit (zon is dan per definitie ~0), of een venster zonder zonvariantie in
+    # de meegegeven reeks maakt de zon-kolom ontaard (singulier) — val dan terug op k +
+    # constante (2 onbekenden) i.p.v. helemaal te falen: de robuuste primaire grootheid
+    # (k, dus UA) heeft de zonterm niet nodig.
     sol = _solve_ols(pairs, use_solar=True)
     solar_dropped = False
     if sol is None:
         sol = _solve_ols(pairs, use_solar=False)
         solar_dropped = True
     if sol is None:
-        return {"status": "singular_fit", "n_pairs": n, "n_hours_total": len(keys)}
+        return {"status": "singular_fit", "n_pairs": n, "n_hours_total": n_hours_total}
 
     if solar_dropped:
         k_per_h, const_term = sol
@@ -272,7 +292,7 @@ def fit_room_ua(house: dict, room_id: str, tado_hourly: dict[str, dict],
     ua_per_m2 = ua_w_per_k / wall_m2 if wall_m2 else None
 
     return {
-        "status": "ok", "n_pairs": n, "n_hours_total": len(keys),
+        "status": "ok", "n_pairs": n, "n_hours_total": n_hours_total,
         "k_per_h": round(k_per_h, 5), "solar_coef": round(solar_coef, 4),
         "solar_dropped": solar_dropped,
         "const_term": round(const_term, 4), "rmse_fit_c_per_h": round(rmse_fit, 3),
@@ -280,6 +300,15 @@ def fit_room_ua(house: dict, room_id: str, tado_hourly: dict[str, dict],
         "ua_per_m2": round(ua_per_m2, 3) if ua_per_m2 is not None else None,
         "c_effective_j_per_k": round(c_eff, 0), "exterior_wall_m2": wall_m2,
     }
+
+
+def fit_room_ua(house: dict, room_id: str, tado_hourly: dict[str, dict],
+                weather_hourly: dict[str, dict], solar_hourly: dict[str, float],
+                night_only: bool = False) -> dict:
+    room = house["rooms"][room_id]
+    keys = sorted(set(tado_hourly) & set(weather_hourly))
+    pairs = _build_pairs(keys, tado_hourly, weather_hourly, solar_hourly, night_only=night_only)
+    return _fit_from_pairs(pairs, room, len(keys))
 
 
 def _solve_ols(pairs: list[tuple], use_solar: bool) -> list[float] | None:
@@ -346,7 +375,7 @@ def online_ua_estimate(house: dict, params: dict, room_id: str) -> dict:
 
 
 def build_narrative(fit: dict, geom: dict, online_cmp: dict | None,
-                    rank: int | None, total_rooms: int) -> str:
+                    rank: int | None, total_rooms: int, night_fit: dict | None = None) -> str:
     if fit["status"] != "ok":
         return (f"Te weinig 'verwarming-uit'-uren dit jaar ({fit.get('n_pairs', 0)} paren) "
                 "voor een betrouwbare schatting.")
@@ -364,15 +393,27 @@ def build_narrative(fit: dict, geom: dict, online_cmp: dict | None,
     if fit.get("solar_dropped"):
         parts.append("Zonwinst-term kon niet apart worden geschat (te weinig variatie in de "
                      "meegegeven instraling) — UA hier is de robuustere schatting zonder die term.")
+    if night_fit and night_fit["status"] == "ok":
+        parts.append(f"'s Nachts (23–06u, geen zon en veel minder koken/bezoek): UA ≈ "
+                     f"{night_fit['ua_w_per_k']:.1f} W/K ({night_fit['n_pairs']} paren) — dit is de "
+                     "eerlijkere maat voor puur schilverlies, want de dagfit hierboven mengt schil, "
+                     "zon én interne warmte in één getal.")
+    elif night_fit and night_fit["status"] != "ok":
+        parts.append("Te weinig 'verwarming-uit'-nachturen voor een aparte nacht-only schatting "
+                     "(zon/bezetting-vrije cross-check).")
+    # Vergelijk bij voorkeur de nachtfit met Project 8 (allebei zonder zonwinst-term, dus
+    # eerlijker vergelijkbaar); zonder bruikbare nachtfit valt terug op de dagfit.
+    compare_fit = night_fit if (night_fit and night_fit["status"] == "ok") else fit
+    compare_label = "de nachtfit" if compare_fit is night_fit else "deze jaarfit"
     if online_cmp and online_cmp["ua_total_w_per_k"]:
-        ratio = fit["ua_w_per_k"] / online_cmp["ua_total_w_per_k"]
+        ratio = compare_fit["ua_w_per_k"] / online_cmp["ua_total_w_per_k"]
         if 0.7 <= ratio <= 1.4:
-            parts.append("Komt overeen met Project 8's doorlopende kalibratie.")
+            parts.append(f"Komt overeen met Project 8's doorlopende kalibratie ({compare_label}).")
         else:
-            parts.append(f"Wijkt af van Project 8's 48u-kalibratie (jaarschatting {ratio:.1f}× zo hoog) "
+            parts.append(f"Wijkt af van Project 8's 48u-kalibratie ({compare_label}: {ratio:.1f}× zo hoog) "
                          "— geen van beide is per definitie de waarheid: Project 8's korte venster kan "
                          "ua_env/ua_party/q_int onderling verwarren (zie de railed-parameters-diagnose), "
-                         "maar deze jaarfit ziet ook alleen (T_uit − T_in) en niet de buurwarmte apart "
+                         "maar ook deze fit ziet alleen (T_uit − T_in) en niet de buurwarmte apart "
                          "— als de buurtemperatuur meeschaalt met het buitenweer, kan die warmte-instroom "
                          "hier deels in de isolatieschatting terechtkomen. Beschouw dit als twee "
                          "onafhankelijke, elk onvolmaakte metingen, niet als een uitspraak welke wint.")
@@ -424,11 +465,21 @@ def analyse_rooms(house: dict, inputs: dict[str, str]) -> dict:
     params = merged_params(house, learned)
 
     fits = {}
+    night_fits = {}
     for rid in inputs:
         fits[rid] = fit_room_ua(house, rid, hourly[rid], weather, solar.get(rid, {}))
+        night_fits[rid] = fit_room_ua(house, rid, hourly[rid], weather, solar.get(rid, {}),
+                                      night_only=True)
 
-    ok_rooms = sorted((r for r in fits if fits[r]["status"] == "ok"),
-                      key=lambda r: fits[r]["ua_per_m2"] if fits[r]["ua_per_m2"] is not None else 1e9)
+    # Rangschik bij voorkeur op de nachtfit (geen zon-/bezetting-confound); zonder
+    # bruikbare nachtfit voor die kamer valt terug op de dagfit.
+    def _rank_key(rid: str) -> float:
+        nf = night_fits[rid]
+        f = nf if nf["status"] == "ok" else fits[rid]
+        return f["ua_per_m2"] if f.get("ua_per_m2") is not None else 1e9
+
+    ok_rooms = sorted((r for r in fits if fits[r]["status"] == "ok" or night_fits[r]["status"] == "ok"),
+                      key=_rank_key)
     rank_of = {rid: i + 1 for i, rid in enumerate(ok_rooms)}
 
     rooms_out = {}
@@ -436,13 +487,16 @@ def analyse_rooms(house: dict, inputs: dict[str, str]) -> dict:
         geom = room_geometry_summary(house, rid)
         online_cmp = online_ua_estimate(house, params, rid)
         fit = fits[rid]
+        night_fit = night_fits[rid]
         rooms_out[rid] = {
             **fit,
+            "night_fit": night_fit,
             "geometry": geom,
             "online_compare": online_cmp,
             "rank": rank_of.get(rid),
             "rank_total": len(ok_rooms),
-            "narrative": build_narrative(fit, geom, online_cmp, rank_of.get(rid), len(ok_rooms)),
+            "narrative": build_narrative(fit, geom, online_cmp, rank_of.get(rid), len(ok_rooms),
+                                         night_fit=night_fit),
             "monthly_trend": monthly_trend(hourly[rid], weather,
                                            fit["ua_w_per_k"] if fit["status"] == "ok" else None),
         }

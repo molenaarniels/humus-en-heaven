@@ -147,6 +147,68 @@ def test_fit_room_ua_falls_back_when_solar_column_is_degenerate():
     assert _rel_err(fit["k_per_h"], k_true) < 0.15
 
 
+def test_is_night_local_matches_known_local_hours():
+    # Winter (Europe/Amsterdam = UTC+1): 22:00 UTC = 23:00 lokaal (nacht-start).
+    assert ia._is_night_local(am.datetime(2025, 1, 15, 22, 0, tzinfo=am.timezone.utc)) is True
+    # 04:00 UTC = 05:00 lokaal (nog nacht, < NIGHT_END_H).
+    assert ia._is_night_local(am.datetime(2025, 1, 15, 4, 0, tzinfo=am.timezone.utc)) is True
+    # 05:00 UTC = 06:00 lokaal (net geen nacht meer, NIGHT_END_H is exclusief).
+    assert ia._is_night_local(am.datetime(2025, 1, 15, 5, 0, tzinfo=am.timezone.utc)) is False
+    # 11:00 UTC = 12:00 lokaal (middag, overduidelijk geen nacht).
+    assert ia._is_night_local(am.datetime(2025, 1, 15, 11, 0, tzinfo=am.timezone.utc)) is False
+    # Zomer (UTC+2, DST): 21:00 UTC = 23:00 lokaal.
+    assert ia._is_night_local(am.datetime(2025, 7, 15, 21, 0, tzinfo=am.timezone.utc)) is True
+    assert ia._is_night_local(am.datetime(2025, 7, 15, 12, 0, tzinfo=am.timezone.utc)) is False
+
+
+def test_build_pairs_night_only_keeps_only_night_hour_pairs():
+    start = am.datetime(2025, 1, 1, 0, 0, tzinfo=am.timezone.utc)
+    keys, tado_hourly, weather_hourly, solar_hourly = [], {}, {}, {}
+    for i in range(72):                       # 3 volle dagen
+        t = start + am.timedelta(hours=i)
+        key = t.strftime("%Y-%m-%dT%H")
+        keys.append(key)
+        tado_hourly[key] = {"T_in": 19.0, "heating_off": True, "n_samples": 4}
+        weather_hourly[key] = {"T_out": 8.0}
+        solar_hourly[key] = 0.0
+
+    all_pairs = ia._build_pairs(keys, tado_hourly, weather_hourly, solar_hourly, night_only=False)
+    night_pairs = ia._build_pairs(keys, tado_hourly, weather_hourly, solar_hourly, night_only=True)
+    assert len(night_pairs) < len(all_pairs)
+    # 7 nachtelijke uren (23,0..5) per etmaal → 6 opeenvolgende paren per nacht, 3 nachten
+    # in dit bereik zijn (deels) gedekt; in elk geval > 0 en ruim onder het dag-totaal.
+    assert 0 < len(night_pairs) <= 6 * 3
+
+
+def test_fit_room_ua_night_only_recovers_known_ua():
+    house = {"rooms": {"testroom": _synthetic_room()}, "windows": {}}
+    c_air0, c_mass0, _ = am.room_base_capacitances(house["rooms"]["testroom"])
+    c_eff = c_air0 + c_mass0
+    ua_true = 12.0
+    k_true = ua_true * 3600.0 / c_eff
+
+    start = am.datetime(2025, 1, 1, 0, 0, tzinfo=am.timezone.utc)
+    tado_hourly, weather_hourly, solar_hourly = {}, {}, {}
+    t_in = 19.0
+    n_hours = 24 * 30                          # 30 dagen
+    for i in range(n_hours):
+        t = start + am.timedelta(hours=i)
+        key = t.strftime("%Y-%m-%dT%H")
+        t_out = 5.0 + 10.0 * math.sin(2 * math.pi * i / 24.0)
+        weather_hourly[key] = {"T_out": t_out}
+        solar_hourly[key] = max(0.0, 400.0 * math.sin(2 * math.pi * (i % 24 - 6) / 24.0))
+        tado_hourly[key] = {"T_in": t_in, "heating_off": True, "n_samples": 4}
+        t_in = t_in + k_true * (t_out - t_in)   # geen zonwinst in de synthetische fysica
+
+    night_fit = ia.fit_room_ua(house, "testroom", tado_hourly, weather_hourly, solar_hourly,
+                               night_only=True)
+    assert night_fit["status"] == "ok"
+    assert night_fit["solar_dropped"] is True   # zon is 's nachts per definitie ~0 → ontaard
+    assert night_fit["n_pairs"] > ia.MIN_PAIRS
+    assert _rel_err(night_fit["k_per_h"], k_true) < 0.15
+    assert _rel_err(night_fit["ua_w_per_k"], ua_true) < 0.15
+
+
 def test_fit_room_ua_insufficient_data_reports_status():
     house = {"rooms": {"testroom": _synthetic_room()}, "windows": {}}
     tado_hourly = {"2025-01-01T00": {"T_in": 19.0, "heating_off": True, "n_samples": 4}}
@@ -210,3 +272,24 @@ def test_build_narrative_reports_insufficient_data():
     msg = ia.build_narrative({"status": "insufficient_data", "n_pairs": 3},
                              {"window_wall_ratio": None, "has_roof": False}, None, None, 0)
     assert "Te weinig" in msg
+
+
+def test_build_narrative_prefers_night_fit_for_online_comparison():
+    fit = {"status": "ok", "ua_w_per_k": 9.7, "ua_per_m2": 0.21, "solar_dropped": False}
+    night_fit = {"status": "ok", "ua_w_per_k": 20.0, "n_pairs": 500}
+    geom = {"window_wall_ratio": 0.4, "dominant_facade_label": "tuinzijde", "has_roof": False}
+    online_cmp = {"ua_total_w_per_k": 23.3}
+    msg = ia.build_narrative(fit, geom, online_cmp, 1, 1, night_fit=night_fit)
+    assert "nachtfit" in msg
+    assert "Komt overeen" in msg          # 20.0 / 23.3 valt binnen de 0.7-1.4 band
+    assert "'s Nachts" in msg
+
+
+def test_build_narrative_falls_back_to_day_fit_without_night_fit():
+    fit = {"status": "ok", "ua_w_per_k": 9.7, "ua_per_m2": 0.21, "solar_dropped": False}
+    geom = {"window_wall_ratio": 0.4, "dominant_facade_label": "tuinzijde", "has_roof": False}
+    online_cmp = {"ua_total_w_per_k": 23.3}
+    msg = ia.build_narrative(fit, geom, online_cmp, 1, 1,
+                             night_fit={"status": "insufficient_data", "n_pairs": 5})
+    assert "jaarfit" in msg
+    assert "Wijkt af" in msg              # 9.7 / 23.3 valt buiten de 0.7-1.4 band

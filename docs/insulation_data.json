@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-06T17:49:25.389698+00:00",
+  "generated_at": "2026-07-06T19:54:53.540668+00:00",
   "source": "insulation_analysis",
   "method": "vrije-uitloop-regressie (callForHeat==NONE): dT_in/dt = k·(T_out−T_in) + s·I_zon + c, gefit over tado-dayReport-export vs Open-Meteo ERA5-archief",
   "data_period": {
@@ -29,6 +29,20 @@
       "ua_per_m2": 0.212,
       "c_effective_j_per_k": 4682700.0,
       "exterior_wall_m2": 46,
+      "night_fit": {
+        "status": "ok",
+        "n_pairs": 2122,
+        "n_hours_total": 8762,
+        "k_per_h": 0.01185,
+        "solar_coef": 0.0,
+        "solar_dropped": true,
+        "const_term": -0.0139,
+        "rmse_fit_c_per_h": 0.083,
+        "ua_w_per_k": 15.41,
+        "ua_per_m2": 0.335,
+        "c_effective_j_per_k": 4682700.0,
+        "exterior_wall_m2": 46
+      },
       "geometry": {
         "label": "Woonkamer + keuken",
         "window_area_m2": 18.77,
@@ -41,13 +55,13 @@
         "roof_m2": 0.0
       },
       "online_compare": {
-        "ua_env_w_per_k": 23.29,
+        "ua_env_w_per_k": 23.31,
         "ua_roof_w_per_k": 0.0,
-        "ua_total_w_per_k": 23.29
+        "ua_total_w_per_k": 23.31
       },
       "rank": 1,
       "rank_total": 1,
-      "narrative": "UA ≈ 9.7 W/K (0.21 W/K per m² buitengevel), rang 1/1 (1 = best geïsoleerd). Raam/gevel-verhouding 41% op de tuinzijde (ZO, meeste zon). Wijkt af van Project 8's 48u-kalibratie (jaarschatting 0.4× zo hoog) — geen van beide is per definitie de waarheid: Project 8's korte venster kan ua_env/ua_party/q_int onderling verwarren (zie de railed-parameters-diagnose), maar deze jaarfit ziet ook alleen (T_uit − T_in) en niet de buurwarmte apart — als de buurtemperatuur meeschaalt met het buitenweer, kan die warmte-instroom hier deels in de isolatieschatting terechtkomen. Beschouw dit als twee onafhankelijke, elk onvolmaakte metingen, niet als een uitspraak welke wint.",
+      "narrative": "UA ≈ 9.7 W/K (0.21 W/K per m² buitengevel), rang 1/1 (1 = best geïsoleerd). Raam/gevel-verhouding 41% op de tuinzijde (ZO, meeste zon). 's Nachts (23–06u, geen zon en veel minder koken/bezoek): UA ≈ 15.4 W/K (2122 paren) — dit is de eerlijkere maat voor puur schilverlies, want de dagfit hierboven mengt schil, zon én interne warmte in één getal. Wijkt af van Project 8's 48u-kalibratie (de nachtfit: 0.7× zo hoog) — geen van beide is per definitie de waarheid: Project 8's korte venster kan ua_env/ua_party/q_int onderling verwarren (zie de railed-parameters-diagnose), maar ook deze fit ziet alleen (T_uit − T_in) en niet de buurwarmte apart — als de buurtemperatuur meeschaalt met het buitenweer, kan die warmte-instroom hier deels in de isolatieschatting terechtkomen. Beschouw dit als twee onafhankelijke, elk onvolmaakte metingen, niet als een uitspraak welke wint.",
       "monthly_trend": [
         {
           "month": "2025-04",

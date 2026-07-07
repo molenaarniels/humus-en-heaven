@@ -1627,3 +1627,210 @@ def test_merged_params_fills_new_rooms_and_keys():
     assert p["b"]["c_air"] == am.PRIORS["c_air"]        # nieuwe kamer → priors
     for g in am.GLOBAL_PARAMS:
         assert g in p
+
+
+# ── Leercurve-uitdunning (thin_rmse_history) + R8-guards ─────────────────────────────
+
+def _lp(t, **kw):
+    """Leercurve-punt met tijdstip t (aware datetime) en optionele extra velden."""
+    return {"t": t.isoformat(), "rmse": kw.pop("rmse", 0.5), **kw}
+
+
+def test_thin_rmse_history_keeps_recent_full_resolution():
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    hist = [_lp(now - timedelta(minutes=15 * i))
+            for i in range(int(am.CALIB_WINDOW_H * 4) - 1, -1, -1)]
+    assert am.thin_rmse_history(hist, now) == hist   # alles binnen het venster → onaangeroerd
+
+
+def test_thin_rmse_history_thins_old_to_hourly_and_drops_ancient():
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    old = (now - timedelta(days=4)).replace(minute=0, second=0, microsecond=0)
+    hist = [_lp(now - timedelta(days=am.RMSE_HISTORY_DAYS, hours=1))]   # te oud → weg
+    for h in (0, 1):
+        hist += [_lp(old + timedelta(hours=h, minutes=m)) for m in (0, 15, 30, 45)]
+    out = am.thin_rmse_history(hist, now)
+    assert len(out) == 2                              # één per klok-uur
+    assert all(datetime.fromisoformat(p["t"]).minute == 45 for p in out)  # laatste wint
+    assert [p["t"] for p in out] == sorted(p["t"] for p in out)           # chronologisch
+
+
+def test_thin_rmse_history_prefers_live_representative():
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    h0 = (now - timedelta(days=3)).replace(minute=0, second=0, microsecond=0)
+    hist = [_lp(h0, rmse=0.4),                                        # live, eerst
+            _lp(h0 + timedelta(minutes=15), rmse=0.6, held=True),     # later maar held
+            _lp(h0 + timedelta(minutes=30), rmse=0.9, paused=True)]   # laatst maar paused
+    out = am.thin_rmse_history(hist, now)
+    assert len(out) == 1 and out[0]["rmse"] == 0.4    # live verdringt latere held/paused
+    # Bucket zónder live punt → gewoon de laatste.
+    hist2 = [_lp(h0, rmse=0.4, held=True), _lp(h0 + timedelta(minutes=15), rmse=0.6, held=True)]
+    assert am.thin_rmse_history(hist2, now)[0]["rmse"] == 0.6
+
+
+def test_thin_rmse_history_idempotent_and_capped(monkeypatch):
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    hist = [_lp(now - timedelta(hours=h, minutes=m))
+            for h in range(int(am.RMSE_HISTORY_DAYS * 24) - 1, -1, -1) for m in (30, 15, 0)]
+    once = am.thin_rmse_history(hist, now)
+    assert am.thin_rmse_history(once, now) == once    # idempotent
+    assert len(once) < len(hist)
+    monkeypatch.setattr(am, "RMSE_HISTORY_KEEP", 5)   # hard vangnet blijft werken
+    assert len(am.thin_rmse_history(hist, now)) == 5
+
+
+def test_thin_rmse_history_feeds_weekjournaal_lookback():
+    # De uitgedunde curve moet het weekjournaal een écht ≥6.5-daags vergelijkpunt geven
+    # (voorheen strandde de "week"-trend op een 2.5-daagse count-slice).
+    import weekjournaal as wj
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    hist, t = [], now - timedelta(days=am.RMSE_HISTORY_DAYS)
+    while t <= now:
+        old = t < now - timedelta(days=5)
+        hist.append({"t": t.isoformat(), "rmse": 0.8 if old else 0.5, "skill": 0.4})
+        t += timedelta(minutes=15)
+    out = am.thin_rmse_history(hist, now)
+    s = wj.twin_section({"rmse_history": out}, now)
+    assert s and "was 0.80°" in s                      # vergelijkpunt ligt ≥6.5 d terug
+
+
+def test_merged_params_strips_cd_fossil():
+    house = {"rooms": {"a": {}}}
+    learned = {"params": {"cd": 0.30, "cp_shelter": 0.4, "a": {"c_air": 1.2}}}
+    p = am.merged_params(house, learned)
+    assert "cd" not in p                               # fossiel gestript
+    assert p["cp_shelter"] == 0.4                      # geleerde waarden onaangeroerd
+
+
+def test_clamp_to_bounds_clamps_solver_state():
+    keys = [("global", "cp_shelter"), ("a", "solar_gain")]
+    lo_cp, hi_cp = am.BOUNDS["cp_shelter"]
+    lo_sg, hi_sg = am.BOUNDS["solar_gain"]
+    assert am._clamp_to_bounds([-5.0, 99.0], keys) == [lo_cp, hi_sg]
+    mid = [(lo_cp + hi_cp) / 2.0, (lo_sg + hi_sg) / 2.0]
+    assert am._clamp_to_bounds(mid, keys) == mid       # binnen de band → ongewijzigd
+
+
+def test_calibrate_nan_final_rmse_returns_old_params(monkeypatch):
+    # R8: een NaN in de geblende eind-RMSE mag nooit geblende params de persist-keten in
+    # duwen — calibrate valt dan terug op de ingevoerde params + de pre-solve-RMSE.
+    house = _toy_house()
+    tl = _varying_timeline(hours=6)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    sim = am.simulate(house, am.default_params(house), tl, seed,
+                      calib_only_rooms=set(house["rooms"]))
+    actual = {rid: sim["series"][rid][::4] for rid in house["rooms"]}
+    p0 = am.default_params(house)
+    calls = []
+
+    def fake_rmse(res):
+        calls.append(1)
+        return float("nan") if len(calls) == 1 else 0.123   # 1e = final blend, 2e = r0-fallback
+
+    monkeypatch.setattr(am, "rmse", fake_rmse)
+    p1, r1 = am.calibrate(house, p0, tl, seed, actual, max_iter=0, time_budget_s=5)
+    assert p1 is p0
+    assert r1 == 0.123
+
+
+# ── Diagnostiek-tool (tools/airflow_diagnostics.py) ──────────────────────────────────
+
+def _diag():
+    import importlib
+    import os
+    import sys as _sys
+    tools_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
+    if tools_dir not in _sys.path:
+        _sys.path.insert(0, tools_dir)
+    return importlib.import_module("airflow_diagnostics")
+
+
+def test_diagnostics_regime_filters_since_fellback_and_adds_recent_table():
+    dg = _diag()
+    now = datetime(2026, 7, 7, 12, 0, tzinfo=am.TZ)
+    hist = []
+    for d in range(3, -1, -1):   # 4 dagen, elk 6 punten
+        for h in range(6):
+            t = now - timedelta(days=d, hours=h)
+            hist.append({"t": t.isoformat(), "rmse": 1.0 if d >= 2 else 0.4,
+                         "skill": 0.5, "wx": {"tmax": 26.0, "solar_mean": 250}})
+    hist.append({"t": now.isoformat(), "rmse": 9.9, "fell_back": True,
+                 "wx": {"tmax": 26.0, "solar_mean": 250}})
+    rep = dg.regime_report({"rmse_history": hist})
+    assert "Volledig venster" in rep
+    assert "Laatste 48u" in rep                 # tweede (post-convergentie-)tabel
+    assert "9.9" not in rep                     # fell_back-punt uit de bins
+    # --since filtert de leerfase weg: alleen de 0.4-punten blijven over.
+    rep2 = dg.regime_report({"rmse_history": hist}, since=now - timedelta(days=1, hours=12))
+    assert "| 25–28 | 12 | 0.40 |" in rep2
+
+
+def test_diagnostics_room_residuals_and_per_room_matrix():
+    dg = _diag()
+    t0 = datetime(2026, 7, 6, 4, 0, tzinfo=am.TZ)
+    mk = lambda h, v: {"t": (t0 + timedelta(hours=h)).isoformat(), "temp": v}  # noqa: E731
+    room = {"predicted_series": [mk(0, 20.0), mk(2, 22.0)],
+            "actual_series": [mk(0, 20.5), mk(1, 20.5), mk(2, 21.5)]}
+    res = dg.room_residuals(room)
+    assert [round(d, 2) for _, d in res] == [-0.5, 0.5, 0.5]   # geïnterpoleerd voorspeld
+    rep = dg.residual_report({"rooms": {"a": room, "b": room}})
+    assert "Bias per uur, per kamer" in rep
+    assert "| uur | a | b |" in rep
+
+
+def test_diagnostics_pearson():
+    dg = _diag()
+    assert dg._pearson([(0, 0), (1, 1), (2, 2)]) == pytest.approx(1.0)
+    assert dg._pearson([(0, 2), (1, 1), (2, 0)]) == pytest.approx(-1.0)
+    assert dg._pearson([(1, 1), (1, 2), (1, 3)]) is None       # geen x-variantie
+    assert dg._pearson([(0, 0)]) is None                       # te weinig punten
+
+
+def test_diagnostics_solar_decomp_offline(monkeypatch):
+    # De decompositie zelf (residu ↔ per-raam-W-correlatie) offline, met een nep-weerfetch:
+    # het ZO-raam moet het middag-residu dragen, het noord-raam (diffuse_only) nauwelijks.
+    dg = _diag()
+    t0 = datetime(2026, 7, 6, 6, 0, tzinfo=am.TZ)
+    rows = [{"dt": t0 + timedelta(hours=h), "direct": 500.0, "diffuse": 100.0}
+            for h in range(0, 40)]
+    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows})
+    house = {"rooms": {"living": {}},
+             "windows": {"zo": {"room": "living", "facade_azimuth_deg": 135.0,
+                                "glass_m2": 2.0, "label": "tuindeuren"},
+                         "n": {"room": "living", "facade_azimuth_deg": 0.0,
+                               "glass_m2": 1.0, "diffuse_only": True, "label": "noord"}}}
+    monkeypatch.setattr(am, "load_house", lambda: house)
+    mk = lambda h, v: {"t": (t0 + timedelta(hours=h)).isoformat(), "temp": v}  # noqa: E731
+    # Residu piekt rond de middag (uren 4-8 na 06:00 = 10-14u): zon-gedreven fout.
+    act = [mk(h, 22.0) for h in range(14)]
+    pred = [mk(h, 22.0 + (1.0 if 4 <= h <= 8 else 0.0)) for h in range(14)]
+    data = {"rooms": {"living": {"predicted_series": pred, "actual_series": act}},
+            "openings": {}}
+    rep = dg.solar_decomp_report(data, "living")
+    assert "`zo`" in rep and "`n`" in rep and "tuindeuren" in rep
+    import re
+    corr = {m[0]: float(m[1]) for m in
+            re.findall(r"\| `(\w+)` \| \w* \| ([+-][\d.]+|—)", rep) if m[1] != "—"}
+    assert corr.get("zo", 0) > 0.3                    # ZO-raam correleert met het residu
+    # Noord-raam: vlakke diffuse → geen W-variantie → geen (of veel zwakkere) correlatie.
+    assert corr.get("n", 0.0) < corr["zo"]
+
+
+def test_diagnostics_solar_decomp_survives_network_failure(monkeypatch):
+    dg = _diag()
+
+    def boom():
+        raise OSError("proxy dicht")
+
+    monkeypatch.setattr(am, "fetch_weather", boom)
+    t0 = datetime(2026, 7, 6, 6, 0, tzinfo=am.TZ)
+    mk = lambda h, v: {"t": (t0 + timedelta(hours=h)).isoformat(), "temp": v}  # noqa: E731
+    series = [mk(h, 22.0) for h in range(10)]
+    data = {"rooms": {"living": {"predicted_series": series, "actual_series": series}},
+            "openings": {}}
+    monkeypatch.setattr(am, "load_house",
+                        lambda: {"rooms": {"living": {}},
+                                 "windows": {"w": {"room": "living", "glass_m2": 1.0}}})
+    rep = dg.solar_decomp_report(data, "living")
+    assert "niet bereikbaar" in rep                    # nette sectie i.p.v. traceback

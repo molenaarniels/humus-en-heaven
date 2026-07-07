@@ -23,7 +23,7 @@ import json
 import math
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # Repo-root op het pad zodat de bounds/priors uit de bron-of-waarheid komen (geen duplicatie).
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,6 +70,23 @@ def interp(series: list[dict], ts: datetime) -> float | None:
     return pts[-1][1]
 
 
+def room_residuals(r: dict) -> list[tuple[datetime, float]]:
+    """(t, voorspeld − werkelijk) per actual-sample van één kamer-rij uit airflow_data.json
+    (voorspeld lineair geïnterpoleerd). Gedeeld door de residu-ontleding en de zon-decompositie."""
+    pred = r.get("predicted_series", [])
+    res = []
+    for a in r.get("actual_series", []):
+        ts = parse_dt(a.get("t"))
+        av = a.get("temp")
+        if ts is None or av is None:
+            continue
+        pv = interp(pred, ts)
+        if pv is None:
+            continue
+        res.append((ts, pv - av))
+    return res
+
+
 def _mean(xs: list[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
 
@@ -79,18 +96,16 @@ def _fmt(v, nd: int = 2) -> str:
 
 
 # ── 1. Regime-curve ───────────────────────────────────────────────────────────────────
-def regime_report(learned: dict) -> str:
-    hist = [h for h in learned.get("rmse_history", [])
-            if h.get("rmse") is not None and not h.get("held")
-            and h.get("rmse") == h.get("rmse")]
-    if not hist:
-        return "### 1. Regime-curve\n\n_Geen leercurve-historie._\n"
+RECENT_REGIME_H = 48.0   # tweede regimetabel: alleen de laatste 48u (post-convergentie-blik)
+
+
+def _regime_table(hist: list[dict], title: str) -> list[str]:
+    """Bin-tabel + correlaties voor een (al gefilterde) puntenlijst."""
     bins = [("≤25", -1e9, 25.0), ("25–28", 25.0, 28.0), ("28–31", 28.0, 31.0),
             ("31–34", 31.0, 34.0), (">34", 34.0, 1e9)]
-    lines = ["### 1. Regime-curve — fout vs. weer\n",
+    lines = [f"**{title}**\n",
              "| dag-max (°C) | n | RMSE (gem) | skill (gem) | zon-gem (W/m²) |",
              "|---|---|---|---|---|"]
-    no_wx = []
     for label, lo, hi in bins:
         rows = [h for h in hist
                 if (h.get("wx", {}).get("tmax") is not None
@@ -107,7 +122,6 @@ def regime_report(learned: dict) -> str:
     if no_wx:
         rmse_m = _mean([h["rmse"] for h in no_wx])
         lines.append(f"| (geen wx-stempel) | {len(no_wx)} | {_fmt(rmse_m)} | — | — |")
-    # Headline-correlatie tmax↔rmse over alle gestempelde punten.
     pairs = [(h["wx"]["tmax"], h["rmse"]) for h in hist
              if h.get("wx", {}).get("tmax") is not None]
     if len(pairs) >= 3:
@@ -116,18 +130,54 @@ def regime_report(learned: dict) -> str:
               if h.get("wx", {}).get("solar_mean") is not None]
     if len(spairs) >= 3:
         lines.append(_corr_line("RMSE", "zon-gemiddelde", spairs))
+    return lines
+
+
+def regime_report(learned: dict, since: datetime | None = None) -> str:
+    # `fell_back`-punten vallen áltijd uit de bins: op zo'n run zijn de checkpoint-params
+    # teruggezet en meet het punt de fallback, niet het lopende leren.
+    hist = [h for h in learned.get("rmse_history", [])
+            if h.get("rmse") is not None and not h.get("held") and not h.get("fell_back")
+            and h.get("rmse") == h.get("rmse")]
+    if since is not None:
+        hist = [h for h in hist
+                if (parse_dt(h.get("t")) or since) >= since]
+    if not hist:
+        return "### 1. Regime-curve\n\n_Geen leercurve-historie._\n"
+    lines = ["### 1. Regime-curve — fout vs. weer\n"]
+    lines += _regime_table(hist, "Volledig venster" + (f" (vanaf {since:%Y-%m-%d %H:%M})"
+                                                       if since else ""))
+    # Tweede blik: alleen de laatste 48u, geankerd op het nieuwste punt. De juli-assessment
+    # vond dat het volle venster de leerfase mee-bint (koele dagen ↔ nog-niet-geconvergeerd →
+    # schijncorrelatie fout↔weer); deze tabel toont het regime-beeld zónder die confound.
+    anchor = max((t for t in (parse_dt(h.get("t")) for h in hist) if t is not None),
+                 default=None)
+    if anchor is not None:
+        cut = anchor - timedelta(hours=RECENT_REGIME_H)
+        recent = [h for h in hist if (parse_dt(h.get("t")) or cut) >= cut]
+        if recent and len(recent) < len(hist):
+            lines.append("")
+            lines += _regime_table(recent, f"Laatste {RECENT_REGIME_H:.0f}u (post-convergentie)")
     return "\n".join(lines) + "\n"
 
 
-def _corr_line(yname: str, xname: str, pairs: list[tuple]) -> str:
+def _pearson(pairs: list[tuple]) -> float | None:
+    if len(pairs) < 3:
+        return None
     xs = [p[0] for p in pairs]
     ys = [p[1] for p in pairs]
     mx, my = _mean(xs), _mean(ys)
     sx = math.sqrt(sum((x - mx) ** 2 for x in xs))
     sy = math.sqrt(sum((y - my) ** 2 for y in ys))
     if sx <= 0 or sy <= 0:
+        return None
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy)
+
+
+def _corr_line(yname: str, xname: str, pairs: list[tuple]) -> str:
+    r = _pearson(pairs)
+    if r is None:
         return ""
-    r = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy)
     return f"- Pearson-correlatie **{yname} ↔ {xname}**: r = {r:+.2f} (n={len(pairs)})"
 
 
@@ -185,23 +235,14 @@ def residual_report(data: dict) -> str:
              "| kamer | nu err | bias (gem) | RMSE | solar_w | env_w | vent_w | party_w | int_w |",
              "|---|---|---|---|---|---|---|---|---|"]
     hourly_all: dict[int, list[float]] = {}
+    hourly_room: dict[str, dict[int, list[float]]] = {}
     for rid, r in rooms.items():
-        pred = r.get("predicted_series", [])
-        act = r.get("actual_series", [])
-        res = []
-        for a in act:
-            ts = parse_dt(a.get("t"))
-            av = a.get("temp")
-            if ts is None or av is None:
-                continue
-            pv = interp(pred, ts)
-            if pv is None:
-                continue
-            res.append((ts, pv - av))
+        res = room_residuals(r)
         bias = _mean([d for _, d in res])
         rmse_v = math.sqrt(_mean([d * d for _, d in res])) if res else None
         for ts, d in res:
             hourly_all.setdefault(ts.hour, []).append(d)
+            hourly_room.setdefault(rid, {}).setdefault(ts.hour, []).append(d)
         lines.append(
             f"| {rid} | {_fmt(r.get('error'))} | {_fmt(bias)} | {_fmt(rmse_v)} "
             f"| {_fmt(r.get('solar_w'), 0)} | {_fmt(r.get('env_w'), 0)} "
@@ -216,6 +257,16 @@ def residual_report(data: dict) -> str:
             lines.append(f"| {h:02d} | {len(vals)} | {_fmt(_mean(vals))} |")
         lines.append("\n_Middag-piek → zon over-gedreven; volgt-buiten → envelope; "
                      "vroege-ochtend-piek → niet-gemelde nachtventilatie._")
+    # Per-kamer bias-per-uur-matrix: lokaliseert een dip/piek (bv. dageraad-onderkoeling) —
+    # zit hij in de dak-kamers (office/stair, ROOF_SKY_COOLING) of huisbreed?
+    room_ids = [rid for rid in rooms if hourly_room.get(rid)]
+    if room_ids:
+        lines += ["\n**Bias per uur, per kamer (°C):**\n",
+                  "| uur | " + " | ".join(room_ids) + " |",
+                  "|---|" + "---|" * len(room_ids)]
+        for h in sorted(hourly_all):
+            cells = [_fmt(_mean(hourly_room[rid].get(h, []))) for rid in room_ids]
+            lines.append(f"| {h:02d} | " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
 
 
@@ -241,7 +292,76 @@ def ac_report(data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_report(learned: dict, data: dict) -> str:
+# ── 5. Zon-decompositie per raam (opt-in, gebruikt netwerk) ────────────────────────────
+def solar_decomp_report(data: dict, room_id: str = "living") -> str:
+    """Correleert het uurlijkse residu van één kamer met de getransmitteerde instraling per
+    raam van die kamer, herberekend over het actual-venster met de pure helpers
+    (`per_window_solar`/`facade_irradiance`) + `house_model.json`. Historische per-raam-zon
+    wordt níét gepersisteerd (`solar_by_window` is een nu-snapshot), dus de drivers komen
+    van een verse Open-Meteo-fetch (`fetch_weather`, past_days dekt het ~48u-venster) —
+    dít is de enige netwerk-afhankelijke sectie en draait alleen onder `--solar-decomp`.
+    Benadering: de zonwering-standen zijn de HUIDIGE gerapporteerde standen (de log-historie
+    vergt Gist-secrets); voor een welk-raam-drijft-het-residu-diagnose is dat ruim genoeg."""
+    from airflow_model import (
+        _LAT, _LON, _interp_hourly, fetch_weather, load_house, per_window_solar, sun_position,
+    )
+    room = data.get("rooms", {}).get(room_id)
+    if not room:
+        return f"### 5. Zon-decompositie\n\n_Kamer `{room_id}` niet in airflow_data.json._\n"
+    res = room_residuals(room)
+    if len(res) < 8:
+        return f"### 5. Zon-decompositie\n\n_Te weinig residu-samples voor `{room_id}`._\n"
+    house = load_house()
+    states = data.get("openings", {}) or {}
+    windows = {wid: w for wid, w in house.get("windows", {}).items()
+               if w.get("room") == room_id}
+    if not windows:
+        return f"### 5. Zon-decompositie\n\n_Geen ramen voor `{room_id}` in house_model.json._\n"
+    try:
+        rows = fetch_weather()["hourly"]
+    except Exception as e:                                    # noqa: BLE001 — diagnose, geen runner
+        return ("### 5. Zon-decompositie\n\n_Open-Meteo niet bereikbaar "
+                f"({type(e).__name__}) — deze sectie vergt netwerk._\n")
+    per_win: dict[str, list[float]] = {wid: [] for wid in windows}
+    for ts, _ in res:
+        s_az, s_el = sun_position(_LAT, _LON, ts.astimezone(timezone.utc))
+        direct = _interp_hourly(rows, ts, "direct")
+        diffuse = _interp_hourly(rows, ts, "diffuse")
+        pw = per_window_solar(house, states, s_az, s_el, direct, diffuse, beam_iam=True)
+        for wid in windows:
+            per_win[wid].append(pw.get(wid, 0.0))
+    resid = [d for _, d in res]
+    lines = [f"### 5. Zon-decompositie — residu `{room_id}` vs. instraling per raam\n",
+             "Correlatie residu↔W per raam over het actual-venster (huidige zonwering-standen; "
+             "positief = raam-instraling loopt mee met de te-warm-fout).\n",
+             "| raam | label | corr | gem. W (dag) | piekuur W | piekuur residu |",
+             "|---|---|---|---|---|---|"]
+    # Piekuur van het residu (uur met de hoogste gemiddelde bias) als referentie.
+    hr_res: dict[int, list[float]] = {}
+    for ts, d in res:
+        hr_res.setdefault(ts.hour, []).append(d)
+    peak_res = max(hr_res, key=lambda h: _mean(hr_res[h])) if hr_res else None
+    for wid, w in windows.items():
+        watts = per_win[wid]
+        day = [(ts, v) for (ts, _), v in zip(res, watts) if v > 1.0]
+        hr_w: dict[int, list[float]] = {}
+        for ts, v in day:
+            hr_w.setdefault(ts.hour, []).append(v)
+        peak_w = max(hr_w, key=lambda h: _mean(hr_w[h])) if hr_w else None
+        r = _pearson(list(zip(watts, resid)))
+        r_txt = f"{r:+.2f}" if r is not None else "—"
+        lines.append(f"| `{wid}` | {w.get('label', '')} | {r_txt} "
+                     f"| {_fmt(_mean([v for _, v in day]) or 0.0, 0)} "
+                     f"| {peak_w if peak_w is not None else '—'} "
+                     f"| {peak_res if peak_res is not None else '—'} |")
+    lines.append("\n_Het raam waarvan corr én piekuur het residu-piekuur matchen is de "
+                 "hoofdverdachte voor de over-gedreven zonwinst (horizon-mask/overstek/g-waarde "
+                 "in house_model.json nalopen)._")
+    return "\n".join(lines) + "\n"
+
+
+def build_report(learned: dict, data: dict, since: datetime | None = None,
+                 solar_room: str | None = None) -> str:
     gen = data.get("generated_at", "?")
     wx = data.get("weather", {})
     head = [f"# Ventilatie-tweeling — diagnostiek ({gen})\n",
@@ -250,12 +370,15 @@ def build_report(learned: dict, data: dict) -> str:
             f"- huidige RMSE: {_fmt(learned.get('rmse'), 3)} °C; "
             f"checkpoint: skill {learned.get('checkpoint', {}).get('skill')}, "
             f"RMSE {learned.get('checkpoint', {}).get('rmse')}\n"]
-    return "\n".join(head) + "\n".join([
-        regime_report(learned),
+    sections = [
+        regime_report(learned, since=since),
         saturation_report(learned),
         residual_report(data),
         ac_report(data),
-    ])
+    ]
+    if solar_room:
+        sections.append(solar_decomp_report(data, solar_room))
+    return "\n".join(head) + "\n".join(sections)
 
 
 def main() -> None:
@@ -263,11 +386,22 @@ def main() -> None:
     ap.add_argument("--out", help="schrijf het markdown-rapport ook naar dit bestand")
     ap.add_argument("--learned", default=LEARNED_PATH)
     ap.add_argument("--data", default=DATA_PATH)
+    ap.add_argument("--since", help="alleen leercurve-punten vanaf dit ISO-tijdstip "
+                                    "(filtert de leerfase uit de regime-tabel)")
+    ap.add_argument("--solar-decomp", nargs="?", const="living", metavar="KAMER",
+                    help="zon-decompositie per raam voor deze kamer (default living); "
+                         "haalt Open-Meteo op — de enige netwerk-afhankelijke sectie")
     args = ap.parse_args()
 
+    since = parse_dt(args.since) if args.since else None
+    if args.since and since is None:
+        ap.error(f"--since: ongeldig ISO-tijdstip: {args.since!r}")
+    if since is not None and since.tzinfo is None:
+        from shared_const import TZ   # kaal ISO-tijdstip → lokale tijd (punten zijn tz-aware)
+        since = since.replace(tzinfo=TZ)
     learned = load_json(args.learned)
     data = load_json(args.data)
-    report = build_report(learned, data)
+    report = build_report(learned, data, since=since, solar_room=args.solar_decomp)
     print(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

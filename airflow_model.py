@@ -108,7 +108,13 @@ SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde 
                          # (300s ≈ SUBSTEP_S) — fysisch de juiste grootheid (gemiddelde flux over de
                          # stap), niet een momentopname. Behoudt de dag-energie; dempt enkel de
                          # hoogfrequente aliasing.
-RMSE_HISTORY_KEEP = 240  # rollend venster aan kalibratie-RMSE's (leercurve)
+RMSE_HISTORY_KEEP = 1000  # hard vangnet op het aantal leercurve-punten (na uitdunning ~384)
+RMSE_HISTORY_DAYS = 10.0  # leeftijdslimiet van de leercurve. De uitdunning (thin_rmse_history)
+                          # bewaart het CALIB_WINDOW_H-venster op volle kwartier-resolutie
+                          # (backfill_rmse_history herberekent alléén daarbinnen) en dunt oudere
+                          # punten uit naar uurcadans — zo kijkt het weekjournaal (RMSE_LOOKBACK_D
+                          # 6.5 d) écht een week terug i.p.v. op een 2.5-daagse count-slice te
+                          # stranden, zonder dat de artefacten meegroeien met de looptijd.
 # Achteraf-herstel van de leercurve. Een leercurve-punt werd berekend met de openingen-log zoals
 # díé toen luidde; meld je een raamwijziging te laat (of date je 'm terug), dan zat de oude fout
 # door een verkeerde open/dicht-aanname verhoogd in de curve — model-skill verward met meld-fouten.
@@ -1544,6 +1550,13 @@ def vec_to_params(vec: list[float], keys: list[tuple], base: dict) -> dict:
     return p
 
 
+def _clamp_to_bounds(vec: list[float], keys: list[tuple]) -> list[float]:
+    """Klem een solver-state-vector op de BOUNDS van zijn parameters. vec_to_params projecteert
+    al bij élke evaluatie, maar de Gauss-Newton-iterate zelf kon buiten de band accumuleren —
+    dan rekent de ridge-anker-term (x−prior) op een fantoompunt dat nooit geëvalueerd wordt."""
+    return [max(BOUNDS[name][0], min(BOUNDS[name][1], v)) for v, (_, name) in zip(vec, keys)]
+
+
 def _sensor_temp(ta: float | None, t_out: float | None, frac: float) -> float | None:
     """Wat een sensor leest die (deels) op de buitenmuur zit: een blend van de échte
     luchttemp `ta` en de buitentemp `t_out`. Een tado-voeler vlak op de exterieurmuur leest
@@ -1781,6 +1794,47 @@ def backfill_rmse_history(history: list, timed_res: list, actual: dict, now: dat
     return changed
 
 
+def thin_rmse_history(hist: list[dict], now: datetime) -> list[dict]:
+    """Leeftijds-gebaseerde uitdunning van de leercurve i.p.v. de oude count-slice.
+
+    - Punten binnen CALIB_WINDOW_H blijven op volle kwartier-resolutie: dat is precies het
+      venster waarbinnen backfill_rmse_history nog herberekent, dus daar mag niets verdwijnen.
+    - Oudere punten worden uitgedund naar één per klok-uur. Binnen een uur-bucket wint de
+      laatste níet-held/níet-gepauzeerde vertegenwoordiger (het weekjournaal filtert op
+      "live" punten), anders de laatste sowieso.
+    - Punten ouder dan RMSE_HISTORY_DAYS vervallen; RMSE_HISTORY_KEEP blijft als hard vangnet.
+
+    Deterministisch en idempotent: een al-uitgedunde historie komt ongewijzigd terug
+    (buckets bevatten dan al één punt). Muteert de invoer niet."""
+    recent_cut = now - _timedelta_h(CALIB_WINDOW_H)
+    age_cut = now - _timedelta_h(RMSE_HISTORY_DAYS * 24.0)
+    recent: list[dict] = []
+    buckets: dict[datetime, dict] = {}
+    order: list[datetime] = []
+    for p in hist:
+        try:
+            t = datetime.fromisoformat(p["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if t < age_cut or t > now:
+            continue
+        if t >= recent_cut:
+            recent.append(p)
+            continue
+        key = t.replace(minute=0, second=0, microsecond=0)
+        best = buckets.get(key)
+        if best is None:
+            order.append(key)
+            buckets[key] = p
+            continue
+        cand_live = not p.get("held") and not p.get("paused")
+        best_live = not best.get("held") and not best.get("paused")
+        if cand_live or not best_live:   # een live punt verdringt alles; non-live alleen non-live
+            buckets[key] = p
+    out = [buckets[k] for k in order] + recent
+    return out[-RMSE_HISTORY_KEEP:]
+
+
 def _wcost(res: list[float], extra_w: list[float] | None = None) -> float:
     """Huber-gewogen som van kwadraten — het doel dat de kalibratie minimaliseert (een
     paar uitschieters wegen lineair i.p.v. kwadratisch mee). `extra_w` (b.v. recency-gewichten)
@@ -1867,7 +1921,9 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         delta = solve_linear(JtJ, [-v for v in Jtr])
         if delta is None:
             break
-        x_new = [x[j] + delta[j] for j in range(nk)]
+        # Klem de iterate zélf op BOUNDS (niet alleen de vec_to_params-projectie): anders kan x
+        # buiten de band zwerven terwijl de ridge-anker-term (x−prior) op dat fantoompunt rekent.
+        x_new = _clamp_to_bounds([x[j] + delta[j] for j in range(nk)], keys)
         new_cost = _total_cost(
             _residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set), x_new)
         if math.isnan(new_cost) or new_cost >= best_cost:
@@ -1884,6 +1940,8 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     x_blend = [x_old[j] + LEARN_RATE * (x[j] - x_old[j]) for j in range(len(keys))]
     new_params = vec_to_params(x_blend, keys, base)
     final_rmse = rmse(_residuals(house, new_params, timeline, seed, actual, rooms_set))
+    if final_rmse != final_rmse:   # NaN: vertrouw de geblende params niet — geef de oude terug
+        return params, rmse(r0)   # (kan zelf NaN zijn → downstream vangt de niet-NaN-poort dat af)
     return new_params, final_rmse
 
 
@@ -2070,6 +2128,9 @@ def merged_params(house: dict, learned: dict) -> dict:
     """Geleerde params aangevuld met priors voor nieuwe kamers/keys (additief, robuust).
     Gedeeld door main() en night_forecast.py zodat de merge-logica niet dubbel bestaat."""
     params = learned.get("params") or default_params(house)
+    # Fossiel uit de tijd dat `cd` leerbaar was: de code rekent met de vaste CD-constante en
+    # niets leest params["cd"] — strip 'm hier zodat hij niet eeuwig in de artefacten meerijdt.
+    params.pop("cd", None)
     base = default_params(house)
     for g in GLOBAL_PARAMS:
         params.setdefault(g, base[g])
@@ -2467,7 +2528,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         if fell_back:
             entry["fell_back"] = True
         rmse_hist.append(entry)
-    rmse_hist = rmse_hist[-RMSE_HISTORY_KEEP:]
+    rmse_hist = thin_rmse_history(rmse_hist, now)
 
     return {
         "generated_at": utc_now_iso(),

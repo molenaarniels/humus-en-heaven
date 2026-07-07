@@ -62,15 +62,24 @@ jobs:
           # vanzelf deduppen tegen de fallback-cron (beide landen in datzelfde ledger).
 
           # Bestaat er een NIET-mislukte run van workflow $1 aangemaakt >= epoch $2?
+          # Fail-safe: een mislukte gh/jq-query (transiënte API-hapering) mag NOOIT
+          # als "0 runs" doorschieten — dat zou een dubbele dispatch veroorzaken
+          # (gediagnosticeerd juli 2026: een dubbele weerbriefing om 16:30 doordat
+          # deze check faalde en "niet gedaan vandaag" concludeerde). Bij een
+          # queryfout dus juist het omgekeerde aannemen: "al gedaan, sla over" —
+          # de per-project fallback-cron vangt een echt gemiste dispatch alsnog op.
           handled_since () {
             local wf="$1" since="$2" count
-            count=$(gh run list --workflow "$wf" -L 40 \
+            if ! count=$(gh run list --workflow "$wf" -L 40 \
               --json createdAt,conclusion \
               --jq "[.[] | select((.createdAt|fromdateiso8601) >= $since
                      and .conclusion != \"failure\"
                      and .conclusion != \"cancelled\"
                      and .conclusion != \"timed_out\"
-                     and .conclusion != \"startup_failure\")] | length" 2>/dev/null || echo 0)
+                     and .conclusion != \"startup_failure\")] | length" 2>&1); then
+              echo "::warning::handled_since($wf) query mislukte — fail-safe: behandel als al gedaan (${count})"
+              return 0
+            fi
             [ "${count:-0}" -gt 0 ]
           }
 

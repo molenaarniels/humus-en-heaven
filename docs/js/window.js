@@ -262,7 +262,10 @@ function roomCardHTML(name, r) {
   if (!r) return "";
   const open = r.advice === "open";
   const stamp = `<span class="stamp ${open ? "stamp-open" : "stamp-dicht"}">${open ? "Open" : "Dicht"}</span>`;
-  const statusColor = r.open_now ? "var(--moss)" : (r.predicted_open ? "var(--ink)" : "var(--ink-soft)");
+  // `open` (== advice) is de bron van waarheid voor de chip; laat de statusregel-kleur
+  // daarmee overeenkomen zodat "Blijft open"/"Nu open" nooit grijs oogt terwijl de kamer
+  // echt open staat (zie open_reason() in window_advisor.py voor de achterliggende logica).
+  const statusColor = open ? "var(--moss)" : (r.predicted_open ? "var(--ink)" : "var(--ink-soft)");
   const comfortHigh = r.comfort_high != null ? r.comfort_high : state.data.params.COMFORT_HIGH;
   const comfortLow = r.comfort_low != null ? r.comfort_low : comfortHigh;
   const overComfort = r.inside != null && r.inside > comfortHigh;

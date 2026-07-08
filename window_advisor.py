@@ -4,8 +4,13 @@ window_advisor.py — Tado raam-koeladvies via Telegram (Project 6).
 
 Doel: op warme zomerdagen het huis koelen door ramen te openen wanneer het
 buiten kouder is dan in een kamer, en te sluiten zodra het buiten warmer wordt
-(warmte-instroom). Ventilatie regelt de luchtkwaliteit al — dit is puur een
-thermische beslissing, per kamer.
+(warmte-instroom). Staat er een warme dag aan te komen, dan begint dat koelen
+al bij het comfortabele minimum (`low`) i.p.v. te wachten tot de kamer al te
+warm is — zoveel mogelijk warmte "eruit tanken" vóórdat het heet wordt. De
+roosters regelen de continue luchtkwaliteit, maar binnen een actieve
+warme-dag-run heeft frisse lucht ook op zichzelf een kleine, thermisch-neutrale
+voorkeur (open i.p.v. dicht) als er verder niets — koeling, oververhitting, noch
+vocht — op het spel staat; op een koele/onderdrukte dag blijft dit puur thermisch.
 
 Bronnen:
   - tado  → binnentemperatuur + luchtvochtigheid per zone (kamer)
@@ -623,36 +628,63 @@ def humidity_offset(vent_rh: float | None) -> float:
     return max(-RH_BONUS_MAX, min(RH_PENALTY_MAX, raw))
 
 
-def open_desire(inside: float | None, outside: float | None, low: float, high: float,
-                vent_rh: float | None = None, humidity: float | None = None) -> bool:
-    """Wil de kamer nú open (koelen óf ontvochtigen), vóór hysterese? Eén bron van
-    waarheid voor zowel decide() als het dashboard-`open_now`, zodat advies en dashboard
-    niet uit elkaar lopen."""
+def open_reason(inside: float | None, outside: float | None, low: float, high: float,
+                vent_rh: float | None = None, humidity: float | None = None,
+                bank_cooling: bool = False, fresh_air_ok: bool = False) -> str | None:
+    """Wil de kamer nú open, vóór hysterese — en waaróm? Eén bron van waarheid voor
+    zowel decide() als het dashboard-`open_now`/`open_reason`/Telegram-bericht, zodat
+    advies, dashboard en bericht niet uit elkaar lopen. Retourneert de reden
+    ("cool" | "bank" | "dryout" | "fresh_air") of None (geen open-wens)."""
     if inside is None or outside is None:
-        return False
+        return None
     if vent_rh is not None and vent_rh >= RH_HARD_CAP:
-        return False  # veto: nooit ventileren naar te muffe lucht
-    if inside > high + humidity_offset(vent_rh) and outside <= inside - OPEN_MARGIN:
-        return True  # koelen — vocht schuift de open-drempel (muf hoger, droog lager)
+        return None  # veto: nooit ventileren naar te muffe lucht
+    off = humidity_offset(vent_rh)
+    if inside > high + off and outside <= inside - OPEN_MARGIN:
+        return "cool"  # koelen — vocht schuift de open-drempel (muf hoger, droog lager)
+    # Koelte tanken: staat er een warme dag aan te komen, dan wachten we niet tot de kamer
+    # al te warm ís (`high`) — we beginnen al te koelen zodra ze op haar comfortabele
+    # minimum zit (`low`) en buiten kouder is, om zoveel mogelijk warmte "eruit te halen"
+    # vóórdat het heet wordt. Eenmaal open houdt de dode band/koelte-tank-logica in decide()
+    # het raam ook onder `low` open, zolang buiten kouder blijft.
+    if bank_cooling and inside > low + off and outside <= inside - OPEN_MARGIN:
+        return "bank"
     # Ontvochtig-trigger: een muffe (niet per se warme) kamer mag open als de buitenlucht
     # duidelijk droger is en er geen warmte instroomt — drogen zonder het huis op te warmen.
     if (humidity is not None and vent_rh is not None
             and humidity >= RH_DRYOUT_MIN
             and vent_rh <= humidity - RH_DRYOUT_MARGIN
             and inside > low and outside <= inside):
-        return True
-    return False
+        return "dryout"
+    # Frisse-lucht-trigger: niets thermisch op het spel (buiten warmt niet op, kamer niet
+    # onder haar comfortabele minimum) én de lucht is niet muf → dan heeft frisse lucht op
+    # zichzelf waarde, ook al is er geen koel- of ontvochtig-noodzaak. Alleen binnen een
+    # actieve (niet-onderdrukte) warme-dag-run — `fresh_air_ok` is de aanroeper's gate,
+    # zodat een koele/onderdrukte dag hier niet alsnog open van wordt geadviseerd.
+    if (fresh_air_ok and inside > low
+            and vent_rh is not None and vent_rh <= RH_COMFORT
+            and outside <= inside):
+        return "fresh_air"
+    return None
+
+
+def open_desire(inside: float | None, outside: float | None, low: float, high: float,
+                vent_rh: float | None = None, humidity: float | None = None,
+                bank_cooling: bool = False, fresh_air_ok: bool = False) -> bool:
+    """Bool-vorm van open_reason() — het echte beslispunt voor decide()."""
+    return open_reason(inside, outside, low, high, vent_rh, humidity,
+                       bank_cooling, fresh_air_ok) is not None
 
 
 def decide(inside: float | None, outside: float | None, prev: str,
            low: float, high: float, bank_cooling: bool = False,
            vent_rh: float | None = None, humidity: float | None = None,
-           reopen_soon: bool = False) -> str:
+           reopen_soon: bool = False, fresh_air_ok: bool = False) -> str:
     if inside is None or outside is None:
         return prev  # geen meting → advies niet wijzigen
     if vent_rh is not None and vent_rh >= RH_HARD_CAP:
         return "dicht"  # te muf → dicht, ook een open raam (klam/schimmel weegt zwaarder)
-    if open_desire(inside, outside, low, high, vent_rh, humidity):
+    if open_desire(inside, outside, low, high, vent_rh, humidity, bank_cooling, fresh_air_ok):
         return "open"
     if outside >= inside - CLOSE_MARGIN:
         # Warmte-instroom: buiten heeft de kamer ingehaald → normaal sluiten. Maar staat
@@ -718,7 +750,7 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     """Bouw één kamer-rij voor het dashboard-artefact.
 
     `ctx` bundelt de run-brede context die elke kamer deelt: `od` (beslis-temp),
-    `prev_rooms` (vorige adviezen), `warm_ahead`, het buiten-RH-sensorpaar, en de
+    `prev_rooms` (vorige adviezen), `warm_ahead`, `gated`, het buiten-RH-sensorpaar, en de
     forecast (`fc` + ruwe `hourly`)."""
     d = rooms_data.get(room) or {}
     inside   = d.get("inside")
@@ -745,25 +777,42 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     vent_rh = convert_rh(ctx["outside_rh"], ctx["outside_rh_temp"], inside)
     rh_off = humidity_offset(vent_rh)
     reopen_soon = reopen_is_brief(ctx["hourly"], inside, now)
+    # Frisse lucht mag alleen meewegen binnen een actieve (niet-onderdrukte) warme-dag-run —
+    # op een gated (koele) dag blijft dit puur thermisch, zoals de gate zelf al belooft.
+    fresh_air_ok = not ctx["gated"]
     advice = decide(inside, od, ctx["prev_rooms"].get(room, "dicht"),
                     low, high, bank_cooling=ctx["warm_ahead"],
-                    vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
-    # De vooruit-voorspeller verschuift de open-drempel mee met de huidige vochtstraf
-    # (per-uur RH-forecast valt buiten scope → huidige offset als statische benadering).
-    intervals, proj = predict_open_intervals(ctx["fc"], inside, slope, now, high + rh_off)
+                    vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon,
+                    fresh_air_ok=fresh_air_ok)
+    # De vooruit-voorspeller verschuift mee met de huidige vochtstraf (per-uur RH-forecast
+    # valt buiten scope → huidige offset als statische benadering) én met koelte-tanken
+    # (drempel `low` i.p.v. `high` zodra warm_ahead) — dezelfde drempel als open_reason()
+    # hieronder ziet, anders lopen de voorspelde tijden en de nu-status uit elkaar.
+    open_threshold = (low if ctx["warm_ahead"] else high) + rh_off
+    intervals, proj = predict_open_intervals(ctx["fc"], inside, slope, now, open_threshold)
 
-    open_now = open_desire(inside, od, low, high, vent_rh, humidity)
+    reason = open_reason(inside, od, low, high, vent_rh, humidity,
+                         bank_cooling=ctx["warm_ahead"], fresh_air_ok=fresh_air_ok)
+    open_now = reason is not None
     predicted_open = intervals[0]["start"] if intervals else None
 
     rh_veto = vent_rh is not None and vent_rh >= RH_HARD_CAP
-    dryout = bool(open_now and not (inside is not None and od is not None
-                  and inside > high + rh_off and od <= inside - OPEN_MARGIN))
+    dryout = reason == "dryout"
 
     if inside is None:
         status_text = "Geen meting"
+    elif reason == "bank":
+        end = intervals[0]["end"] if intervals else None
+        status_text = f"Nu open tot ~{end} — koelte tanken" if end else "Nu open — koelte tanken"
+    elif reason == "fresh_air":
+        status_text = "Nu open — frisse lucht"
     elif open_now:
         end = intervals[0]["end"] if intervals else None
         status_text = f"Nu open tot ~{end}" if end else "Nu open"
+    elif advice == "open":
+        # Hysterese (dode band of koelte tanken) houdt het raam open, ook al zou een
+        # verse herberekening nú niet meer actief openen — laat dat niet tegenspreken.
+        status_text = "Blijft open"
     elif predicted_open:
         status_text = f"Open rond {predicted_open}"
     else:
@@ -780,6 +829,7 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
         "rh_offset":      round(rh_off, 2),
         "rh_veto":        rh_veto,
         "dryout":         dryout,
+        "open_reason":    reason,
         "advice":         advice,
         "comfort_low":    low,
         "comfort_high":   high,
@@ -847,7 +897,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX
 
     ctx = {
-        "od": od, "prev_rooms": prev_rooms, "warm_ahead": warm_ahead,
+        "od": od, "prev_rooms": prev_rooms, "warm_ahead": warm_ahead, "gated": gated,
         "outside_rh": outside_rh, "outside_rh_temp": outside_rh_temp,
         "fc": fc, "hourly": om["hourly"],
     }
@@ -966,7 +1016,8 @@ def main():
 
     changes: list[tuple[str, str]] = []   # (room, new_advice)
     new_rooms = dict(prev_rooms)
-    rh_reason: dict[str, str] = {}        # room → "veto" | "dryout" (waarom vocht meespeelt)
+    rh_reason: dict[str, str] = {}        # room → "veto" (dicht ondanks dat koelen zou kunnen)
+    reason_by_room: dict[str, str] = {}   # room → "cool"|"bank"|"dryout"|"fresh_air" (waarom open)
     rh_vent: dict[str, float] = {}        # room → geprojecteerde vent_rh (voor het bericht)
     for room in ROOMS:
         d = rooms_data.get(room)
@@ -978,17 +1029,21 @@ def main():
         prev   = prev_rooms.get(room, "dicht")
         low, high = comfort_band(room)
         reopen_soon = reopen_is_brief(om["hourly"], inside, now)
+        # fresh_air_ok=True: dit blok draait alleen binnen een niet-onderdrukte run (de gate
+        # hierboven heeft koele dagen al afgevangen met een vroege return).
         new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead,
-                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon)
+                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon,
+                        fresh_air_ok=True)
         new_rooms[room] = new
-        # Reden onthouden voor het bericht: veto (te muf → dicht) of ontvochtigen (open
-        # zonder dat de kamer thermisch warm genoeg was).
+        # Reden onthouden voor het bericht: veto (te muf → dicht), of wáárom een open-advies
+        # opkwam (cool/bank/dryout/fresh_air) — zelfde open_reason() als decide() zag.
         if vent_rh is not None and vent_rh >= RH_HARD_CAP:
             rh_reason[room] = "veto"
-        elif new == "open" and not (inside is not None and outside_decide is not None
-                and inside > high + humidity_offset(vent_rh)
-                and outside_decide <= inside - OPEN_MARGIN):
-            rh_reason[room] = "dryout"
+        else:
+            reason = open_reason(inside, outside_decide, low, high, vent_rh, humidity,
+                                 bank_cooling=warm_ahead, fresh_air_ok=True)
+            if reason is not None:
+                reason_by_room[room] = reason
         ins = f"{inside:.1f}" if inside is not None else "?"
         out = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         bank = " [koelte tanken]" if warm_ahead else ""
@@ -1012,8 +1067,13 @@ def main():
         # Toon de gladgestreken beslis-temp: dat is de waarde waarop het advies stoelt.
         out_s = f"{outside_decide:.1f}" if outside_decide is not None else "?"
         if advice == "open":
-            dry = " — ontvochtigen (buiten droger)" if rh_reason.get(room) == "dryout" else ""
-            lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°){dry}")
+            suffix_by_reason = {
+                "dryout":    " — ontvochtigen (buiten droger)",
+                "bank":      " — koelte tanken voor de warme dag",
+                "fresh_air": " — frisse lucht",
+            }
+            extra = suffix_by_reason.get(reason_by_room.get(room), "")
+            lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°){extra}")
         elif rh_reason.get(room) == "veto":
             # Te muffe buitenlucht: dicht ondanks dat koelen thermisch zou kunnen.
             vr = rh_vent.get(room)

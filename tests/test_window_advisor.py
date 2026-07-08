@@ -12,7 +12,8 @@ import pytest
 
 import window_advisor as wa
 from window_advisor import (convert_rh, decide, humidity_offset, next_reopen,
-                            open_desire, predict_open_intervals, room_trend)
+                            open_desire, open_reason, predict_open_intervals,
+                            room_trend)
 
 LOW, HIGH = 19.5, 22.0  # voorbeeldcomfortband (Living room-achtig)
 
@@ -125,6 +126,57 @@ def test_open_desire_ontvochtig_trigger():
                        vent_rh=droog, humidity=binnen_rh) is False                     # warmte-instroom
 
 
+def test_open_desire_koelte_tanken_drempel_op_low():
+    # In de dode band (low < binnen ≤ high): zonder warme dag op komst geen nieuwe open-wens,
+    # mét warme dag op komst wél — je wacht niet tot de kamer al te warm is.
+    inside = (LOW + HIGH) / 2
+    outside = inside - wa.OPEN_MARGIN - 1.0
+    assert open_desire(inside, outside, LOW, HIGH, bank_cooling=False) is False
+    assert open_desire(inside, outside, LOW, HIGH, bank_cooling=True) is True
+    # Precies op `low` (niet erboven) tankt nog niet — anders zou het overkoelen.
+    assert open_desire(LOW, outside, LOW, HIGH, bank_cooling=True) is False
+    # Zonder dat buiten kouder is, ook met bank_cooling geen open-wens.
+    assert open_desire(inside, inside, LOW, HIGH, bank_cooling=True) is False
+
+
+def test_open_desire_frisse_lucht_alleen_met_fresh_air_ok():
+    # Niets thermisch op het spel: binnen in de band, buiten niet warmer, droog genoeg.
+    inside = (LOW + HIGH) / 2
+    outside = inside - 0.1
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+                       fresh_air_ok=True) is True
+    # Standaard (geen expliciete opt-in) blijft dit uit — puur thermische call sites
+    # veranderen niet vanzelf mee.
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5) is False
+    # Muf genoeg (> RH_COMFORT) → geen frisse-lucht-bonus.
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT + 5,
+                       fresh_air_ok=True) is False
+    # Zou overkoelen (op/onder low) → geen frisse-lucht-open.
+    assert open_desire(LOW, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+                       fresh_air_ok=True) is False
+    # Warmte-instroom (buiten warmer dan binnen) → geen frisse-lucht-open.
+    assert open_desire(inside, inside + 0.5, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+                       fresh_air_ok=True) is False
+    # Onbekende vochtigheid → conservatief, geen open (kan mugginess niet uitsluiten).
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=None, fresh_air_ok=True) is False
+
+
+def test_open_reason_labels():
+    inside = HIGH + 1.0
+    assert open_reason(inside, inside - wa.OPEN_MARGIN, LOW, HIGH) == "cool"
+    bandinside = (LOW + HIGH) / 2
+    assert open_reason(bandinside, bandinside - wa.OPEN_MARGIN - 1.0, LOW, HIGH,
+                       bank_cooling=True) == "bank"
+    binnen_rh = wa.RH_DRYOUT_MIN + 5
+    droog = binnen_rh - wa.RH_DRYOUT_MARGIN
+    assert open_reason(LOW + 1.0, LOW + 0.5, LOW, HIGH, vent_rh=droog,
+                       humidity=binnen_rh) == "dryout"
+    assert open_reason(bandinside, bandinside - 0.1, LOW, HIGH,
+                       vent_rh=wa.RH_COMFORT - 5, fresh_air_ok=True) == "fresh_air"
+    assert open_reason(bandinside, bandinside + 1.0, LOW, HIGH) is None
+    assert open_reason(30.0, 20.0, LOW, HIGH, vent_rh=wa.RH_HARD_CAP) is None  # veto
+
+
 # ── decide ─────────────────────────────────────────────────────────────────────
 
 def test_decide_geen_meting_houdt_advies():
@@ -150,6 +202,25 @@ def test_decide_overkoeling_vs_koelte_tanken():
     assert decide(inside, outside, "open", LOW, HIGH, bank_cooling=False) == "dicht"
     # Warme dag op komst → koelte blijven tanken zolang buiten kouder is.
     assert decide(inside, outside, "open", LOW, HIGH, bank_cooling=True) == "open"
+
+
+def test_decide_koelte_tanken_opent_al_vanaf_dicht():
+    # Een dicht raam in de dode band opent proactief zodra er een warme dag aankomt —
+    # niet pas als de kamer al boven `high` uitkomt.
+    inside = (LOW + HIGH) / 2
+    outside = inside - wa.OPEN_MARGIN - 1.0
+    assert decide(inside, outside, "dicht", LOW, HIGH, bank_cooling=False) == "dicht"
+    assert decide(inside, outside, "dicht", LOW, HIGH, bank_cooling=True) == "open"
+
+
+def test_decide_frisse_lucht_opent_al_vanaf_dicht():
+    # Geen thermische noodzaak, maar ook geen kosten → frisse lucht wint, mits opt-in.
+    inside = (LOW + HIGH) / 2
+    outside = inside - 0.1
+    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+                  fresh_air_ok=True) == "open"
+    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+                  fresh_air_ok=False) == "dicht"
 
 
 def test_decide_kort_warmtemoment_houdt_open_raam():

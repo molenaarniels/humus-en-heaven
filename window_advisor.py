@@ -608,6 +608,19 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     return intervals, proj
 
 
+def open_status_tail(intervals: list[dict]) -> str:
+    """' tot ~HH:MM[, weer open rond HH:MM]' uit de eerste twee voorspelde segmenten van
+    `predict_open_intervals`, of '' zonder segmenten. Wordt gebruikt om elke "kamer is nu
+    open"-statustekst (Nu open/Blijft open, met of zonder reden-suffix) dezelfde sluit-/
+    heropentijd te laten tonen als de tijdlijn eronder — anders belooft de tekst "blijft
+    open" terwijl dezelfde `intervals` een tussentijdse sluiting laten zien."""
+    if not intervals:
+        return ""
+    end = intervals[0]["end"]
+    reopen = intervals[1]["start"] if len(intervals) > 1 else None
+    return f" tot ~{end}, weer open rond {reopen}" if reopen else f" tot ~{end}"
+
+
 # ── Buitentemp gladstrijken vóór de beslissing (anti-flapping) ────────────────────
 
 def smoothed_outside(history: list[dict], now: datetime,
@@ -824,20 +837,23 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     rh_veto = vent_rh is not None and vent_rh >= RH_HARD_CAP
     dryout = reason == "dryout"
 
+    # Zolang advice=="open" is currently_open=True hierboven meegegeven, dus intervals[0]
+    # is altíjd het lopende open-segment (begint bij "nu") — elke "kamer is nu open"-tekst
+    # hieronder moet dus dezelfde sluit-/heropentijd tonen als de tijdlijn eronder.
+    tail = open_status_tail(intervals)
+
     if inside is None:
         status_text = "Geen meting"
     elif reason == "bank":
-        end = intervals[0]["end"] if intervals else None
-        status_text = f"Nu open tot ~{end} — koelte tanken" if end else "Nu open — koelte tanken"
+        status_text = f"Nu open{tail} — koelte tanken"
     elif reason == "fresh_air":
-        status_text = "Nu open — frisse lucht"
+        status_text = f"Nu open{tail} — frisse lucht"
     elif open_now:
-        end = intervals[0]["end"] if intervals else None
-        status_text = f"Nu open tot ~{end}" if end else "Nu open"
+        status_text = f"Nu open{tail}"
     elif advice == "open":
         # Hysterese (dode band of koelte tanken) houdt het raam open, ook al zou een
         # verse herberekening nú niet meer actief openen — laat dat niet tegenspreken.
-        status_text = "Blijft open"
+        status_text = f"Blijft open{tail}" if tail else "Blijft open"
     elif predicted_open:
         status_text = f"Open rond {predicted_open}"
     else:

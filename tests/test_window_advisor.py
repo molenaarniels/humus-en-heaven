@@ -12,8 +12,8 @@ import pytest
 
 import window_advisor as wa
 from window_advisor import (convert_rh, decide, humidity_offset, next_reopen,
-                            open_desire, open_reason, predict_open_intervals,
-                            room_trend)
+                            open_desire, open_reason, open_status_tail,
+                            predict_open_intervals, room_trend)
 
 LOW, HIGH = 19.5, 22.0  # voorbeeldcomfortband (Living room-achtig)
 
@@ -365,3 +365,38 @@ def test_predict_open_currently_open_sluit_bij_warmte_instroom():
     assert intervals, "verwacht een open-segment dat bij nu begint"
     assert intervals[0]["start_h"] <= 0.0
     assert intervals[0]["end_h"] < 3.0  # sluit ergens tussen uur +1 (15°) en +2 (25°)
+
+
+def test_predict_open_currently_open_heropent_later():
+    # Warmte-instroom sluit tijdelijk, daarna zakt buiten weer onder de open-drempel en
+    # (met een licht stijgende binnentrend) komt binnen weer boven `high` → een tweede
+    # segment. Dit is precies het "sluit om 18:00, weer open rond 20:30"-patroon.
+    now = datetime(2026, 6, 10, 17, 0)
+    high = 18.0
+    fc = _fc(now, [10.0, 17.0, 17.0, 12.0, 12.0])  # uur 0..4: koel, warm-in, warm, koel, koel
+    intervals, _ = predict_open_intervals(fc, inside_now=17.0, slope=0.3,
+                                          now=now, high=high, currently_open=True)
+    assert len(intervals) >= 2, "verwacht een sluiting gevolgd door een heropening"
+    assert intervals[0]["start_h"] <= 0.0
+    assert intervals[1]["start_h"] > intervals[0]["end_h"]
+
+
+# ── open_status_tail ────────────────────────────────────────────────────────────
+
+def test_open_status_tail_leeg_zonder_segmenten():
+    assert open_status_tail([]) == ""
+
+
+def test_open_status_tail_alleen_sluittijd():
+    intervals = [{"start": "17:15", "end": "18:00", "start_h": 0.0, "end_h": 0.75}]
+    assert open_status_tail(intervals) == " tot ~18:00"
+
+
+def test_open_status_tail_met_heropening():
+    # Dit is de tekst die naast de tijdlijn moet staan: "Blijft open"/"Nu open" mag niet
+    # een langere open periode beloven dan de balk eronder (dezelfde `intervals`) toont.
+    intervals = [
+        {"start": "17:15", "end": "18:00", "start_h": 0.0, "end_h": 0.75},
+        {"start": "20:30", "end": "23:00", "start_h": 3.25, "end_h": 5.75},
+    ]
+    assert open_status_tail(intervals) == " tot ~18:00, weer open rond 20:30"

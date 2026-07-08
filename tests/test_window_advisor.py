@@ -332,6 +332,19 @@ def test_predict_open_geen_crossover():
     assert intervals == []
 
 
+def test_predict_open_proj_stopt_na_trend_cap():
+    # proj volgt de trend tot TREND_CAP_H, en stopt dán — geen urenlange platte staart
+    # tot PREDICT_HORIZON_H die niets meer voorstelt dan de laatst bekende waarde.
+    now = datetime(2026, 6, 10, 18, 0)
+    fc = _fc(now, [20.0] * (wa.PREDICT_HORIZON_H + 2))  # ruim voorbij de horizon
+    _, proj = predict_open_intervals(fc, inside_now=24.0, slope=0.5,
+                                     now=now, high=22.0)
+    within_cap = [p for r, p in zip(fc, proj) if (r["dt"] - now).total_seconds() / 3600.0 <= wa.TREND_CAP_H]
+    beyond_cap = [p for r, p in zip(fc, proj) if (r["dt"] - now).total_seconds() / 3600.0 > wa.TREND_CAP_H]
+    assert all(p is not None for p in within_cap)
+    assert all(p is None for p in beyond_cap)
+
+
 def test_predict_open_currently_open_begint_bij_nu():
     # Binnen zit onder `high` (bv. dode-band-hold: advies is "open", maar de strikte
     # koeldrempel wordt pas ver in de toekomst gehaald). Zonder `currently_open` toont de

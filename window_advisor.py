@@ -532,7 +532,12 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     lineaire interpolatie van de geijkte buitentemp tussen de uurlijkse forecast-punten),
     zodat de tijden niet op het hele uur plakken maar op kwartieren vallen. Geeft
     (open_intervals, proj) terug; `proj` blijft de geprojecteerde binnentemp *per
-    forecast-uur* (uitgelijnd op forecast_corr, voor de dashboard-grafiek).
+    forecast-uur* (uitgelijnd op forecast_corr, voor de dashboard-grafiek), maar alleen
+    binnen `TREND_CAP_H` — voorbij dat punt vlakt `project_inside()` toch af (de trend
+    wordt niet oneindig doorgetrokken), en een urenlange horizontale staart tot het einde
+    van `PREDICT_HORIZON_H` oogt als een voorspelling terwijl het puur de laatst bekende
+    waarde herhaalt. De grafieklijn stopt dus na `TREND_CAP_H` in plaats van nutteloos
+    plat door te lopen tot diep de volgende ochtend.
 
     `currently_open`: het raam staat ook nú al open (dode band, koelte tanken, ontvochtigen
     of frisse lucht kunnen dat laten gelden zónder dat de strikte `is_open`-drempel hierboven
@@ -540,11 +545,10 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     eerste segment pas bij de eerstvolgende toekomstige drempeloverschrijding, en toonde de
     tijdlijn een gat vóór dat moment terwijl de kamer al open stond. `currently_open` forceert
     het allereerste (in-bereik) rasterpunt open, zodat het segment bij "nu" begint."""
-    # proj: per forecast-uur (ongewijzigd — voedt de grafiek, moet op fc uitgelijnd blijven).
     proj: list = []
     for r in forecast_corr:
         h_ahead = (r["dt"] - now).total_seconds() / 3600.0
-        if inside_now is None or h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
+        if inside_now is None or h_ahead < -0.5 or h_ahead > TREND_CAP_H:
             proj.append(None)
         else:
             proj.append(round(project_inside(inside_now, slope, max(0.0, h_ahead)), 1))

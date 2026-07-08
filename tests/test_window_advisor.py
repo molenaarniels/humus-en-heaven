@@ -330,3 +330,20 @@ def test_predict_open_geen_crossover():
     intervals, _ = predict_open_intervals(fc, inside_now=24.0, slope=0.0,
                                           now=now, high=22.0)
     assert intervals == []
+
+
+def test_predict_open_currently_open_begint_bij_nu():
+    # Binnen zit onder `high` (bv. dode-band-hold: advies is "open", maar de strikte
+    # koeldrempel wordt pas ver in de toekomst gehaald). Zonder `currently_open` toont de
+    # tijdlijn dan een gat tot die verre crossover, terwijl het raam al open staat.
+    now = datetime(2026, 6, 10, 18, 0)
+    high = 22.0
+    fc = _fc(now, [15.0, 15.0, 15.0, 15.0])
+    intervals, _ = predict_open_intervals(fc, inside_now=20.0, slope=0.0,
+                                          now=now, high=high, currently_open=False)
+    assert intervals == []  # geen enkele crossover: binnen (20) haalt `high` (22) nooit
+
+    intervals2, _ = predict_open_intervals(fc, inside_now=20.0, slope=0.0,
+                                           now=now, high=high, currently_open=True)
+    assert intervals2, "verwacht een segment dat bij nu begint, niet pas bij een verre crossover"
+    assert intervals2[0]["start_h"] <= 0.0

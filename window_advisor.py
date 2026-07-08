@@ -524,7 +524,7 @@ def _interp_out_corr(pts: list[tuple[datetime, float]], t: datetime) -> float:
 
 def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
                             slope: float | None, now: datetime,
-                            high: float) -> tuple[list[dict], list]:
+                            high: float, currently_open: bool = False) -> tuple[list[dict], list]:
     """Vind de momenten waarop raam-open zinvol is: geprojecteerde binnentemp > `high`
     (kamer-comfortgrens) én buiten-geijkt ≤ binnen − OPEN_MARGIN.
 
@@ -532,7 +532,14 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     lineaire interpolatie van de geijkte buitentemp tussen de uurlijkse forecast-punten),
     zodat de tijden niet op het hele uur plakken maar op kwartieren vallen. Geeft
     (open_intervals, proj) terug; `proj` blijft de geprojecteerde binnentemp *per
-    forecast-uur* (uitgelijnd op forecast_corr, voor de dashboard-grafiek)."""
+    forecast-uur* (uitgelijnd op forecast_corr, voor de dashboard-grafiek).
+
+    `currently_open`: het raam staat ook nú al open (dode band, koelte tanken, ontvochtigen
+    of frisse lucht kunnen dat laten gelden zónder dat de strikte `is_open`-drempel hierboven
+    op dit moment geldt — die kent alleen de "cool"-conditie). Zonder deze correctie begon het
+    eerste segment pas bij de eerstvolgende toekomstige drempeloverschrijding, en toonde de
+    tijdlijn een gat vóór dat moment terwijl de kamer al open stond. `currently_open` forceert
+    het allereerste (in-bereik) rasterpunt open, zodat het segment bij "nu" begint."""
     # proj: per forecast-uur (ongewijzigd — voedt de grafiek, moet op fc uitgelijnd blijven).
     proj: list = []
     for r in forecast_corr:
@@ -561,6 +568,7 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
 
     step = timedelta(minutes=PREDICT_STEP_MIN)
     t = pts[0][0]  # forecast-uur → raster valt op :00/:15/:30/:45
+    force_open_now = currently_open
     while t <= pts[-1][0]:
         h_ahead = (t - now).total_seconds() / 3600.0
         if h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
@@ -572,6 +580,9 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
         oc = _interp_out_corr(pts, t)
         ip = project_inside(inside_now, slope, max(0.0, h_ahead))
         is_open = ip > high and oc <= ip - OPEN_MARGIN
+        if force_open_now:
+            is_open = True  # kamer staat al open — laat het segment bij "nu" beginnen
+            force_open_now = False
         if is_open and cur_start is None:
             cur_start = t
         elif not is_open and cur_start is not None:
@@ -789,7 +800,8 @@ def _room_dashboard_row(room: str, rooms_data: dict, prev_room_dash: dict,
     # (drempel `low` i.p.v. `high` zodra warm_ahead) — dezelfde drempel als open_reason()
     # hieronder ziet, anders lopen de voorspelde tijden en de nu-status uit elkaar.
     open_threshold = (low if ctx["warm_ahead"] else high) + rh_off
-    intervals, proj = predict_open_intervals(ctx["fc"], inside, slope, now, open_threshold)
+    intervals, proj = predict_open_intervals(ctx["fc"], inside, slope, now, open_threshold,
+                                             currently_open=(advice == "open"))
 
     reason = open_reason(inside, od, low, high, vent_rh, humidity,
                          bank_cooling=ctx["warm_ahead"], fresh_air_ok=fresh_air_ok)

@@ -347,3 +347,21 @@ def test_predict_open_currently_open_begint_bij_nu():
                                            now=now, high=high, currently_open=True)
     assert intervals2, "verwacht een segment dat bij nu begint, niet pas bij een verre crossover"
     assert intervals2[0]["start_h"] <= 0.0
+    # Het segment moet blijven staan zolang er geen warmte-instroom is (buiten blijft
+    # koel) — niet na één rasterstap alweer dichtklappen omdat de kamer terugzakt in de
+    # dode band (dat was de eerdere, onvoldoende fix: alleen het eerste punt forceren
+    # zonder een apart blijf-open-criterium).
+    assert intervals2[0]["end_h"] > 1.0
+    assert len(intervals2) == 1
+
+
+def test_predict_open_currently_open_sluit_bij_warmte_instroom():
+    # Ook geforceerd-open moet nog gewoon sluiten zodra buiten de kamer inhaalt.
+    now = datetime(2026, 6, 10, 18, 0)
+    high = 22.0
+    fc = _fc(now, [15.0, 15.0, 25.0, 25.0])  # buiten warmt later op boven binnen
+    intervals, _ = predict_open_intervals(fc, inside_now=20.0, slope=0.0,
+                                          now=now, high=high, currently_open=True)
+    assert intervals, "verwacht een open-segment dat bij nu begint"
+    assert intervals[0]["start_h"] <= 0.0
+    assert intervals[0]["end_h"] < 3.0  # sluit ergens tussen uur +1 (15°) en +2 (25°)

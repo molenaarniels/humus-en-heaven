@@ -569,20 +569,33 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     step = timedelta(minutes=PREDICT_STEP_MIN)
     t = pts[0][0]  # forecast-uur → raster valt op :00/:15/:30/:45
     force_open_now = currently_open
+    is_open = False
     while t <= pts[-1][0]:
         h_ahead = (t - now).total_seconds() / 3600.0
         if h_ahead < -0.5 or h_ahead > PREDICT_HORIZON_H:
             if cur_start is not None and prev_t is not None:
                 _close(prev_t)
                 cur_start = None
+                is_open = False
             t += step
             continue
         oc = _interp_out_corr(pts, t)
         ip = project_inside(inside_now, slope, max(0.0, h_ahead))
-        is_open = ip > high and oc <= ip - OPEN_MARGIN
+        # Open-trigger (nieuw opent) en blijf-open-trigger (warmte-instroom sluit) zijn
+        # asymmetrisch, net als bij decide(): OPEN_MARGIN > CLOSE_MARGIN. Zonder dat
+        # onderscheid sloot een geforceerd-open segment vrijwel meteen weer zodra de
+        # binnentemp terugzakte in de dode band (open_trigger werd dan symmetrisch ook
+        # als sluit-signaal gebruikt) — precies het geval waarin `currently_open` net
+        # bedoeld is om het segment te láten staan.
+        open_trigger = ip > high and oc <= ip - OPEN_MARGIN
+        close_trigger = oc >= ip - CLOSE_MARGIN  # warmte-instroom
         if force_open_now:
             is_open = True  # kamer staat al open — laat het segment bij "nu" beginnen
             force_open_now = False
+        elif is_open:
+            is_open = not close_trigger
+        else:
+            is_open = open_trigger
         if is_open and cur_start is None:
             cur_start = t
         elif not is_open and cur_start is not None:

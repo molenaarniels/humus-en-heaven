@@ -47,10 +47,12 @@ jobs:
           GIST_TOKEN:    ${{ secrets.GIST_TOKEN }}
           WU_STATION_ID: ${{ secrets.WU_STATION_ID }}
           WU_API_KEY:    ${{ secrets.WU_API_KEY }}
-          # Voor de crash-alert (run_guarded, drempel 6 opeenvolgende fouten) —
-          # bestaande secrets, geen nieuwe.
+          # Voor de crash-alert (run_guarded, drempel 6 opeenvolgende fouten) én de
+          # anomalie-nudge ("klopt de raamstand nog?") — bestaande secrets, geen nieuwe.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Dashboardlink in de nudge (optioneel — zonder blijft het bericht linkloos).
+          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
           DRY_RUN:       ${{ inputs.dry_run && '1' || '' }}
         run: |
           git config user.name "github-actions[bot]"

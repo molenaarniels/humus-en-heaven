@@ -206,6 +206,100 @@ def test_network_node_mass_balance_multizone():
     assert max(abs(v) for v in res) < 1e-4
 
 
+# ── 3b. Wind-referentiehoogte + effectief openingsoppervlak (fysica-rev 2) ───────────
+
+def _same_facade_house() -> dict:
+    """Toy-huis met beide ramen op DEZELFDE gevel maar op verschillende hoogte — de
+    configuratie die vóór de WIND_REF_Z-fix een kunstmatige dwarsstroom-lus dreef."""
+    house = _toy_house()
+    for wid, z in (("a_win", 1.5), ("b_win", 7.1)):
+        house["windows"][wid]["facade_azimuth_deg"] = 309
+        house["windows"][wid]["center_height_m"] = z
+    return house
+
+
+def test_same_facade_wind_pressure_equal():
+    # Twee openingen op dezelfde gevel (zelfde Cp) horen dezelfde winddruk te krijgen,
+    # ongeacht hun hoogte: de dynamische druk staat op WIND_REF_Z (CONTAM: één winddruk
+    # per gevel); het hoogteverschil hoort alleen in de stack-term, niet in Pe.
+    house = _same_facade_house()
+    params = am.default_params(house)
+    zt = {"a": 22.0, "b": 22.0, "hall": 22.0}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.2, "wind_dir": 194.0}, params, zt, 22.0)
+    pe = {op["id"]: op["Pe"] for op in ops}
+    assert pe["a_win"] == pytest.approx(pe["b_win"], abs=1e-9)
+    assert pe["a_win"] != 0.0                          # er stáát wel winddruk op de gevel
+
+
+def test_same_facade_no_wind_loop_at_equal_temps():
+    # Regressie (10 juli 2026): gelijke temperaturen binnen/buiten (geen stack) + harde wind
+    # op één gevel mag GEEN doorstroom-lus raam→deur→deur→raam drijven. Vóór de fix gaf het
+    # per-opening-hoogte-machtsprofiel ΔPe ∝ wind² tussen de twee zelfde-gevel-ramen
+    # (~0.2+ m³/s door de deuren); nu is de gevel-Pe per definitie gelijk en resteert er
+    # alleen lek-schaal-ruis.
+    house = _same_facade_house()
+    zones = list(house["rooms"]) + list(house["junctions"])
+    params = am.default_params(house)
+    zt = {z: 22.0 for z in zones}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.2, "wind_dir": 39.0}, params, zt, 22.0)
+    net = am.solve_network(zones, ops, zt, 22.0)
+    door_q = {op["id"]: q for op, q in zip(ops, net["flows"])
+              if op["id"] in ("a_hall", "b_hall")}
+    assert all(abs(q) < 0.05 for q in door_q.values())
+
+
+def test_cross_facade_flow_survives():
+    # De fix mag échte dwarsventilatie (loef → lij) niet doden: tegenoverliggende gevels
+    # houden hun Cp-contrast en drijven een stevige doorstroom.
+    house = _toy_house()                                # a_win az 180, b_win az 0
+    zones = list(house["rooms"]) + list(house["junctions"])
+    params = am.default_params(house)
+    zt = {z: 22.0 for z in zones}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.0, "wind_dir": 180.0}, params, zt, 22.0)
+    net = am.solve_network(zones, ops, zt, 22.0)
+    q = {op["id"]: v for op, v in zip(ops, net["flows"]) if op["id"] in ("a_win", "b_win")}
+    assert q["a_win"] < -0.2                            # loef: instroom (negatief = binnenwaarts)
+    assert q["b_win"] > 0.2                             # lij: uitstroom
+
+
+def test_effective_open_area_casement():
+    # Een wijd open draairaam is niet het volle kozijngat: open_type "casement" → ×0.5;
+    # een expliciete per-element `eff_open_frac` overschrijft de type-default; zonder
+    # open_type (roosters, toy-ramen) verandert er niets (×1.0).
+    house = _toy_house()
+    house["windows"]["a_win"]["open_type"] = "casement"
+    params = am.default_params(house)
+    zt = {"a": 22.0, "b": 22.0, "hall": 22.0}
+    wx = {"wind_speed": 0.0, "wind_dir": 0.0}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"}, wx, params, zt, 20.0)
+    area = {op["id"]: op["area"] for op in ops}
+    assert area["a_win"] == pytest.approx(0.6 * 0.5)   # casement-korting
+    assert area["b_win"] == pytest.approx(0.5)          # geen open_type → ongewijzigd
+    house["windows"]["a_win"]["eff_open_frac"] = 0.8    # expliciete override wint
+    ops = am.build_openings(house, {"a_win": "open"}, wx, params, zt, 20.0)
+    area = {op["id"]: op["area"] for op in ops}
+    assert area["a_win"] == pytest.approx(0.6 * 0.8)
+
+
+def test_physics_rev_migration_resets_globals():
+    # Geleerde staat van een oudere fysica-revisie: alléén de globalen (die de oude
+    # zelfde-gevel-lus compenseerden) terug naar hun prior; kamer-params blijven staan.
+    house = {"rooms": {"a": {}}}
+    old = {"params": {"cp_shelter": 0.1, "vent_eff": 0.43, "a": {"c_air": 1.2}}}
+    assert am.physics_rev_migration_needed(old) is True
+    p = am.merged_params(house, old)
+    assert p["cp_shelter"] == am.PRIORS["cp_shelter"]
+    assert p["vent_eff"] == am.PRIORS["vent_eff"]
+    assert p["a"]["c_air"] == 1.2                      # kamer-params onaangeroerd
+    cur = {"params": {"cp_shelter": 0.9, "a": {"c_air": 1.2}}, "physics_rev": am.PHYSICS_REV}
+    assert am.physics_rev_migration_needed(cur) is False
+    assert am.merged_params(house, cur)["cp_shelter"] == 0.9
+    assert am.physics_rev_migration_needed({}) is False   # lege staat: niets te migreren
+
+
 # ── 4. 2-knoops RC-model ─────────────────────────────────────────────────────────────
 
 def test_rc_relaxes_to_outside_no_solar():
@@ -1069,6 +1163,93 @@ def test_reseated_checkpoint_breaks_fallback_loop():
     assert fb is False and ckpt["skill"] == 0.2 and ckpt["t"] == "u99"
 
 
+def test_accepted_fallback_reseats_skill_bar():
+    """De geaccepteerde-fallback-jojo (regressie, 9–10 juli 2026): een op één gunstig venster
+    geoogste skill-lat (0.813) blijft na een geaccepteerde fallback staan, normale vensters
+    halen 'm nooit → elke FALLBACK_AFTER runs opnieuw een fallback. Na her-vloeren ligt de lat
+    op wat de teruggezette params NU halen en degradeert dezelfde skill niet meer."""
+    best = {"living": {"c_air": 1.0}}
+    ckpt = {"params": best, "skill": 0.813, "degraded_runs": am.FALLBACK_AFTER - 1}
+    params, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 2.0}}, skill=0.47,
+                                          rmse_now=0.74, version="v1", now_iso="t1")
+    assert fb is True
+    # main() accepteert (checkpoint-params passen beter) en her-vloert de lat:
+    ckpt = am.accept_fallback_checkpoint(ckpt, skill=0.47, rmse_now=0.71, now_iso="t1")
+    assert ckpt["skill"] == 0.47 and ckpt["rmse"] == 0.71
+    assert ckpt["refloored"] == "t1"
+    assert ckpt["params"] == best                           # params blijven het checkpoint
+    assert ckpt["last_fallback"] == "t1"                     # de échte fallback blijft gestempeld
+    # Zelfde skill in de runs erna: binnen de marge → geen jojo meer.
+    for i in range(am.FALLBACK_AFTER + 2):
+        params, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 2.0}}, skill=0.47,
+                                              rmse_now=0.74, version="v1", now_iso=f"u{i}")
+        assert fb is False
+    assert ckpt["degraded_runs"] == 0
+    # Een écht beter venster legt daarna gewoon weer een nieuw optimum vast.
+    _, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 3.0}}, skill=0.60,
+                                     rmse_now=0.5, version="v1", now_iso="u99")
+    assert fb is False and ckpt["skill"] == 0.60
+
+
+def test_accept_fallback_keeps_nan_rmse_none():
+    ckpt = {"params": {"living": {"c_air": 1.0}}, "skill": 0.8, "degraded_runs": 0}
+    out = am.accept_fallback_checkpoint(ckpt, skill=None, rmse_now=float("nan"), now_iso="t2")
+    assert out["rmse"] is None and out["skill"] is None
+    assert out["refloored"] == "t2"
+    assert ckpt["skill"] == 0.8                              # input niet gemuteerd
+
+
+# ── Observability: solver-failures + kalibratiedekking ──────────────────────────────
+
+def test_simulate_flags_solver_failure(monkeypatch):
+    # Een bijna-singulier thermisch stelsel bevriest de substap stil op de laatste goede
+    # waarde — dat mág, maar moet geteld worden (learned.solver_failures) i.p.v. geruisloos.
+    house = _toy_house()
+    params = am.default_params(house)
+    tl = _const_timeline(20.0, hours=2, irr=0.0)
+    seed = {z: 22.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    ok = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert ok["solver_failures"] == 0                        # normaal: geen enkele
+    monkeypatch.setattr(am, "solve_linear", lambda A, b: None)
+    sim = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert sim["solver_failures"] > 0
+    for rid in house["rooms"]:                               # bevroren op de seed, niet NaN
+        assert sim["Ta"][rid] == pytest.approx(22.0)
+
+
+def test_should_nudge_anomaly_cooldown():
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ)
+    assert am.should_nudge_anomaly(None, now) is True                    # episode-start
+    fresh = (now - timedelta(hours=1)).isoformat()
+    assert am.should_nudge_anomaly(fresh, now) is False                  # binnen cooldown
+    old = (now - timedelta(hours=am.ANOMALY_NUDGE_COOLDOWN_H)).isoformat()
+    assert am.should_nudge_anomaly(old, now) is True                     # cooldown verstreken
+    assert am.should_nudge_anomaly("kapot", now) is True                 # onleesbare stempel
+
+
+def test_anomaly_nudge_text_contents(monkeypatch):
+    monkeypatch.delenv("DASHBOARD_URL", raising=False)
+    txt = am.anomaly_nudge_text(1.92, 0.65)
+    assert "1.92" in txt and "0.65" in txt
+    assert "raam" in txt.lower()                        # de vraag die de log herstelt
+    assert "airflow.html" not in txt                    # geen URL zonder DASHBOARD_URL
+    monkeypatch.setenv("DASHBOARD_URL", "https://x.test/dash/")
+    txt = am.anomaly_nudge_text(1.92, None)
+    assert "https://x.test/dash/airflow.html" in txt
+    assert "norm" not in txt                            # geen norm-tekst zonder baseline
+
+
+def test_calib_coverage_reports_effective_ground_truth():
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    actual = {"a": [(t0 + timedelta(hours=h), 20.0) for h in range(13)],
+              "b": [(t0, 21.0)]}
+    cov = am.calib_coverage(actual)
+    assert cov["calib_samples"] == 14 and cov["calib_rooms"] == 2
+    assert cov["calib_span_h"] == pytest.approx(12.0)
+    assert am.calib_coverage({}) == {"calib_samples": 0, "calib_rooms": 0,
+                                     "calib_span_h": 0.0}
+
+
 # ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
 def test_window_naive_baseline_is_time_bounded():
     t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)
@@ -1618,7 +1799,8 @@ def test_per_window_solar_respects_shade_state():
 
 def test_merged_params_fills_new_rooms_and_keys():
     house = {"rooms": {"a": {}, "b": {}}}
-    learned = {"params": {"cp_shelter": 0.42, "a": {"c_air": 123.0}}}
+    learned = {"params": {"cp_shelter": 0.42, "a": {"c_air": 123.0}},
+               "physics_rev": am.PHYSICS_REV}
     p = am.merged_params(house, learned)
     assert p["cp_shelter"] == 0.42                     # geleerd blijft staan
     assert p["a"]["c_air"] == 123.0
@@ -1696,7 +1878,8 @@ def test_thin_rmse_history_feeds_weekjournaal_lookback():
 
 def test_merged_params_strips_cd_fossil():
     house = {"rooms": {"a": {}}}
-    learned = {"params": {"cd": 0.30, "cp_shelter": 0.4, "a": {"c_air": 1.2}}}
+    learned = {"params": {"cd": 0.30, "cp_shelter": 0.4, "a": {"c_air": 1.2}},
+               "physics_rev": am.PHYSICS_REV}
     p = am.merged_params(house, learned)
     assert "cd" not in p                               # fossiel gestript
     assert p["cp_shelter"] == 0.4                      # geleerde waarden onaangeroerd

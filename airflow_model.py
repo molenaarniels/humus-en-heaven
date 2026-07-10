@@ -51,7 +51,7 @@ import shared_const
 from shared_const import utc_now_iso
 from gist_io import read_json as gist_read_json
 from http_util import get_json
-from notify import run_guarded
+from notify import run_guarded, send_telegram
 from wu_bias import correct_temp
 from window_advisor import (convert_rh, RH_HARD_CAP, ROOM_COMFORT,
                             fetch_wu_current_temp)
@@ -100,6 +100,10 @@ WARMUP_H       = 24.0    # uur sim-only aanloop vóór het residu-venster: de tr
                          # equilibreert zodat zijn beginwaarde geen vrije laagfrequente bias is.
                          # Drivers reiken ver genoeg terug via Open-Meteo past_days; residuen
                          # tellen alleen waar tado-samples bestaan (≤CALIB_WINDOW_H terug)
+CALIB_COVERAGE_WARN_H = 24.0   # effectieve grond-waarheid-spanwijdte (na AC-/verwarmings-/
+                               # pauze-filters) waaronder het dashboard waarschuwt: het venster
+                               # is nominaal 48u vol, maar de filters kunnen er stilletjes veel
+                               # minder van overlaten — dan leunt de fit op te weinig data
 SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabiliteit)
 SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde van de instraling:
                          # de lage avondzon draait snel door het NW-gevelvlak (cos-invalshoek-knik),
@@ -178,6 +182,17 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
     return w
 
 
+# ── Fysica-revisie ───────────────────────────────────────────────────────────────────
+# Bumpen wanneer een fysica-wijziging de betekenis van GELEERDE parameters verschuift, zodat
+# oude geleerde waarden niet stilzwijgend op de nieuwe fysica worden losgelaten. Rev 2 =
+# de wind-referentiehoogte-fix + effectief-openingsoppervlak (WIND_REF_Z/EFF_OPEN_AREA, juli
+# 2026): cp_shelter (0.10, gevloerd) en vent_eff (0.43) stonden op waarden die louter de oude
+# zelfde-gevel-lus compenseerden — onder de nieuwe fysica zijn dat fossielen. Bij een
+# rev-mismatch reset merged_params alléén die twee globalen naar hun prior (kamer-params
+# blijven staan: hun betekenis is niet verschoven) en laat main() het checkpoint + de
+# anomalie-poort van die ene run vallen (beide zijn op de oude fysica geijkt).
+PHYSICS_REV = 2
+
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
 # Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
 # opening-log, een code-deploy die de fit verslechtert, een anomaal venster — ín de opgeslagen
@@ -202,6 +217,15 @@ FALLBACK_AFTER      = 8       # zoveel opeenvolgende verslechterde runs (~2u) �
 # leren ze in een uur terugkalibreerde, en de cyclus opnieuw begon (gediagnosticeerd juli 2026).
 # Een verworpen fallback her-zetelt het checkpoint op de huidige params (reseat_checkpoint):
 # de lat ligt weer op een haalbaar niveau en een écht regressie-vangnet blijft bestaan.
+# Een GEACCEPTEERDE fallback her-vloert de lat óók (accept_fallback_checkpoint): de checkpoint-
+# params passen dan wel beter dan wat net geleerd is, maar de opgeslagen skill-lat is een
+# high-water-mark van één gunstig venster. Zonder her-vloeren blijft de lat op dat niveau staan,
+# halen normale vensters 'm structureel niet (skill is venster-afhankelijk, hoe goed de params
+# ook zijn) en wordt het leren elke ~FALLBACK_AFTER runs opnieuw naar het checkpoint teruggetrokken
+# — een permanente jojo i.p.v. een vangnet (gediagnosticeerd 9–10 juli 2026: lat 0.813 geoogst op
+# één venster, daarna 7 opeenvolgende "degraded" runs met geaccepteerde fallbacks elke ~2u). De
+# her-gevloerde lat is wat de teruggezette params op het HUIDIGE venster halen: haalbaar, en elke
+# echte verbetering zet er weer een nieuw optimum bovenop.
 
 
 def checkpoint_step(ckpt: dict, params: dict, skill: float | None,
@@ -243,6 +267,34 @@ def reseat_checkpoint(params: dict, skill, rmse_now: float, version: str, now_is
             "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
             "version": version, "t": now_iso, "degraded_runs": 0,
             "last_fallback": last_fallback, "reseated": now_iso}
+
+
+def accept_fallback_checkpoint(ckpt: dict, skill, rmse_now: float, now_iso: str) -> dict:
+    """Her-vloer de skill-lat na een GEACCEPTEERDE fallback: de checkpoint-params blijven staan
+    (die zijn zojuist teruggezet en passen aantoonbaar beter), maar de opgeslagen skill/rmse
+    worden wat die params op het HUIDIGE venster halen. De oude lat was een high-water-mark van
+    één gunstig venster; onaangepast blijft elke normale run "degraded" en jojo't het leren elke
+    ~FALLBACK_AFTER runs terug naar het checkpoint (zie de toelichting bij FALLBACK_AFTER).
+    `refloored` stempelt dit (additief) zodat het op het dashboard te onderscheiden is van een
+    gewoon nieuw optimum of een her-zeteling na een verworpen fallback."""
+    ckpt = dict(ckpt or {})
+    ckpt["skill"] = skill
+    ckpt["rmse"] = round(rmse_now, 3) if rmse_now == rmse_now else None
+    ckpt["refloored"] = now_iso
+    return ckpt
+
+
+def calib_coverage(actual: dict) -> dict:
+    """Effectieve grond-waarheid-dekking van deze kalibratierun: hoeveel tado-samples, over
+    hoeveel kamers, en welke tijdspanne — gemeten NA de AC-/verwarmings-/pauze-filters. Het
+    venster is nominaal CALIB_WINDOW_H vol, maar de filters kunnen er stilletjes veel minder
+    van overlaten (winter: veel gestookte samples); dan leunt de fit op weinig data en hoort
+    het dashboard dat te tonen (drempel CALIB_COVERAGE_WARN_H)."""
+    ts = [t for s in (actual or {}).values() for t, _ in s]
+    span_h = (max(ts) - min(ts)).total_seconds() / 3600.0 if len(ts) >= 2 else 0.0
+    return {"calib_samples": sum(len(s) for s in (actual or {}).values()),
+            "calib_rooms": len(actual or {}),
+            "calib_span_h": round(span_h, 1)}
 
 
 def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dict:
@@ -341,6 +393,45 @@ ANOMALY_FACTOR      = 2.2   # fout > dit × de mediane recente RMSE → leren pa
 ANOMALY_FLOOR       = 1.5   # °C — pauzeer nooit op kleine ruis; pas boven deze absolute fout
 ANOMALY_BASE_N      = 48    # mediaan over de laatste zoveel RMSE-punten = de norm
 HUBER_DELTA         = 1.5   # °C — residuen hierboven worden lineair (i.p.v. kwadratisch) gewogen
+# De anomalie-poort pauzeerde het leren wél, maar niemand hoorde het: de dashboard-banner is
+# er alleen voor wie toevallig kijkt, dus een niet-gemelde raamwijziging kon dágen fout blijven
+# staan terwijl de tweeling op de verkeerde aanname doorvoorspelde (assessment 10 juli 2026,
+# besluit gebruiker: nudge toegevoegd). Daarom gaat er bij een anomalie-pauze een Telegram-nudge
+# naar de privé-chat ("klopt de raamstand nog?"). Cooldown-gedrag: één nudge per episode-start,
+# hooguit elke ANOMALY_NUDGE_COOLDOWN_H herhaald zolang de anomalie aanhoudt; herstelt het leren,
+# dan wordt de stempel gewist zodat een vólgende episode meteen weer nudget. De handmatige
+# huis-brede pauze nudget bewust níét (die is zelf gekozen — je weet het al). Stempel
+# `anomaly_nudge_at` leeft in airflow_learned.json (additief; de artefact-commit is de state).
+ANOMALY_NUDGE_COOLDOWN_H = 6.0
+
+
+def should_nudge_anomaly(last_nudge_iso: str | None, now: datetime) -> bool:
+    """Mag er nu een anomalie-nudge uit? True bij geen (of onleesbare) eerdere stempel,
+    of wanneer de cooldown verstreken is. Puur — de aanroeper beslist óf er een anomalie is."""
+    if not last_nudge_iso:
+        return True
+    try:
+        last = datetime.fromisoformat(last_nudge_iso)
+    except (ValueError, TypeError):
+        return True
+    return (now - last) >= timedelta(hours=ANOMALY_NUDGE_COOLDOWN_H)
+
+
+def anomaly_nudge_text(rmse_cur: float, baseline: float | None) -> str:
+    """Het nudge-bericht: fout vs norm + de vraag die de datakwaliteit herstelt. HTML-parse
+    (send_telegram-default); dashboardlink alleen als DASHBOARD_URL gezet is."""
+    norm = f" (norm ~{baseline:.2f}°C)" if baseline is not None else ""
+    lines = [
+        "🧭 <b>Tweeling: leren gepauzeerd</b> — voorspelfout anomaal hoog: "
+        f"<b>{rmse_cur:.2f}°C</b>{norm}.",
+        "Waarschijnlijk staat er een raam/rooster/deur anders dan gemeld. "
+        "Klopt de raamstand nog? Meld de werkelijke standen (desnoods teruggedateerd) "
+        "in de dashboard-modal — de leercurve herstelt zich dan automatisch.",
+    ]
+    dash = os.getenv("DASHBOARD_URL")
+    if dash:
+        lines += [f'<a href="{dash.rstrip("/")}/airflow.html">→ Open het tweeling-dashboard</a>']
+    return "\n".join(lines)
 
 
 def learning_baseline(history: list[dict]) -> float | None:
@@ -648,6 +739,37 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Wind — Cp-druk per gevel
 # ════════════════════════════════════════════════════════════════════════════════════
+
+# Referentiehoogte (m) voor de wind-dynamische druk: de nokhoogte (≈ het trap-skylight, 8.7 m).
+# Surface-averaged Cp-tabellen zijn genormaliseerd op ÉÉN referentie-winddruk op gebouwhoogte —
+# CONTAM/AIRNET rekenen dan ook één winddruk per gevel. De oude code evalueerde het power-law-
+# profiel op de hoogte van élke opening afzonderlijk, waardoor twee openingen op DEZELFDE gevel
+# (zelfde Cp) een ΔPe ∝ wind² kregen puur uit hun hoogteverschil: een kunstmatige dwarsstroom-lus
+# hotties-raam → koker → kantoor-raam van ~0.27 m³/s bij 3 m/s (~27 ACH; 0.57 bij 6.2 m/s — de
+# "ACH 50" uit de juli-assessments). De kalibratie vocht daar alleen maar tegen: cp_shelter op
+# zijn vloer (0.10) en vent_eff omlaag om de valse instroom thermisch te dempen — en de tweeling
+# blies intussen warme buitenlucht in hotties (de +3°C-fout van 10 juli). Motor van de fix: de
+# dynamische druk op één referentiehoogte per gevel; het hóógteverschil blijft wél meedoen in de
+# stack-term (Pa_eff = P − ρ·g·z), die fysisch echt is. Gediagnosticeerd + gekwantificeerd in de
+# assessment van 10 juli 2026 (zie AIRFLOW_ASSESSMENT.md).
+WIND_REF_Z = 8.7
+
+# Effectief-openingsoppervlak per openings-type (fractie van max_open_area_m2 die aerodynamisch
+# meedoet, bovenop de vaste Cd). Een wijd open draairaam is zelden het volle kozijngat: de
+# openstaande vleugel staat in de stroombaan en de contractie is sterker dan het kale Cd-getal
+# (metingen op zij-/onderhangende ramen: effectieve Cd·A grofweg 30–60% van het kozijngat; met
+# CD 0.62 → factor 0.5 ≈ effectief 0.31·A, midden in die band). Een (buiten)deur opent vrijwel
+# vol (0.9); een kiepraam-stand zit al in `tilt_frac`, dus daar géén extra korting (1.0).
+# Per element te overschrijven met `eff_open_frac` in house_model.json (additief).
+EFF_OPEN_AREA = {"casement": 0.5, "door": 0.9, "tilt": 1.0}
+
+
+def _eff_open_area(elem: dict) -> float:
+    """Effectief-oppervlak-factor voor een exterieure opening: expliciete `eff_open_frac`
+    van het element, anders de `open_type`-default uit EFF_OPEN_AREA, anders 1.0 (roosters
+    e.d.: hun doorsnede ís al het effectieve gat)."""
+    return float(elem.get("eff_open_frac", EFF_OPEN_AREA.get(elem.get("open_type"), 1.0)))
+
 
 def cp_coefficient(theta_deg: float) -> float:
     """Surface-averaged druk-coëfficiënt voor een verticale laagbouwgevel als functie
@@ -1186,11 +1308,14 @@ def build_openings(house: dict, states: dict, weather: dict, params: dict,
 
     def ext(elem_id, elem, kind):
         frac = _open_frac(states[elem_id], elem) if elem_id in states else _default_frac(elem, kind)
-        area = frac * elem.get("max_open_area_m2", elem.get("area_m2", 0.0))
+        area = frac * elem.get("max_open_area_m2", elem.get("area_m2", 0.0)) * _eff_open_area(elem)
         if area <= 0:
             return
+        # Dynamische druk op WIND_REF_Z (één referentie-winddruk per gevel, CONTAM-conventie) —
+        # het element-hoogteverschil doet alleen mee in de stack-term via `z` hieronder. Zie de
+        # toelichting bij WIND_REF_Z: per-opening-hoogte gaf een kunstmatige zelfde-gevel-lus.
         pe = wind_pressure(elem.get("facade_azimuth_deg", 0.0),
-                           elem.get("center_height_m", 1.5), wind_s, wind_d, shelter, rho_out,
+                           WIND_REF_Z, wind_s, wind_d, shelter, rho_out,
                            elem.get("tilt_deg", 90.0))
         ops.append({"a": elem["room"], "b": "outside", "area": area, "Cd": cd,
                     "z": elem.get("center_height_m", 1.5), "Pe": pe, "id": elem_id})
@@ -1399,6 +1524,7 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     zi = {z: k for k, z in enumerate(zones)}
     P_warm = None
     Ta_snap = Tm_snap = None
+    solver_failures = 0   # bijna-singuliere thermische stelsels (zie de substap-break hieronder)
 
     for step in timeline:
         T_out = step["T_out"]
@@ -1505,6 +1631,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 b[2 * ks] -= val
             x = solve_linear(A, b)
             if x is None:
+                # Bijna-singulier thermisch stelsel: Ta/Tm bevriezen deze stap op hun laatste
+                # goede waarde. Dat is de juiste noodgreep, maar mag niet stil blijven — de
+                # teller wordt gepubliceerd (learned.solver_failures) zodat een structureel
+                # conditioneringsprobleem zichtbaar is i.p.v. een geruisloos bevroren curve.
+                solver_failures += 1
                 break
             for z in zones:
                 k = zi[z]
@@ -1516,7 +1647,8 @@ def simulate(house: dict, params: dict, timeline: list[dict],
             Ta_snap, Tm_snap = dict(Ta), dict(Tm)
     return {"series": out, "Ta": dict(Ta), "Tm": dict(Tm),
             "Ta_now": Ta_snap if Ta_snap is not None else dict(Ta),
-            "Tm_now": Tm_snap if Tm_snap is not None else dict(Tm)}
+            "Tm_now": Tm_snap if Tm_snap is not None else dict(Tm),
+            "solver_failures": solver_failures}
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -2124,6 +2256,12 @@ def default_params(house: dict) -> dict:
     return p
 
 
+def physics_rev_migration_needed(learned: dict) -> bool:
+    """Is er geleerde staat van een oudere fysica-revisie? (Een lege/nieuwe staat hoeft
+    niets te migreren — de defaults zijn al de priors.)"""
+    return bool(learned.get("params")) and learned.get("physics_rev") != PHYSICS_REV
+
+
 def merged_params(house: dict, learned: dict) -> dict:
     """Geleerde params aangevuld met priors voor nieuwe kamers/keys (additief, robuust).
     Gedeeld door main() en night_forecast.py zodat de merge-logica niet dubbel bestaat."""
@@ -2132,6 +2270,12 @@ def merged_params(house: dict, learned: dict) -> dict:
     # niets leest params["cd"] — strip 'm hier zodat hij niet eeuwig in de artefacten meerijdt.
     params.pop("cd", None)
     base = default_params(house)
+    # Fysica-revisie-migratie (zie PHYSICS_REV): geleerde staat van een oudere revisie →
+    # alleen de globalen terug naar hun prior. Hier (en niet alleen in main) zodat óók
+    # night_forecast.py nooit oude-fysica-globalen op de nieuwe fysica loslaat.
+    if physics_rev_migration_needed(learned):
+        for g in GLOBAL_PARAMS:
+            params[g] = base[g]
     for g in GLOBAL_PARAMS:
         params.setdefault(g, base[g])
     for rid in house.get("rooms", {}):
@@ -2571,11 +2715,18 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     "skill": skill,
                     "rmse_history": rmse_hist, "held": bool(learning_held),
                     "paused": bool(paused_now),
+                    # Observability (additief): bijna-singuliere thermische substappen deze
+                    # sim + de effectieve grond-waarheid-dekking na de filters (zie
+                    # calib_coverage) met de waarschuwingsdrempel voor het dashboard.
+                    "solver_failures": sim.get("solver_failures", 0),
+                    **calib_coverage(actual),
+                    "calib_coverage_warn_h": CALIB_COVERAGE_WARN_H,
                     "baseline_rmse": round(baseline, 3) if baseline is not None else None,
                     "wx": wx or None,
                     "checkpoint": {k: (checkpoint or {}).get(k)
                                    for k in ("skill", "rmse", "version", "t",
-                                             "degraded_runs", "last_fallback", "reseated")}
+                                             "degraded_runs", "last_fallback", "reseated",
+                                             "refloored")}
                     if checkpoint else None,
                     "fell_back": bool(fell_back)},
         # Volledige geometrie (additief) zodat de browser-speeltuin (airflow.html) hetzelfde
@@ -2597,11 +2748,15 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                               "max_open_area_m2": w.get("max_open_area_m2", 0.0),
                               "center_height_m": w.get("center_height_m"),
                               "tilt_frac": w.get("tilt_frac"), "tilt_deg": w.get("tilt_deg"),
+                              # Opgelost effectief-oppervlak (open_type/override) voor de
+                              # JS-speeltuin, zodat die dezelfde korting rekent (additief).
+                              "eff_open_frac": _eff_open_area(w),
                               "plan_side": w.get("plan_side"), "plan_pos": w.get("plan_pos"),
                               "label": w.get("label", wid)}
                         for wid, w in house.get("windows", {}).items()},
             "vents": {vid: {"room": v.get("room"), "facade_azimuth_deg": v.get("facade_azimuth_deg"),
                             "area_m2": v.get("area_m2"), "max_open_area_m2": v.get("max_open_area_m2"),
+                            "eff_open_frac": _eff_open_area(v),
                             "center_height_m": v.get("center_height_m"),
                             "default_state": v.get("default_state", "open"),
                             "plan_side": v.get("plan_side"), "plan_pos": v.get("plan_pos"),
@@ -2613,7 +2768,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                             "plan_pos": d.get("plan_pos"),
                             "fixed": bool(d.get("fixed"))}
                       for did, d in house.get("doors", {}).items()},
-            "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM},
+            "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM, "wind_ref_z": WIND_REF_Z},
         },
     }
 
@@ -2760,6 +2915,17 @@ def main():
     print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C")
 
     learned = load_learned()
+    # Fysica-revisie-migratie (zie PHYSICS_REV): merged_params reset de globalen; hier vervalt
+    # daarnaast het checkpoint (params + skill-lat zijn op de oude fysica geoogst — een fossiel
+    # per definitie) en wordt de anomalie-poort deze ene run overgeslagen (haar RMSE-norm komt
+    # uit de oude-fysica-leercurve).
+    physics_migrated = physics_rev_migration_needed(learned)
+    if physics_migrated:
+        learned = dict(learned)
+        learned.pop("checkpoint", None)
+        print(f"[fysica] revisie {learned.get('physics_rev', 1)} → {PHYSICS_REV}: "
+              "cp_shelter/vent_eff terug naar hun prior, checkpoint vervallen, "
+              "anomalie-poort deze run overgeslagen.")
     params = merged_params(house, learned)
 
     since = now - _timedelta_h(CALIB_WINDOW_H)
@@ -2829,6 +2995,7 @@ def main():
     rmse_now = float("nan")
     learning_held = False
     baseline = None
+    anomaly_nudge_at = learned.get("anomaly_nudge_at")   # zie ANOMALY_NUDGE_COOLDOWN_H
     if actual:
         print(f"[leren] {sum(len(v) for v in actual.values())} samples over "
               f"{len(actual)} kamers in het venster.")
@@ -2836,7 +3003,13 @@ def main():
         # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
         # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
         rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
-        anomaly_held, baseline = should_hold_learning(rmse_cur, learned.get("rmse_history", []))
+        if physics_migrated:
+            # De anomalie-norm komt uit de oude-fysica-leercurve; met net gereset-globalen zou
+            # een vals "anomaal" de éérste leer-run op de nieuwe fysica blokkeren.
+            anomaly_held, baseline = False, None
+        else:
+            anomaly_held, baseline = should_hold_learning(rmse_cur,
+                                                          learned.get("rmse_history", []))
         learning_held = anomaly_held or paused_now
         if learning_held:
             rmse_now = rmse_cur
@@ -2847,6 +3020,16 @@ def main():
                 print(f"[leren] fout anomaal hoog ({rmse_cur:.2f}°C vs norm {baseline:.2f}°C) → "
                       "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
                       "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
+                # Nudge naar de privé-chat: de poort beschermt de fysica, maar alleen een
+                # mens kan de log corrigeren — en die moet het dan wel hóren. Cooldown +
+                # episode-reset: zie ANOMALY_NUDGE_COOLDOWN_H. send_telegram raist nooit.
+                if should_nudge_anomaly(anomaly_nudge_at, now):
+                    msg = anomaly_nudge_text(rmse_cur, baseline)
+                    if os.getenv("DRY_RUN") == "1":
+                        print(f"[nudge] DRY_RUN — zou sturen:\n{msg}")
+                    else:
+                        send_telegram(msg)
+                    anomaly_nudge_at = now.isoformat()
         else:
             params, rmse_now = calibrate(house, params, timeline, seed, actual,
                                          solar_mean=wx_summary.get("solar_mean"))
@@ -2854,6 +3037,8 @@ def main():
             rails = railed_params(params)
             if rails:
                 print(f"[saturatie] params op hun grens: {', '.join(rails)}")
+        if not anomaly_held:
+            anomaly_nudge_at = None   # episode voorbij → een vólgende anomalie nudget meteen
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
     # Defensief: als het héle kalibratievenster gepauzeerd was, kan `actual` volledig leeg zijn
@@ -2890,8 +3075,13 @@ def main():
             if rmse_fb == rmse_fb and rmse_fb <= rmse_now:
                 rmse_now = rmse_fb
                 skill = skill_score(rmse_now, rmse_baseline)
+                # Her-vloer de skill-lat op wat de teruggezette params NU halen — anders blijft
+                # de oude high-water-mark staan en jojo't het leren hier elke ~FALLBACK_AFTER
+                # runs opnieuw naartoe (zie accept_fallback_checkpoint).
+                ckpt = accept_fallback_checkpoint(ckpt, skill, rmse_now, now.isoformat())
                 print(f"[checkpoint] {FALLBACK_AFTER} runs verslechterd → teruggevallen op de "
-                      f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}).")
+                      f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}; "
+                      f"skill-lat her-gevloerd).")
             else:
                 params = learned_params
                 fell_back = False
@@ -2908,6 +3098,9 @@ def main():
     sim = simulate(house, params, timeline, seed,
                    calib_only_rooms=set(house.get("rooms", {}).keys()),
                    snapshot_t=now)
+    if sim.get("solver_failures"):
+        print(f"[sim] {sim['solver_failures']} substap(pen) met een bijna-singulier thermisch "
+              "stelsel — Ta/Tm die stap bevroren (zie learned.solver_failures).")
 
     # Passieve suggestie op basis van nú.
     cur = weather["current"]
@@ -2934,6 +3127,9 @@ def main():
         json.dump(dash, f, ensure_ascii=False, indent=2)
     with open(LEARNED_FILE, "w", encoding="utf-8") as f:
         json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
+                   "physics_rev": PHYSICS_REV,   # zie PHYSICS_REV: poort voor de globalen-migratie
+                   # Cooldown-stempel van de anomalie-nudge (additief; None buiten een episode).
+                   "anomaly_nudge_at": anomaly_nudge_at,
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "railed": railed_params(params),   # saturatie-tell (additief, diagnostisch)

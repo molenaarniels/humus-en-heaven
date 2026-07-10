@@ -1,178 +1,183 @@
-# Ventilatie-tweeling (Project 8) — assessment juli 2026
+# Ventilatie-tweeling (Project 8) — assessment juli 2026 (derde)
 
-_Datum: 2026-07-07. Tweede assessment — opvolger van de assessment van 19 juni (commit
-`62d84c59`; de kernbevindingen daarvan staan hieronder in §3 met hun status). Databron: de
-gecommitte artefacten `docs/airflow_learned.json` (240-punts leercurve + params + checkpoint,
-stand 2026-07-07 14:00 lokaal) en `docs/airflow_data.json`, gekruist met de kalibratiecode in
-`airflow_model.py`. Reproduceerbaar met `python tools/airflow_diagnostics.py`._
+_Datum: 2026-07-10. Derde assessment — opvolger van 7 juli (`62d84c59`-lijn; kernbevindingen
+hieronder in §3 met status) en 19 juni. Databron: `docs/airflow_learned.json` (248-punts
+leercurve, stand 10 jul 13:15 lokaal), `docs/airflow_data.json`, `tools/airflow_diagnostics.py`,
+gekruist met de code. Anders dan de vorige twee assessments **levert deze ook meteen fixes mee**
+(zelfde branch): de wind-referentiehoogte-fix + effectief-openingsoppervlak (fysica-rev 2), de
+checkpoint-her-vloering, en observability/dashboard-eerlijkheid — zie §5._
 
-**Oordeel in één alinea.** De twin is sinds juni fundamenteel gezonder geworden. De
-juni-hoofdvondst — een systematische +1…+2 °C warm-bias die monotoon met de hitte groeide — is
-op het waargenomen weer **opgelost en zelfs omgekeerd**: warme dagen fitten nu het best
-(RMSE ≈ 0.41 °C), de leercurve convergeerde in drie dagen van 1.0 naar ~0.41 °C en de
-stabiliteitsmechanieken (checkpoint, backfill, pauze, verwarmings-/AC-filter) doen aantoonbaar
-hun werk. Wat overblijft is structureel en goed gelokaliseerd: de woonkamer-zonpad (enige kamer
-met een echte residu-bias, `solar_gain` op zijn vloer), een dag-nacht-amplitudefout (±0.4 °C
-te koud bij dageraad, te warm rond de middag), en het al in juni gemarkeerde
-luchtstroom-magnitude-probleem (`cp_shelter` op de vloer, ACH ~50 in de bovenkamers). De échte
-hittegolf-validatie moet nog komen — het venster zag maximaal ~28–29 °C.
+**Oordeel in één alinea.** De 7-juli-conclusie "de twin is fundamenteel gezonder" hield één dag
+stand: de warm-weer-fixes van juni bléven werken (warme zonnige uren fitten nu het bést), maar
+zodra het venster dynamischer werd dreef de fout van het optimum ~0.38–0.43 terug naar
+0.60–0.79 °C en kwam er een nieuw mechanisch defect bloot: een **checkpoint-jojo** (skill-lat
+0.813 geoogst op één gunstig venster; 7 opeenvolgende geaccepteerde fallbacks trokken het leren
+elke ~2u terug). Belangrijker: het al in juni gemarkeerde "luchtstroom-magnitude-probleem" bleek
+**geen cosmetica maar de #1 thermische fout** — een modelleerfout in de winddruk (dynamische druk
+op per-opening-hoogte i.p.v. één referentiedruk per gevel, tegen de CONTAM-conventie in) dreef
+een kunstmatige zelfde-gevel-lus van ~27 ACH die warme buitenlucht in hotties blies (+3.0 °C
+nu-fout) en cp_shelter/vent_eff/solar_gain collectief in de vloer-rails drukte. Beide defecten
+zijn in deze branch gefixt; de her-convergentie (uren) en de zonpad-herkalibratie (daarna) zijn
+het vervolg.
 
 ---
 
-## 1. Wat er sinds 19 juni is gebeurd
+## 1. Wat er sinds 7 juli is gebeurd
 
-Een dichte wijzigingsgolf (16 verschillende `model_version`-stempels in de huidige 3-daagse
-leercurve alleen al):
-
-- **Fysica**: trappenhuis-stratificatie (zelfijkende verticale gradiënt uit de kamer-proxies),
-  Brown–Solvason-deur-tegenstroom (koker gepind aan zijn open-deur-kamers), zonnekroon,
-  pin-error-diagnostiek.
-- **Kalibratie-hygiëne**: tado-verwarmingsstatus ingelezen en gestookte samples automatisch
-  uit de fit; huis-brede pauzeknop; badkamer (`Shower`-sensor) gepromoveerd tot gekalibreerde
-  kamer; checkpoint-fallback-lus gerepareerd (werkelijkheids-check + her-zeteling); leercurve-
-  churn gerepareerd (backfill alleen nog bij échte log-wijziging, vingerafdruk-poort).
-- **Robuustheid**: `suggest()` overleeft een None-kamertemp (6×-crash op 3 jul), Ted-nachtkoeling
-  in de nachtvoorspelling gefixt.
-- **Consumenten**: drie nieuwe pipelines lezen de twin read-only (zonwering-adviseur,
-  Teds nachtvoorspelling, weekjournaal) — de twin is nu infrastructuur, niet alleen dashboard.
+- **De (milde) hittegolf-validatie kwam er** — het venster zag tot ~29 °C. De juni-fixes
+  hielden: post-convergentie fitten warme/zonnige uren het bést (laatste 48u:
+  r(RMSE↔dag-max) = **−0.62**, r(RMSE↔zon) = −0.32). De >30 °C-stresstest staat nog uit.
+- **De leercurve dreef terug omhoog**: optimum 0.38–0.43 (6–7 jul) → 0.60–0.79 (8–10 jul),
+  actueel **0.741 °C** (skill 0.47, naive 1.41). Grotendeels absolute-foutgroei in dynamischer
+  weer (skill hield ~0.5), maar wél boven het checkpoint (0.673) — zie de jojo in §4.1.
+- **De modelcode zelf was bevroren** (1 commit in de laatste 200): de drift is leerner + weer
+  op vaste fysica, geen code-churn.
+- De stabiliteitsmachinerie deed intussen zijn werk: de pauze van 6 jul netjes buiten het leren,
+  vingerafdruk-poort stil (`recomputed` 0), geen AC-/verwarmings-contaminatie.
 
 ## 2. Hoe goed werkt hij nu
 
-**De leercurve convergeert snel en het plateau ligt ruim onder de juni-niveaus.**
-
-| dag | punten | RMSE (gem) | skill (gem) |
+| moment | RMSE | skill | context |
 |---|---|---|---|
-| 4 jul | 43 | 1.007 | 0.21 |
-| 5 jul | 74 | 0.630 | 0.38 |
-| 6 jul | 72 | 0.430 | 0.50 |
-| 7 jul | 51 | **0.413** | **0.62** |
+| 4 jul 13:45 | 0.975 | 0.03 | start leercurve |
+| 6 jul 15:45 | **0.381** | — | all-time minimum (makkelijk venster) |
+| 7 jul (gem) | 0.413 | 0.62 | het 7-juli-assessment-plateau |
+| 9 jul 00:00 | 0.788 | 0.58 | recente piek |
+| 10 jul 13:15 | 0.741 | 0.47 | actueel; checkpoint 0.673/0.813 |
 
-- Actueel: RMSE **0.431 °C**, skill **0.55** (persistentie-RMSE 0.96 → hij is ruim 2× beter dan
-  "straks = nu"). Checkpoint-optimum: RMSE **0.398** / skill **0.684** (7 jul 03:15,
-  `degraded_runs` 0). Ter vergelijking: juni scoorde 0.49–0.66 op milde dagen en 1.08–1.28 in de
-  hittegolf.
-- **Per kamer** (venster ≈ laatste 48u; bias = voorspeld − werkelijk):
+**Per kamer** (laatste ~48u; bias = voorspeld − werkelijk):
 
-| kamer | bias (gem) | RMSE | nu-fout | opmerking |
+| kamer | nu-fout | bias (gem) | RMSE | opmerking |
 |---|---|---|---|---|
-| living | **+0.37** | 0.47 | +0.13 | enige kamer met echte bias — zie §4.1 |
-| ted | −0.01 | 0.26 | +0.49 | |
-| hotties | +0.05 | 0.50 | +0.58 | |
-| office | 0.00 | 0.58 | +0.62 | |
-| bath | +0.02 | **0.24** | +0.40 | nieuw gekalibreerd; direct de beste fit |
-| stair | — | — | — | sensorloos; gradiënt 0.21 °C/m, pin-fouten 0.08–0.51 |
+| bath | +0.13 | −0.16 | **0.28** | beste fit |
+| ted | +0.63 | +0.31 | 0.52 | |
+| living | −0.79 | −0.16 | 0.54 | juli-7-bias (+0.37) weggetraind, nu iets te koud |
+| office | +1.47 | −0.26 | 0.94 | dag-nacht-slinger: nacht −1.2, namiddag +0.8 |
+| hotties | **+2.98** | **+0.96** | **1.11** | structureel te warm, hele dag — zie §4.2 |
+| stair | — | — | — | sensorloos; gradiënt 0.29 °C/m, top 28.1/onder 23.6 |
 
-- **De stabiliteitsmachinerie werkt.** In 240 punten: 5× `fell_back`, alle vóór 5 jul 21:45 —
-  daarna geen enkele (de fallback-lus-fix houdt); `recomputed` 0 (de vingerafdruk-poort houdt de
-  backfill stil zonder log-correctie); 21 punten gepauzeerd (6 jul 10:45–15:45) netjes buiten het
-  leren gehouden; geen AC- of verwarmings-contaminatie in de huidige snapshot.
-- **Ops**: pipeline live op kwartiercadans, 100 tests op de module, echte huisgeometrie.
+**Uur-van-de-dag-bias (alle kamers):** dageraad −0.17 (05u), namiddag +0.43…+0.47 (16–18u) —
+de dag-nacht-amplitudefout van 7 juli (§4.2 dáár) staat er nog, iets verschoven naar de avond.
 
-## 3. Status van de juni-bevindingen
+## 3. Status van de 7-juli-bevindingen
 
-**3.1 Hete-dag-warm-bias — OPGELOST op het waargenomen weer, en omgekeerd.** Juni mat
-r = **+0.69** tussen RMSE en dag-max (fout groeit met hitte). Nu, ná convergentie
-(6–7 jul, niet-held, n=102):
+**3.1 Woonkamer-zonpad — verschoven, niet opgelost.** `living.solar_gain` staat nog op de
+vloer (0.25) maar de +0.37-bias is weggetraind (nu −0.16 gem). Het onderliggende
+zon-magnitude-probleem is echter **geëscaleerd**: zie §4.3.
 
-| dag-max (°C) | n | RMSE (gem) | skill (gem) |
-|---|---|---|---|
-| ≤25 | 25 | 0.466 | 0.74 |
-| 25–28 | 73 | **0.411** | 0.58 |
-| >28 | 4 | **0.406** | 0.49 |
+**3.2 Dag-nacht-amplitudefout — blijft.** Zelfde slinger (nacht te koud, middag/namiddag te
+warm), nu het duidelijkst in office (−1.2 om 01u, +0.8 om 16u). Verdachten onveranderd
+(`ROOF_SKY_COOLING`, massaknoop-identificeerbaarheid, koppeling met de zon-overdrive).
 
-Correlatie RMSE ↔ zon-gemiddelde post-convergentie: r = **−0.52** — warme, zonnige uren fitten
-nu het bést. (Let op: over de vólle 3-daagse curve staat r = +0.76, maar dat is een
-leerfase-confound — de koele dagen vallen samen met de nog-niet-geconvergeerde start. De
-juni-meting had die confound niet.) De regime-bewuste ridge, recency-weging, leerbare `f_air` en
-WU-zon-herschaling hebben gedaan waarvoor ze zijn gebouwd. **Kanttekening:** het venster zag
-maximaal ~28–29 °C (n=4 boven 28) — de échte hittegolf-stresstest staat nog uit.
+**3.3 Luchtstroom-magnitude — WORTELOORZAAK GEVONDEN + GEFIXT (deze branch).** De 7-juli-tekst
+("de thermische voorspelling is er ondanks dit goed") bleek achterhaald: met hotties- én
+office-raam open rekende het netwerk een 0.24 m³/s-lus (27 ACH) ín hotties, dóór de koker, úít
+office — **beide ramen op dezelfde NW-gevel bij 3 m/s wind**. Oorzaak gekwantificeerd: het
+power-law-windprofiel werd op de hoogte van élke opening afzonderlijk geëvalueerd, zodat twee
+zelfde-gevel-openingen een ΔPe ∝ wind² kregen puur uit hun hoogteverschil — surface-averaged
+Cp-tabellen zijn juist genormaliseerd op één referentiedruk per gevel (CONTAM/AIRNET). De
+kalibratie vocht alleen maar tegen dit artefact: `cp_shelter` op de vloer (0.10), `vent_eff`
+0.43, en de tweeling blies intussen 24°-buitenlucht in hotties (gemeten 21.7°, voorspeld 24.7°).
+Fix: `WIND_REF_Z` 8.7 m (dynamische druk op nokhoogte; hoogteverschil blijft in de stack-term)
++ `EFF_OPEN_AREA` per openings-type (een wijd open draairaam ≠ het volle kozijngat; casement
+×0.5). Gemeten op het echte huis: lus 0.24 → 0.02 m³/s, hotties-ACH 27 → ~3, windongevoelig
+(zuivere stack-rest). Migratie via `PHYSICS_REV` 2: alleen cp_shelter/vent_eff terug naar prior,
+checkpoint vervalt, anomalie-poort één run overgeslagen.
 
-**3.2 De saturatie-golf — grotendeels opgelost.** Juni telde rails op ~elk warmte-in-kanaal
-in ~elke kamer (`q_int` op 0.0 in ted+hotties, `f_air` op de vloer in hotties+office,
-`ua_env` op de vloer in hotties, `solar_gain` op de vloer in living+ted). Nu resteren er **4**
-(zie §4) en zijn ted/hotties/office van hun zon- en q_int-vloeren losgekomen.
+**3.4 Kleinere defecten van toen — allemaal gedaan** (verified): leercurve-venster
+(`RMSE_HISTORY_KEEP` 1000/10d + uurcadans-uitdunning), `cd`-fossiel-strip, post-convergentie-
+filter in de diagnostiek, AUDIT R8 (NaN-guard + in-solver clamp — stond nog ten onrechte op
+"Open", nu geflipt).
 
-**3.3 `cp_shelter`/wind-koppel — NOG OPEN.** In juni als vervolgonderzoek gemarkeerd; staat nog
-steeds op zijn vloer (0.10) en het probleem is nu beter zichtbaar (§4.3).
+## 4. Wat nu niet goed werkt (nieuwe bevindingen)
 
-**3.4 Nachtventilatie-nudge — blijft gedeprioriteerd.** De bias-per-uur toont geen
-vroege-ochtend-píek maar juist een dip (§4.2) — geen aanwijzing voor niet-gemelde nachtventilatie.
+**4.1 Checkpoint-jojo — GEFIXT (deze branch).** De skill-lat is een high-water-mark: 0.813
+geoogst op één informatief venster (9 jul 16:29). Normale vensters halen dat structureel niet
+(skill is venster-afhankelijk), dus elke ~2u: 8 "degraded" runs → fallback → werkelijkheids-
+check accepteert (de checkpoint-params pásten ook echt beter) → params teruggezet → **maar de
+lat bleef op 0.813** → teller loopt meteen weer op. Zeven geaccepteerde fallbacks op 9–10 jul.
+De reality-check-fix van begin juli ving alleen de vérworpen tak af. Fix:
+`accept_fallback_checkpoint` her-vloert de lat na een geaccepteerde fallback op wat de
+teruggezette params op het huidige venster halen (`refloored`-stempel).
 
-## 4. Wat nu niet goed werkt
+**4.2 hotties is de structureel slechtste kamer** (+0.96 gem, +3.0 nu): grotendeels de valse
+instroom-lus van §3.3 (fix moet dit dempen — hét validatiepunt van de komende dagen), maar
+hotties was ook vóór de lus de meest rail-verzadigde kamer (solar_gain, h_am, q_int én f_air
+op de vloer). Restverdenking: de geometrie-placeholders (volume 32 m³ en muur 12 m² identiek
+aan ted/office — zelf-gelabeld "SCHATTINGEN") en de buitenmuur-voeler (`sensor_outdoor_frac`
+0.15, identiek aan office).
 
-**4.1 Woonkamer-zonpad (structureel kandidaat #1).** `living.solar_gain` staat op zijn
-beschermde vloer **0.25** (prior 1.0) én living draagt de enige echte residu-bias (+0.37 °C,
-slechtste kamer) — d.w.z. zelfs op mínimale zonwinst voorspelt het model de woonkamer te warm,
-terwijl er in de middag-snapshot 707 W zon op de kamer wordt geboekt. De kalibratie kan dit niet
-meer oplossen; de oorzaak zit vrijwel zeker in de geometrie/schaduw-inputs — denk aan de
-horizon-mask van de tuindeuren (ZO), terras-overstek, boom- of buurpand-schaduw, of een te hoge
-glas-transmissie. Dit is een `house_model.json`-onderzoek, geen parameter-tweak.
+**4.3 solar_gain op de vloer in ALLE gekalibreerde kamers** (7 juli: alleen living) +
+`cp_shelter` gevloerd: de zon-/warmte-drive is globaal te heet en de optimizer klemt elk
+warmte-kanaal. Deels gekoppeld aan §3.3 (valse ventilatie-koeling dwingt elders compensatie);
+**daarom eerst de flow-fix laten her-convergeren en pás daarna het zonpad herijken** — beide
+tegelijk aanpakken vernietigt de attributie. Blijft de vloer-rail ook ná her-convergentie, dan
+is het glas-/schaduwpad aan de beurt: `GLASS_TRANSMITTANCE` 0.7 × `GLASS_AREA_FRACTION` 0.6,
+horizon-masks (de boom bij Ted is een erkende grove benadering), overstek/terras-schaduw —
+een `house_model.json`-onderzoek met meetwerk, geen parameter-tweak.
 
-**4.2 Dag-nacht-amplitudefout.** De bias-per-uur (alle kamers, laatste ~48u) is geen vlakke
-offset meer maar een slinger:
+**4.4 Structurele beperkingen (geen regressies, wel plafonds):**
+- **Grond-waarheid stopt op 48u** (`window_data` buffert 192 kwartier-samples): begrenst
+  `CALIB_WINDOW_H`, het backfill-herstel-horizon én elke cross-regime-validatie. Richting: P8
+  archiveert zijn eigen rollende actuals (additief artefact, ~14 d) — geen P6-wijziging nodig.
+- **`suggest()` is puur ogenblikkelijk/steady-state**: geen zon, geen massaknoop, geen
+  tijdintegratie. Upgrade-pad: kandidaten voor-sorteren met de huidige scorer en de top-K door
+  een korte-horizon `simulate()` (1–2u) halen — de gekalibreerde twin bestaat al.
+- **Niemand hoort de anomalie-poort — OPGELOST (deze branch, besluit gebruiker 10 jul).**
+  Bij log↔werkelijkheid-mismatch pauzeerde het leren en meldde alléén het dashboard dat, dus
+  de log bleef dagen fout staan tot iemand toevallig keek. Er gaat nu een Telegram-nudge naar
+  de privé-chat ("klopt de raamstand nog?", fout vs norm + dashboardlink), één per
+  episode-start, hooguit elke 6u herhaald (`ANOMALY_NUDGE_COOLDOWN_H`, stempel
+  `anomaly_nudge_at` in `airflow_learned.json`). De handmatige pauze nudget bewust niet
+  (zelf gekozen). Dit was een bewuste-ontwerp-conflict met CLAUDE.md's "geen Telegram voor
+  P8"; CLAUDE.md is bijgewerkt: P8 stuurt alléén deze operationele nudge, geen
+  advies-berichten.
+- Kleiner: dichtheids-inconsistentie (vaste 1.2 kg/m³ in de advectie vs `air_density()` in het
+  netwerk), nachthemel-koeling binair én wolken-blind, `ua_mass` permanent op zijn prior,
+  consumer-koppeling via module-globals (`am._LAT/_LON/_NEIGHBOR_TEMP`) en `_private`-helpers
+  (P9/P10), terugkerende nachtgaten (03–06u) in de leercurve precies waar de dageraadsfout zit.
 
-| uur | bias | uur | bias |
-|---|---|---|---|
-| 04 | −0.26 | 11 | **+0.38** |
-| **05** | **−0.38** | 13 | +0.34 |
-| 06 | −0.31 | 16–17 | +0.27…0.31 |
-| 08 | +0.02 | 20–22 | +0.08…0.18 |
+## 5. In deze branch gefixt (validatie-instructies)
 
-Het model koelt 's nachts te ver door en warmt overdag te ver op — een amplitude- i.p.v.
-offset-fout. Verdachten: te sterke dak-/nachthemel-koeling (`ROOF_SKY_COOLING`), een te lichte
-massaknoop (`c_mass`/`h_am`-identificeerbaarheid), en koppeling met §4.1 (te veel middag-zon
-dwingt elders compensatie af). Netto middelt het weg (vandaar bias ≈ 0 per kamer behalve living),
-maar het kost RMSE aan beide uiteinden van de dag.
+1. **Checkpoint-her-vloering** (`accept_fallback_checkpoint`) — verwacht: geen
+   `fell_back`-clusters meer; `degraded_runs` blijft laag; lat volgt haalbare niveaus.
+2. **Fysica-rev 2: `WIND_REF_Z` + `EFF_OPEN_AREA`** — verwacht na her-convergentie (uren, door
+   de globalen-reset + checkpoint-vervaltijd): hotties-fout zakt substantieel; ACH-waarden
+   plausibel (~0–6 i.p.v. 27–54); `cp_shelter` weg van zijn vloer; op termijn ook
+   `solar_gain`-rails losser. **Valideer op de leercurve + §2-tabel over 2–3 dagen.**
+3. **Observability**: `learned.solver_failures` (stille substap-freeze telt nu mee),
+   `calib_samples`/`calib_span_h`/`calib_rooms` + dashboard-waarschuwing onder 24u effectieve
+   dekking (gaat 's winters werken als het stook-filter samples wegneemt).
+4. **Dashboard-eerlijkheid**: "ware lucht"-temp op buitenmuur-voeler-kamers; debieten/ACH
+   expliciet gelabeld als op-temperatuur-geijkte modelschatting.
+5. **Anomalie-nudge** (besluit gebruiker): Telegram naar de privé-chat zodra de anomalie-poort
+   het leren pauzeert — verwacht: een niet-gemelde raamwijziging wordt binnen een kwartier
+   gemeld i.p.v. per toeval ontdekt; de leercurve heelt daarna via de bestaande backfill.
 
-**4.3 Luchtstroom-magnitude blijft onfysisch.** Met alles open en 6.2 m/s wind rekent het
-netwerk **ACH ≈ 54 (hotties) en 50 (office)** — de lucht elke ~70 s ververst, niet plausibel.
-`cp_shelter` staat op zijn vloer 0.10 en `vent_eff` op 0.26 (prior 1.0): de thermische fit
-vecht tegen een overschat wind-debiet en heeft alle knoppen die hij daarvoor heeft al op minimum
-gezet. Gevolg: de *thermische* voorspelling is er ondanks dit goed, maar de getoonde
-volumetrische flows/ACH (dashboard-pijlen, speeltuin) zijn bij wind niet te vertrouwen — de twin
-is een sterke relatieve ranker, geen liters-per-seconde-orakel, en dat moet óf gefixt óf
-eerlijker gelabeld. Mogelijke richtingen: een effectieve-opening-factor (een "open" raam is
-zelden het volle kozijnoppervlak), een ridge die `cp_shelter` aan zijn prior bindt met een
-flow-plausibiliteits-term, of kalibratie op een windstil-vs-windig contrastvenster.
+## 6. Aanbevolen vervolg
 
-**4.4 Kleinere defecten.**
-- **Leercurve-venster te kort voor het weekjournaal**: `RMSE_HISTORY_KEEP=240` ≈ 2.5 dag, maar
-  het weekjournaal wil `RMSE_LOOKBACK_D=6.5` dagen terugkijken — de "week"-trend valt dus
-  áltijd terug op het oudste punt (~2.5 d) en heet ten onrechte een weektrend. Fix: cap verhogen
-  of oudere punten uitdunnen naar uurcadans.
-- **`cd`-fossiel in `airflow_learned.json`**: de params dragen nog `cd: 0.3` uit de tijd dat hij
-  leerbaar was; de code gebruikt de vaste `CD=0.62` en niets leest de opgeslagen waarde. Inert,
-  maar verwarrend in elke param-dump. Bij de volgende persist strippen.
-- **`office.ua_roof` ≈ 0.08** (prior 1.0): de dakterm die juist vóór de office is gebouwd, staat
-  daar bijna uit. Óf het dak isoleert echt goed, óf de term degenereert met de raam-zon —
-  in de gaten houden zodra er een felle dag-nacht-cyclus in het venster zit.
-- **`bath.ua_env` op de vloer 0.205**: de nieuwste kamer heeft zijn envelope al aan de grens;
-  met RMSE 0.24 geen acuut probleem, maar hetzelfde saturatie-signaal als altijd.
-- **Terugkerende nachtgaten in de leercurve**: gaten tot ~3u rond 03:00–06:00 (5 jul 196 min,
-  6 jul 166 min) — GitHub-cron is 's nachts onbetrouwbaar; de kicks vangen het later op maar de
-  curve heeft gaten.
-- **AUDIT.md-restpunten voor P8** (1 jul): R8 (eind-RMSE niet NaN-bewaakt; params niet in-solver
-  geklemd, rails alleen gerapporteerd), M2 (~200-regel `main()` niet end-to-end getest), S2
-  (workflow-least-privilege), M7/D4 (naamsbotsing + WU-wrapper-duplicatie met `window_advisor`).
+**Nu (data afwachten, geen code):**
+1. 2–3 dagen her-convergentie monitoren (§5.2) — pas daarna oordelen over het zonpad.
+2. De échte >30 °C-stresstest en (later) het stookseizoen blijven de openstaande validaties.
 
-## 5. Aanbevolen vervolg
+**Daarna (onderzoek → code):**
+1. **Zonpad-herijking** (§4.3) — alleen als solar_gain ná her-convergentie gevloerd blijft:
+   eerst meetwerk aan schaduw/horizon/glas in `house_model.json`, dan pas constants.
+2. **Eigen actuals-archief** (§4.4) — ontgrendelt langere vensters, backfill voorbij 48u en
+   week-schaal-validatie.
+3. **`suggest()` via korte-horizon-simulatie** (§4.4).
+4. **Geometrie-huiswerk** (meten, geen code): echte volumes/muuroppervlakken voor
+   ted/hotties/office (nu identieke placeholders), en de voeler-fracties.
 
-**Quick wins (klein, laag risico):**
-1. `RMSE_HISTORY_KEEP` verlengen of uitdunnen zodat het weekjournaal echt 6.5 dag terug kan.
-2. `cd`-fossiel bij persist strippen.
-3. Diagnostiek-regimetabel een post-convergentie-filter geven (de leerfase-confound van §3.1
-   zit anders in elke toekomstige meting).
-4. AUDIT R8: eind-RMSE NaN-guard + in-solver bound-clamp.
+**Expliciete CLAUDE.md-conflicten (bewuste ontwerpkeuzes die een besluit vergen, geen code
+zonder dat besluit):**
+- ~~**Anomalie-nudge via Telegram**~~ — **besloten en geïmplementeerd** (10 jul, zie §5.5);
+  CLAUDE.md bijgewerkt.
+- **AC-/verwarmingsterm in de fysica** — nu bewust opgelost via sample-uitsluiting; een simpele
+  geleerde koel-/stook-wattage zou die kamers ín de kalibratie houden, maar CLAUDE.md
+  documenteert het weglaten als bewuste keuze.
+- **Openingen-log-verval/auto-correctie** — raakt de beschermde Gist-schrijflogica.
 
-**Structureel (onderzoek eerst, dan pas code):**
-1. **Woonkamer-zonpad** (§4.1): horizon-masks/overstek van de tuindeuren en het living-skylight
-   in `house_model.json` naast de werkelijkheid leggen; pas daarna eventueel glas-params.
-2. **Dageraad-onderkoeling** (§4.2): `ROOF_SKY_COOLING`-magnitude en de nacht-identificeerbaarheid
-   van `c_mass`/`h_am` na een paar heldere nachten bekijken.
-3. **Flow-magnitude** (§4.3): effectieve-opening-factor of flow-plausibiliteits-ridge; minimaal
-   de dashboard-flows als *relatief* labelen zolang dit open staat.
-
-**Geduld (data, geen code):**
-- De échte hittegolf-validatie (venster zag ≤ ~29 °C; n=4 boven 28).
-- Stookseizoen: het verwarmings-filter en de winter-identificeerbaarheid zijn pas dan te bewijzen.
-- Elke week extra leercurve maakt de checkpoint/skill-vergelijking over weerregimes heen sterker.
+**Geduld (bewust niet doen):**
+- Trap-subzone-split (geen sensor om tegen te valideren), leerbare `sensor_outdoor_frac`
+  (degenereert met ua_env — vergt een fysiek sensor-experiment, geen code).

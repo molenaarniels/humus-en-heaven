@@ -73,6 +73,8 @@ function render() {
     </div>
     ${(d.learned&&d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — het huis staat op pauze. Het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
     ${(d.learned&&d.learned.held&&!d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog${d.learned.baseline_rmse!=null?` (norm ~${d.learned.baseline_rmse.toFixed(2)}°)`:''}. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
+    ${(d.learned&&d.learned.solver_failures>0)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⚠ ${d.learned.solver_failures} substap(pen) met een bijna-singulier thermisch stelsel — de voorspelling bevroor daar even op de laatste goede waarde.</div>`:''}
+    ${(d.learned&&d.learned.calib_span_h!=null&&d.learned.calib_samples>0&&d.learned.calib_span_h<(d.learned.calib_coverage_warn_h??24))?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⚠ Dunne kalibratiedekking: ${d.learned.calib_samples} samples over ~${d.learned.calib_span_h}u (na AC-/verwarmings-/pauzefilters) — de fit leunt dit venster op weinig grond-waarheid.</div>`:''}
   </div>`;
 
   // — Suggestie —

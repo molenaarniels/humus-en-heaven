@@ -100,6 +100,10 @@ WARMUP_H       = 24.0    # uur sim-only aanloop vóór het residu-venster: de tr
                          # equilibreert zodat zijn beginwaarde geen vrije laagfrequente bias is.
                          # Drivers reiken ver genoeg terug via Open-Meteo past_days; residuen
                          # tellen alleen waar tado-samples bestaan (≤CALIB_WINDOW_H terug)
+CALIB_COVERAGE_WARN_H = 24.0   # effectieve grond-waarheid-spanwijdte (na AC-/verwarmings-/
+                               # pauze-filters) waaronder het dashboard waarschuwt: het venster
+                               # is nominaal 48u vol, maar de filters kunnen er stilletjes veel
+                               # minder van overlaten — dan leunt de fit op te weinig data
 SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabiliteit)
 SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde van de instraling:
                          # de lage avondzon draait snel door het NW-gevelvlak (cos-invalshoek-knik),
@@ -278,6 +282,19 @@ def accept_fallback_checkpoint(ckpt: dict, skill, rmse_now: float, now_iso: str)
     ckpt["rmse"] = round(rmse_now, 3) if rmse_now == rmse_now else None
     ckpt["refloored"] = now_iso
     return ckpt
+
+
+def calib_coverage(actual: dict) -> dict:
+    """Effectieve grond-waarheid-dekking van deze kalibratierun: hoeveel tado-samples, over
+    hoeveel kamers, en welke tijdspanne — gemeten NA de AC-/verwarmings-/pauze-filters. Het
+    venster is nominaal CALIB_WINDOW_H vol, maar de filters kunnen er stilletjes veel minder
+    van overlaten (winter: veel gestookte samples); dan leunt de fit op weinig data en hoort
+    het dashboard dat te tonen (drempel CALIB_COVERAGE_WARN_H)."""
+    ts = [t for s in (actual or {}).values() for t, _ in s]
+    span_h = (max(ts) - min(ts)).total_seconds() / 3600.0 if len(ts) >= 2 else 0.0
+    return {"calib_samples": sum(len(s) for s in (actual or {}).values()),
+            "calib_rooms": len(actual or {}),
+            "calib_span_h": round(span_h, 1)}
 
 
 def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dict:
@@ -1468,6 +1485,7 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     zi = {z: k for k, z in enumerate(zones)}
     P_warm = None
     Ta_snap = Tm_snap = None
+    solver_failures = 0   # bijna-singuliere thermische stelsels (zie de substap-break hieronder)
 
     for step in timeline:
         T_out = step["T_out"]
@@ -1574,6 +1592,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 b[2 * ks] -= val
             x = solve_linear(A, b)
             if x is None:
+                # Bijna-singulier thermisch stelsel: Ta/Tm bevriezen deze stap op hun laatste
+                # goede waarde. Dat is de juiste noodgreep, maar mag niet stil blijven — de
+                # teller wordt gepubliceerd (learned.solver_failures) zodat een structureel
+                # conditioneringsprobleem zichtbaar is i.p.v. een geruisloos bevroren curve.
+                solver_failures += 1
                 break
             for z in zones:
                 k = zi[z]
@@ -1585,7 +1608,8 @@ def simulate(house: dict, params: dict, timeline: list[dict],
             Ta_snap, Tm_snap = dict(Ta), dict(Tm)
     return {"series": out, "Ta": dict(Ta), "Tm": dict(Tm),
             "Ta_now": Ta_snap if Ta_snap is not None else dict(Ta),
-            "Tm_now": Tm_snap if Tm_snap is not None else dict(Tm)}
+            "Tm_now": Tm_snap if Tm_snap is not None else dict(Tm),
+            "solver_failures": solver_failures}
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -2652,6 +2676,12 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     "skill": skill,
                     "rmse_history": rmse_hist, "held": bool(learning_held),
                     "paused": bool(paused_now),
+                    # Observability (additief): bijna-singuliere thermische substappen deze
+                    # sim + de effectieve grond-waarheid-dekking na de filters (zie
+                    # calib_coverage) met de waarschuwingsdrempel voor het dashboard.
+                    "solver_failures": sim.get("solver_failures", 0),
+                    **calib_coverage(actual),
+                    "calib_coverage_warn_h": CALIB_COVERAGE_WARN_H,
                     "baseline_rmse": round(baseline, 3) if baseline is not None else None,
                     "wx": wx or None,
                     "checkpoint": {k: (checkpoint or {}).get(k)
@@ -3016,6 +3046,9 @@ def main():
     sim = simulate(house, params, timeline, seed,
                    calib_only_rooms=set(house.get("rooms", {}).keys()),
                    snapshot_t=now)
+    if sim.get("solver_failures"):
+        print(f"[sim] {sim['solver_failures']} substap(pen) met een bijna-singulier thermisch "
+              "stelsel — Ta/Tm die stap bevroren (zie learned.solver_failures).")
 
     # Passieve suggestie op basis van nú.
     cur = weather["current"]

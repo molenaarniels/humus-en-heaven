@@ -1199,6 +1199,35 @@ def test_accept_fallback_keeps_nan_rmse_none():
     assert ckpt["skill"] == 0.8                              # input niet gemuteerd
 
 
+# ── Observability: solver-failures + kalibratiedekking ──────────────────────────────
+
+def test_simulate_flags_solver_failure(monkeypatch):
+    # Een bijna-singulier thermisch stelsel bevriest de substap stil op de laatste goede
+    # waarde — dat mág, maar moet geteld worden (learned.solver_failures) i.p.v. geruisloos.
+    house = _toy_house()
+    params = am.default_params(house)
+    tl = _const_timeline(20.0, hours=2, irr=0.0)
+    seed = {z: 22.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    ok = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert ok["solver_failures"] == 0                        # normaal: geen enkele
+    monkeypatch.setattr(am, "solve_linear", lambda A, b: None)
+    sim = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert sim["solver_failures"] > 0
+    for rid in house["rooms"]:                               # bevroren op de seed, niet NaN
+        assert sim["Ta"][rid] == pytest.approx(22.0)
+
+
+def test_calib_coverage_reports_effective_ground_truth():
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    actual = {"a": [(t0 + timedelta(hours=h), 20.0) for h in range(13)],
+              "b": [(t0, 21.0)]}
+    cov = am.calib_coverage(actual)
+    assert cov["calib_samples"] == 14 and cov["calib_rooms"] == 2
+    assert cov["calib_span_h"] == pytest.approx(12.0)
+    assert am.calib_coverage({}) == {"calib_samples": 0, "calib_rooms": 0,
+                                     "calib_span_h": 0.0}
+
+
 # ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
 def test_window_naive_baseline_is_time_bounded():
     t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)

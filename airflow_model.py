@@ -51,7 +51,7 @@ import shared_const
 from shared_const import utc_now_iso
 from gist_io import read_json as gist_read_json
 from http_util import get_json
-from notify import run_guarded
+from notify import run_guarded, send_telegram
 from wu_bias import correct_temp
 from window_advisor import (convert_rh, RH_HARD_CAP, ROOM_COMFORT,
                             fetch_wu_current_temp)
@@ -393,6 +393,45 @@ ANOMALY_FACTOR      = 2.2   # fout > dit × de mediane recente RMSE → leren pa
 ANOMALY_FLOOR       = 1.5   # °C — pauzeer nooit op kleine ruis; pas boven deze absolute fout
 ANOMALY_BASE_N      = 48    # mediaan over de laatste zoveel RMSE-punten = de norm
 HUBER_DELTA         = 1.5   # °C — residuen hierboven worden lineair (i.p.v. kwadratisch) gewogen
+# De anomalie-poort pauzeerde het leren wél, maar niemand hoorde het: de dashboard-banner is
+# er alleen voor wie toevallig kijkt, dus een niet-gemelde raamwijziging kon dágen fout blijven
+# staan terwijl de tweeling op de verkeerde aanname doorvoorspelde (assessment 10 juli 2026,
+# besluit gebruiker: nudge toegevoegd). Daarom gaat er bij een anomalie-pauze een Telegram-nudge
+# naar de privé-chat ("klopt de raamstand nog?"). Cooldown-gedrag: één nudge per episode-start,
+# hooguit elke ANOMALY_NUDGE_COOLDOWN_H herhaald zolang de anomalie aanhoudt; herstelt het leren,
+# dan wordt de stempel gewist zodat een vólgende episode meteen weer nudget. De handmatige
+# huis-brede pauze nudget bewust níét (die is zelf gekozen — je weet het al). Stempel
+# `anomaly_nudge_at` leeft in airflow_learned.json (additief; de artefact-commit is de state).
+ANOMALY_NUDGE_COOLDOWN_H = 6.0
+
+
+def should_nudge_anomaly(last_nudge_iso: str | None, now: datetime) -> bool:
+    """Mag er nu een anomalie-nudge uit? True bij geen (of onleesbare) eerdere stempel,
+    of wanneer de cooldown verstreken is. Puur — de aanroeper beslist óf er een anomalie is."""
+    if not last_nudge_iso:
+        return True
+    try:
+        last = datetime.fromisoformat(last_nudge_iso)
+    except (ValueError, TypeError):
+        return True
+    return (now - last) >= timedelta(hours=ANOMALY_NUDGE_COOLDOWN_H)
+
+
+def anomaly_nudge_text(rmse_cur: float, baseline: float | None) -> str:
+    """Het nudge-bericht: fout vs norm + de vraag die de datakwaliteit herstelt. HTML-parse
+    (send_telegram-default); dashboardlink alleen als DASHBOARD_URL gezet is."""
+    norm = f" (norm ~{baseline:.2f}°C)" if baseline is not None else ""
+    lines = [
+        "🧭 <b>Tweeling: leren gepauzeerd</b> — voorspelfout anomaal hoog: "
+        f"<b>{rmse_cur:.2f}°C</b>{norm}.",
+        "Waarschijnlijk staat er een raam/rooster/deur anders dan gemeld. "
+        "Klopt de raamstand nog? Meld de werkelijke standen (desnoods teruggedateerd) "
+        "in de dashboard-modal — de leercurve herstelt zich dan automatisch.",
+    ]
+    dash = os.getenv("DASHBOARD_URL")
+    if dash:
+        lines += [f'<a href="{dash.rstrip("/")}/airflow.html">→ Open het tweeling-dashboard</a>']
+    return "\n".join(lines)
 
 
 def learning_baseline(history: list[dict]) -> float | None:
@@ -2956,6 +2995,7 @@ def main():
     rmse_now = float("nan")
     learning_held = False
     baseline = None
+    anomaly_nudge_at = learned.get("anomaly_nudge_at")   # zie ANOMALY_NUDGE_COOLDOWN_H
     if actual:
         print(f"[leren] {sum(len(v) for v in actual.values())} samples over "
               f"{len(actual)} kamers in het venster.")
@@ -2980,6 +3020,16 @@ def main():
                 print(f"[leren] fout anomaal hoog ({rmse_cur:.2f}°C vs norm {baseline:.2f}°C) → "
                       "parameters vastgehouden; de opening-log klopt mogelijk niet met de "
                       "werkelijkheid. Voorspellen gaat door, leren is gepauzeerd.")
+                # Nudge naar de privé-chat: de poort beschermt de fysica, maar alleen een
+                # mens kan de log corrigeren — en die moet het dan wel hóren. Cooldown +
+                # episode-reset: zie ANOMALY_NUDGE_COOLDOWN_H. send_telegram raist nooit.
+                if should_nudge_anomaly(anomaly_nudge_at, now):
+                    msg = anomaly_nudge_text(rmse_cur, baseline)
+                    if os.getenv("DRY_RUN") == "1":
+                        print(f"[nudge] DRY_RUN — zou sturen:\n{msg}")
+                    else:
+                        send_telegram(msg)
+                    anomaly_nudge_at = now.isoformat()
         else:
             params, rmse_now = calibrate(house, params, timeline, seed, actual,
                                          solar_mean=wx_summary.get("solar_mean"))
@@ -2987,6 +3037,8 @@ def main():
             rails = railed_params(params)
             if rails:
                 print(f"[saturatie] params op hun grens: {', '.join(rails)}")
+        if not anomaly_held:
+            anomaly_nudge_at = None   # episode voorbij → een vólgende anomalie nudget meteen
     else:
         print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
     # Defensief: als het héle kalibratievenster gepauzeerd was, kan `actual` volledig leeg zijn
@@ -3076,6 +3128,8 @@ def main():
     with open(LEARNED_FILE, "w", encoding="utf-8") as f:
         json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
                    "physics_rev": PHYSICS_REV,   # zie PHYSICS_REV: poort voor de globalen-migratie
+                   # Cooldown-stempel van de anomalie-nudge (additief; None buiten een episode).
+                   "anomaly_nudge_at": anomaly_nudge_at,
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "railed": railed_params(params),   # saturatie-tell (additief, diagnostisch)

@@ -123,11 +123,15 @@ een `house_model.json`-onderzoek met meetwerk, geen parameter-tweak.
 - **`suggest()` is puur ogenblikkelijk/steady-state**: geen zon, geen massaknoop, geen
   tijdintegratie. Upgrade-pad: kandidaten voor-sorteren met de huidige scorer en de top-K door
   een korte-horizon `simulate()` (1–2u) halen — de gekalibreerde twin bestaat al.
-- **Niemand hoort de anomalie-poort.** Bij log↔werkelijkheid-mismatch pauzeert het leren en
-  meldt het dashboard dat — maar er gaat geen bericht uit, dus de log blijft dagen fout staan
-  tot iemand toevallig kijkt. Een nudge zou de hoogste-waarde-verbetering voor de datakwaliteit
-  zijn, maar **CLAUDE.md zegt expliciet "geen Telegram" voor P8** — bewuste-ontwerp-conflict,
-  vergt een expliciete beslissing (zie §6).
+- **Niemand hoort de anomalie-poort — OPGELOST (deze branch, besluit gebruiker 10 jul).**
+  Bij log↔werkelijkheid-mismatch pauzeerde het leren en meldde alléén het dashboard dat, dus
+  de log bleef dagen fout staan tot iemand toevallig keek. Er gaat nu een Telegram-nudge naar
+  de privé-chat ("klopt de raamstand nog?", fout vs norm + dashboardlink), één per
+  episode-start, hooguit elke 6u herhaald (`ANOMALY_NUDGE_COOLDOWN_H`, stempel
+  `anomaly_nudge_at` in `airflow_learned.json`). De handmatige pauze nudget bewust niet
+  (zelf gekozen). Dit was een bewuste-ontwerp-conflict met CLAUDE.md's "geen Telegram voor
+  P8"; CLAUDE.md is bijgewerkt: P8 stuurt alléén deze operationele nudge, geen
+  advies-berichten.
 - Kleiner: dichtheids-inconsistentie (vaste 1.2 kg/m³ in de advectie vs `air_density()` in het
   netwerk), nachthemel-koeling binair én wolken-blind, `ua_mass` permanent op zijn prior,
   consumer-koppeling via module-globals (`am._LAT/_LON/_NEIGHBOR_TEMP`) en `_private`-helpers
@@ -146,6 +150,9 @@ een `house_model.json`-onderzoek met meetwerk, geen parameter-tweak.
    dekking (gaat 's winters werken als het stook-filter samples wegneemt).
 4. **Dashboard-eerlijkheid**: "ware lucht"-temp op buitenmuur-voeler-kamers; debieten/ACH
    expliciet gelabeld als op-temperatuur-geijkte modelschatting.
+5. **Anomalie-nudge** (besluit gebruiker): Telegram naar de privé-chat zodra de anomalie-poort
+   het leren pauzeert — verwacht: een niet-gemelde raamwijziging wordt binnen een kwartier
+   gemeld i.p.v. per toeval ontdekt; de leercurve heelt daarna via de bestaande backfill.
 
 ## 6. Aanbevolen vervolg
 
@@ -164,8 +171,8 @@ een `house_model.json`-onderzoek met meetwerk, geen parameter-tweak.
 
 **Expliciete CLAUDE.md-conflicten (bewuste ontwerpkeuzes die een besluit vergen, geen code
 zonder dat besluit):**
-- **Anomalie-nudge via Telegram** — hoogste datakwaliteits-waarde, maar P8 is bewust
-  Telegram-loos.
+- ~~**Anomalie-nudge via Telegram**~~ — **besloten en geïmplementeerd** (10 jul, zie §5.5);
+  CLAUDE.md bijgewerkt.
 - **AC-/verwarmingsterm in de fysica** — nu bewust opgelost via sample-uitsluiting; een simpele
   geleerde koel-/stook-wattage zou die kamers ín de kalibratie houden, maar CLAUDE.md
   documenteert het weglaten als bewuste keuze.

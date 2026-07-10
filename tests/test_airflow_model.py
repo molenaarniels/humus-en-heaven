@@ -1217,6 +1217,28 @@ def test_simulate_flags_solver_failure(monkeypatch):
         assert sim["Ta"][rid] == pytest.approx(22.0)
 
 
+def test_should_nudge_anomaly_cooldown():
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ)
+    assert am.should_nudge_anomaly(None, now) is True                    # episode-start
+    fresh = (now - timedelta(hours=1)).isoformat()
+    assert am.should_nudge_anomaly(fresh, now) is False                  # binnen cooldown
+    old = (now - timedelta(hours=am.ANOMALY_NUDGE_COOLDOWN_H)).isoformat()
+    assert am.should_nudge_anomaly(old, now) is True                     # cooldown verstreken
+    assert am.should_nudge_anomaly("kapot", now) is True                 # onleesbare stempel
+
+
+def test_anomaly_nudge_text_contents(monkeypatch):
+    monkeypatch.delenv("DASHBOARD_URL", raising=False)
+    txt = am.anomaly_nudge_text(1.92, 0.65)
+    assert "1.92" in txt and "0.65" in txt
+    assert "raam" in txt.lower()                        # de vraag die de log herstelt
+    assert "airflow.html" not in txt                    # geen URL zonder DASHBOARD_URL
+    monkeypatch.setenv("DASHBOARD_URL", "https://x.test/dash/")
+    txt = am.anomaly_nudge_text(1.92, None)
+    assert "https://x.test/dash/airflow.html" in txt
+    assert "norm" not in txt                            # geen norm-tekst zonder baseline
+
+
 def test_calib_coverage_reports_effective_ground_truth():
     t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
     actual = {"a": [(t0 + timedelta(hours=h), 20.0) for h in range(13)],

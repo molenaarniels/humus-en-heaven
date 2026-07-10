@@ -92,6 +92,7 @@ function render() {
       <span style="color:var(--moss-light)">➜ tussen kamers</span>
       <span>deursymbool: doorgang + draairichting</span>
       <span>dikte &amp; snelheid ∝ debiet</span>
+      <span class="ctl-sub">debieten/ACH: modelschatting — geijkt op temperatuur, niet op gemeten debiet</span>
     </div>
     <div class="chips" style="margin-top:6px;">
       <span style="color:var(--sun)">☀ zon erin</span>
@@ -137,7 +138,7 @@ function render() {
         <span class="ctl-sub">RV</span><span class="num">${fmt(r.humidity,0)}%</span>
       </div>
       ${energyRow(r)}
-      ${r.predicted_mass_temp!=null?`<div class="ctl-sub" style="margin-top:8px;">massaknoop (wanden) ${r.predicted_mass_temp.toFixed(1)}°C · comfort ${r.comfort_low??"?"}–${r.comfort_high??"?"}°</div>`:""}
+      ${r.predicted_mass_temp!=null?`<div class="ctl-sub" style="margin-top:8px;">massaknoop (wanden) ${r.predicted_mass_temp.toFixed(1)}°C${(r.predicted_air_temp!=null&&r.sensor_outdoor_frac>0)?` · ware lucht ~${r.predicted_air_temp.toFixed(1)}°C (voeler op buitenmuur)`:""} · comfort ${r.comfort_low??"?"}–${r.comfort_high??"?"}°</div>`:""}
     </div>`;
   });
   html += `</div>`;

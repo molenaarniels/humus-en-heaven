@@ -202,6 +202,15 @@ FALLBACK_AFTER      = 8       # zoveel opeenvolgende verslechterde runs (~2u) �
 # leren ze in een uur terugkalibreerde, en de cyclus opnieuw begon (gediagnosticeerd juli 2026).
 # Een verworpen fallback her-zetelt het checkpoint op de huidige params (reseat_checkpoint):
 # de lat ligt weer op een haalbaar niveau en een écht regressie-vangnet blijft bestaan.
+# Een GEACCEPTEERDE fallback her-vloert de lat óók (accept_fallback_checkpoint): de checkpoint-
+# params passen dan wel beter dan wat net geleerd is, maar de opgeslagen skill-lat is een
+# high-water-mark van één gunstig venster. Zonder her-vloeren blijft de lat op dat niveau staan,
+# halen normale vensters 'm structureel niet (skill is venster-afhankelijk, hoe goed de params
+# ook zijn) en wordt het leren elke ~FALLBACK_AFTER runs opnieuw naar het checkpoint teruggetrokken
+# — een permanente jojo i.p.v. een vangnet (gediagnosticeerd 9–10 juli 2026: lat 0.813 geoogst op
+# één venster, daarna 7 opeenvolgende "degraded" runs met geaccepteerde fallbacks elke ~2u). De
+# her-gevloerde lat is wat de teruggezette params op het HUIDIGE venster halen: haalbaar, en elke
+# echte verbetering zet er weer een nieuw optimum bovenop.
 
 
 def checkpoint_step(ckpt: dict, params: dict, skill: float | None,
@@ -243,6 +252,21 @@ def reseat_checkpoint(params: dict, skill, rmse_now: float, version: str, now_is
             "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
             "version": version, "t": now_iso, "degraded_runs": 0,
             "last_fallback": last_fallback, "reseated": now_iso}
+
+
+def accept_fallback_checkpoint(ckpt: dict, skill, rmse_now: float, now_iso: str) -> dict:
+    """Her-vloer de skill-lat na een GEACCEPTEERDE fallback: de checkpoint-params blijven staan
+    (die zijn zojuist teruggezet en passen aantoonbaar beter), maar de opgeslagen skill/rmse
+    worden wat die params op het HUIDIGE venster halen. De oude lat was een high-water-mark van
+    één gunstig venster; onaangepast blijft elke normale run "degraded" en jojo't het leren elke
+    ~FALLBACK_AFTER runs terug naar het checkpoint (zie de toelichting bij FALLBACK_AFTER).
+    `refloored` stempelt dit (additief) zodat het op het dashboard te onderscheiden is van een
+    gewoon nieuw optimum of een her-zeteling na een verworpen fallback."""
+    ckpt = dict(ckpt or {})
+    ckpt["skill"] = skill
+    ckpt["rmse"] = round(rmse_now, 3) if rmse_now == rmse_now else None
+    ckpt["refloored"] = now_iso
+    return ckpt
 
 
 def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dict:
@@ -2575,7 +2599,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     "wx": wx or None,
                     "checkpoint": {k: (checkpoint or {}).get(k)
                                    for k in ("skill", "rmse", "version", "t",
-                                             "degraded_runs", "last_fallback", "reseated")}
+                                             "degraded_runs", "last_fallback", "reseated",
+                                             "refloored")}
                     if checkpoint else None,
                     "fell_back": bool(fell_back)},
         # Volledige geometrie (additief) zodat de browser-speeltuin (airflow.html) hetzelfde
@@ -2890,8 +2915,13 @@ def main():
             if rmse_fb == rmse_fb and rmse_fb <= rmse_now:
                 rmse_now = rmse_fb
                 skill = skill_score(rmse_now, rmse_baseline)
+                # Her-vloer de skill-lat op wat de teruggezette params NU halen — anders blijft
+                # de oude high-water-mark staan en jojo't het leren hier elke ~FALLBACK_AFTER
+                # runs opnieuw naartoe (zie accept_fallback_checkpoint).
+                ckpt = accept_fallback_checkpoint(ckpt, skill, rmse_now, now.isoformat())
                 print(f"[checkpoint] {FALLBACK_AFTER} runs verslechterd → teruggevallen op de "
-                      f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}).")
+                      f"checkpoint-params (RMSE nu {rmse_now:.3f} °C, skill {skill}; "
+                      f"skill-lat her-gevloerd).")
             else:
                 params = learned_params
                 fell_back = False

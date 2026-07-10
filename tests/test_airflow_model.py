@@ -1069,6 +1069,42 @@ def test_reseated_checkpoint_breaks_fallback_loop():
     assert fb is False and ckpt["skill"] == 0.2 and ckpt["t"] == "u99"
 
 
+def test_accepted_fallback_reseats_skill_bar():
+    """De geaccepteerde-fallback-jojo (regressie, 9–10 juli 2026): een op één gunstig venster
+    geoogste skill-lat (0.813) blijft na een geaccepteerde fallback staan, normale vensters
+    halen 'm nooit → elke FALLBACK_AFTER runs opnieuw een fallback. Na her-vloeren ligt de lat
+    op wat de teruggezette params NU halen en degradeert dezelfde skill niet meer."""
+    best = {"living": {"c_air": 1.0}}
+    ckpt = {"params": best, "skill": 0.813, "degraded_runs": am.FALLBACK_AFTER - 1}
+    params, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 2.0}}, skill=0.47,
+                                          rmse_now=0.74, version="v1", now_iso="t1")
+    assert fb is True
+    # main() accepteert (checkpoint-params passen beter) en her-vloert de lat:
+    ckpt = am.accept_fallback_checkpoint(ckpt, skill=0.47, rmse_now=0.71, now_iso="t1")
+    assert ckpt["skill"] == 0.47 and ckpt["rmse"] == 0.71
+    assert ckpt["refloored"] == "t1"
+    assert ckpt["params"] == best                           # params blijven het checkpoint
+    assert ckpt["last_fallback"] == "t1"                     # de échte fallback blijft gestempeld
+    # Zelfde skill in de runs erna: binnen de marge → geen jojo meer.
+    for i in range(am.FALLBACK_AFTER + 2):
+        params, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 2.0}}, skill=0.47,
+                                              rmse_now=0.74, version="v1", now_iso=f"u{i}")
+        assert fb is False
+    assert ckpt["degraded_runs"] == 0
+    # Een écht beter venster legt daarna gewoon weer een nieuw optimum vast.
+    _, ckpt, fb = am.checkpoint_step(ckpt, {"living": {"c_air": 3.0}}, skill=0.60,
+                                     rmse_now=0.5, version="v1", now_iso="u99")
+    assert fb is False and ckpt["skill"] == 0.60
+
+
+def test_accept_fallback_keeps_nan_rmse_none():
+    ckpt = {"params": {"living": {"c_air": 1.0}}, "skill": 0.8, "degraded_runs": 0}
+    out = am.accept_fallback_checkpoint(ckpt, skill=None, rmse_now=float("nan"), now_iso="t2")
+    assert out["rmse"] is None and out["skill"] is None
+    assert out["refloored"] == "t2"
+    assert ckpt["skill"] == 0.8                              # input niet gemuteerd
+
+
 # ── Leercurve achteraf herstellen tegen de gecorrigeerde openingen-log ───────────────
 def test_window_naive_baseline_is_time_bounded():
     t0 = datetime(2026, 6, 18, 12, 0, tzinfo=am.TZ)

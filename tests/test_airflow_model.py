@@ -206,6 +206,100 @@ def test_network_node_mass_balance_multizone():
     assert max(abs(v) for v in res) < 1e-4
 
 
+# ── 3b. Wind-referentiehoogte + effectief openingsoppervlak (fysica-rev 2) ───────────
+
+def _same_facade_house() -> dict:
+    """Toy-huis met beide ramen op DEZELFDE gevel maar op verschillende hoogte — de
+    configuratie die vóór de WIND_REF_Z-fix een kunstmatige dwarsstroom-lus dreef."""
+    house = _toy_house()
+    for wid, z in (("a_win", 1.5), ("b_win", 7.1)):
+        house["windows"][wid]["facade_azimuth_deg"] = 309
+        house["windows"][wid]["center_height_m"] = z
+    return house
+
+
+def test_same_facade_wind_pressure_equal():
+    # Twee openingen op dezelfde gevel (zelfde Cp) horen dezelfde winddruk te krijgen,
+    # ongeacht hun hoogte: de dynamische druk staat op WIND_REF_Z (CONTAM: één winddruk
+    # per gevel); het hoogteverschil hoort alleen in de stack-term, niet in Pe.
+    house = _same_facade_house()
+    params = am.default_params(house)
+    zt = {"a": 22.0, "b": 22.0, "hall": 22.0}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.2, "wind_dir": 194.0}, params, zt, 22.0)
+    pe = {op["id"]: op["Pe"] for op in ops}
+    assert pe["a_win"] == pytest.approx(pe["b_win"], abs=1e-9)
+    assert pe["a_win"] != 0.0                          # er stáát wel winddruk op de gevel
+
+
+def test_same_facade_no_wind_loop_at_equal_temps():
+    # Regressie (10 juli 2026): gelijke temperaturen binnen/buiten (geen stack) + harde wind
+    # op één gevel mag GEEN doorstroom-lus raam→deur→deur→raam drijven. Vóór de fix gaf het
+    # per-opening-hoogte-machtsprofiel ΔPe ∝ wind² tussen de twee zelfde-gevel-ramen
+    # (~0.2+ m³/s door de deuren); nu is de gevel-Pe per definitie gelijk en resteert er
+    # alleen lek-schaal-ruis.
+    house = _same_facade_house()
+    zones = list(house["rooms"]) + list(house["junctions"])
+    params = am.default_params(house)
+    zt = {z: 22.0 for z in zones}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.2, "wind_dir": 39.0}, params, zt, 22.0)
+    net = am.solve_network(zones, ops, zt, 22.0)
+    door_q = {op["id"]: q for op, q in zip(ops, net["flows"])
+              if op["id"] in ("a_hall", "b_hall")}
+    assert all(abs(q) < 0.05 for q in door_q.values())
+
+
+def test_cross_facade_flow_survives():
+    # De fix mag échte dwarsventilatie (loef → lij) niet doden: tegenoverliggende gevels
+    # houden hun Cp-contrast en drijven een stevige doorstroom.
+    house = _toy_house()                                # a_win az 180, b_win az 0
+    zones = list(house["rooms"]) + list(house["junctions"])
+    params = am.default_params(house)
+    zt = {z: 22.0 for z in zones}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"},
+                            {"wind_speed": 6.0, "wind_dir": 180.0}, params, zt, 22.0)
+    net = am.solve_network(zones, ops, zt, 22.0)
+    q = {op["id"]: v for op, v in zip(ops, net["flows"]) if op["id"] in ("a_win", "b_win")}
+    assert q["a_win"] < -0.2                            # loef: instroom (negatief = binnenwaarts)
+    assert q["b_win"] > 0.2                             # lij: uitstroom
+
+
+def test_effective_open_area_casement():
+    # Een wijd open draairaam is niet het volle kozijngat: open_type "casement" → ×0.5;
+    # een expliciete per-element `eff_open_frac` overschrijft de type-default; zonder
+    # open_type (roosters, toy-ramen) verandert er niets (×1.0).
+    house = _toy_house()
+    house["windows"]["a_win"]["open_type"] = "casement"
+    params = am.default_params(house)
+    zt = {"a": 22.0, "b": 22.0, "hall": 22.0}
+    wx = {"wind_speed": 0.0, "wind_dir": 0.0}
+    ops = am.build_openings(house, {"a_win": "open", "b_win": "open"}, wx, params, zt, 20.0)
+    area = {op["id"]: op["area"] for op in ops}
+    assert area["a_win"] == pytest.approx(0.6 * 0.5)   # casement-korting
+    assert area["b_win"] == pytest.approx(0.5)          # geen open_type → ongewijzigd
+    house["windows"]["a_win"]["eff_open_frac"] = 0.8    # expliciete override wint
+    ops = am.build_openings(house, {"a_win": "open"}, wx, params, zt, 20.0)
+    area = {op["id"]: op["area"] for op in ops}
+    assert area["a_win"] == pytest.approx(0.6 * 0.8)
+
+
+def test_physics_rev_migration_resets_globals():
+    # Geleerde staat van een oudere fysica-revisie: alléén de globalen (die de oude
+    # zelfde-gevel-lus compenseerden) terug naar hun prior; kamer-params blijven staan.
+    house = {"rooms": {"a": {}}}
+    old = {"params": {"cp_shelter": 0.1, "vent_eff": 0.43, "a": {"c_air": 1.2}}}
+    assert am.physics_rev_migration_needed(old) is True
+    p = am.merged_params(house, old)
+    assert p["cp_shelter"] == am.PRIORS["cp_shelter"]
+    assert p["vent_eff"] == am.PRIORS["vent_eff"]
+    assert p["a"]["c_air"] == 1.2                      # kamer-params onaangeroerd
+    cur = {"params": {"cp_shelter": 0.9, "a": {"c_air": 1.2}}, "physics_rev": am.PHYSICS_REV}
+    assert am.physics_rev_migration_needed(cur) is False
+    assert am.merged_params(house, cur)["cp_shelter"] == 0.9
+    assert am.physics_rev_migration_needed({}) is False   # lege staat: niets te migreren
+
+
 # ── 4. 2-knoops RC-model ─────────────────────────────────────────────────────────────
 
 def test_rc_relaxes_to_outside_no_solar():
@@ -1654,7 +1748,8 @@ def test_per_window_solar_respects_shade_state():
 
 def test_merged_params_fills_new_rooms_and_keys():
     house = {"rooms": {"a": {}, "b": {}}}
-    learned = {"params": {"cp_shelter": 0.42, "a": {"c_air": 123.0}}}
+    learned = {"params": {"cp_shelter": 0.42, "a": {"c_air": 123.0}},
+               "physics_rev": am.PHYSICS_REV}
     p = am.merged_params(house, learned)
     assert p["cp_shelter"] == 0.42                     # geleerd blijft staan
     assert p["a"]["c_air"] == 123.0
@@ -1732,7 +1827,8 @@ def test_thin_rmse_history_feeds_weekjournaal_lookback():
 
 def test_merged_params_strips_cd_fossil():
     house = {"rooms": {"a": {}}}
-    learned = {"params": {"cd": 0.30, "cp_shelter": 0.4, "a": {"c_air": 1.2}}}
+    learned = {"params": {"cd": 0.30, "cp_shelter": 0.4, "a": {"c_air": 1.2}},
+               "physics_rev": am.PHYSICS_REV}
     p = am.merged_params(house, learned)
     assert "cd" not in p                               # fossiel gestript
     assert p["cp_shelter"] == 0.4                      # geleerde waarden onaangeroerd

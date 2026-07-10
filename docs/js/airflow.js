@@ -1003,18 +1003,22 @@ const triggerWorkflow = () => dispatchWorkflow("airflow-notify.yml");
 // orifice-flow + Newton-druksolver, zodat je ramen/roosters/deuren kunt omzetten (en
 // aan wind/buitentemp draaien) en meteen het effect op het debiet ziet — zonder
 // server-rondgang en zonder iets op te slaan of het echte model te raken.
-const SIM = { LEAK_AREA: 0.004, DP_LAM: 0.1, CP_AIR: 1005.0, G: 9.81, P_ATM: 101325.0, R_AIR: 287.05 };
+const SIM = { LEAK_AREA: 0.004, DP_LAM: 0.1, CP_AIR: 1005.0, G: 9.81, P_ATM: 101325.0, R_AIR: 287.05,
+              WIND_REF_Z: null };   // null = oud artefact zonder wind_ref_z → per-opening-hoogte
 
 function simConst(d) {
   const s = (d.house_meta && d.house_meta.sim) || {};
   if (s.leak_area != null) SIM.LEAK_AREA = s.leak_area;
   if (s.dp_lam != null) SIM.DP_LAM = s.dp_lam;
+  if (s.wind_ref_z != null) SIM.WIND_REF_Z = s.wind_ref_z;
 }
 function airDensity(t) { return SIM.P_ATM / (SIM.R_AIR * (t + 273.15)); }
 function cpCoeff(thetaDeg) { const t = thetaDeg * Math.PI / 180; return 0.475*Math.cos(t) + 0.3125*Math.cos(2*t) - 0.0875; }
 function windPressure(facadeAz, height, windSpeed, windDir, shelter, rho) {
   const theta = Math.abs(((windDir - facadeAz + 180) % 360) - 180);
-  const z = Math.max(1.5, height);
+  // Dynamische druk op één referentiehoogte per gevel (CONTAM-conventie, == Python WIND_REF_Z);
+  // het hoogteverschil tussen openingen blijft alleen in de stack-term (z in solveNetwork).
+  const z = Math.max(1.5, SIM.WIND_REF_Z ?? height);
   const u = (windSpeed || 0) * Math.pow(z / 10, 0.30);
   return shelter * cpCoeff(theta) * 0.5 * rho * u * u;
 }
@@ -1107,7 +1111,8 @@ function buildOpeningsJS(meta, states, wind, params, outsideTemp) {
   const zones = Object.keys(Object.assign({}, meta.rooms || {}, meta.junctions || {}));
   const ext = (id, el, kind) => {
     const frac = (id in states) ? openFracJS(states[id], el) : defaultFracJS(el, kind);
-    const area = frac * (el.max_open_area_m2 ?? el.area_m2 ?? 0);
+    // eff_open_frac = door Python opgelost effectief-oppervlak (draairaam ≠ vol kozijngat).
+    const area = frac * (el.max_open_area_m2 ?? el.area_m2 ?? 0) * (el.eff_open_frac ?? 1.0);
     if (area <= 0) return;
     const pe = windPressure(el.facade_azimuth_deg || 0, el.center_height_m ?? 1.5, ws, wdir, shelter, rhoOut);
     ops.push({ a: el.room, b: "outside", area, Cd: cd, z: el.center_height_m ?? 1.5, Pe: pe, id });

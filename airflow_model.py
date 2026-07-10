@@ -178,6 +178,17 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
     return w
 
 
+# ── Fysica-revisie ───────────────────────────────────────────────────────────────────
+# Bumpen wanneer een fysica-wijziging de betekenis van GELEERDE parameters verschuift, zodat
+# oude geleerde waarden niet stilzwijgend op de nieuwe fysica worden losgelaten. Rev 2 =
+# de wind-referentiehoogte-fix + effectief-openingsoppervlak (WIND_REF_Z/EFF_OPEN_AREA, juli
+# 2026): cp_shelter (0.10, gevloerd) en vent_eff (0.43) stonden op waarden die louter de oude
+# zelfde-gevel-lus compenseerden — onder de nieuwe fysica zijn dat fossielen. Bij een
+# rev-mismatch reset merged_params alléén die twee globalen naar hun prior (kamer-params
+# blijven staan: hun betekenis is niet verschoven) en laat main() het checkpoint + de
+# anomalie-poort van die ene run vallen (beide zijn op de oude fysica geijkt).
+PHYSICS_REV = 2
+
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
 # Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
 # opening-log, een code-deploy die de fit verslechtert, een anomaal venster — ín de opgeslagen
@@ -672,6 +683,37 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
 # ════════════════════════════════════════════════════════════════════════════════════
 #  Wind — Cp-druk per gevel
 # ════════════════════════════════════════════════════════════════════════════════════
+
+# Referentiehoogte (m) voor de wind-dynamische druk: de nokhoogte (≈ het trap-skylight, 8.7 m).
+# Surface-averaged Cp-tabellen zijn genormaliseerd op ÉÉN referentie-winddruk op gebouwhoogte —
+# CONTAM/AIRNET rekenen dan ook één winddruk per gevel. De oude code evalueerde het power-law-
+# profiel op de hoogte van élke opening afzonderlijk, waardoor twee openingen op DEZELFDE gevel
+# (zelfde Cp) een ΔPe ∝ wind² kregen puur uit hun hoogteverschil: een kunstmatige dwarsstroom-lus
+# hotties-raam → koker → kantoor-raam van ~0.27 m³/s bij 3 m/s (~27 ACH; 0.57 bij 6.2 m/s — de
+# "ACH 50" uit de juli-assessments). De kalibratie vocht daar alleen maar tegen: cp_shelter op
+# zijn vloer (0.10) en vent_eff omlaag om de valse instroom thermisch te dempen — en de tweeling
+# blies intussen warme buitenlucht in hotties (de +3°C-fout van 10 juli). Motor van de fix: de
+# dynamische druk op één referentiehoogte per gevel; het hóógteverschil blijft wél meedoen in de
+# stack-term (Pa_eff = P − ρ·g·z), die fysisch echt is. Gediagnosticeerd + gekwantificeerd in de
+# assessment van 10 juli 2026 (zie AIRFLOW_ASSESSMENT.md).
+WIND_REF_Z = 8.7
+
+# Effectief-openingsoppervlak per openings-type (fractie van max_open_area_m2 die aerodynamisch
+# meedoet, bovenop de vaste Cd). Een wijd open draairaam is zelden het volle kozijngat: de
+# openstaande vleugel staat in de stroombaan en de contractie is sterker dan het kale Cd-getal
+# (metingen op zij-/onderhangende ramen: effectieve Cd·A grofweg 30–60% van het kozijngat; met
+# CD 0.62 → factor 0.5 ≈ effectief 0.31·A, midden in die band). Een (buiten)deur opent vrijwel
+# vol (0.9); een kiepraam-stand zit al in `tilt_frac`, dus daar géén extra korting (1.0).
+# Per element te overschrijven met `eff_open_frac` in house_model.json (additief).
+EFF_OPEN_AREA = {"casement": 0.5, "door": 0.9, "tilt": 1.0}
+
+
+def _eff_open_area(elem: dict) -> float:
+    """Effectief-oppervlak-factor voor een exterieure opening: expliciete `eff_open_frac`
+    van het element, anders de `open_type`-default uit EFF_OPEN_AREA, anders 1.0 (roosters
+    e.d.: hun doorsnede ís al het effectieve gat)."""
+    return float(elem.get("eff_open_frac", EFF_OPEN_AREA.get(elem.get("open_type"), 1.0)))
+
 
 def cp_coefficient(theta_deg: float) -> float:
     """Surface-averaged druk-coëfficiënt voor een verticale laagbouwgevel als functie
@@ -1210,11 +1252,14 @@ def build_openings(house: dict, states: dict, weather: dict, params: dict,
 
     def ext(elem_id, elem, kind):
         frac = _open_frac(states[elem_id], elem) if elem_id in states else _default_frac(elem, kind)
-        area = frac * elem.get("max_open_area_m2", elem.get("area_m2", 0.0))
+        area = frac * elem.get("max_open_area_m2", elem.get("area_m2", 0.0)) * _eff_open_area(elem)
         if area <= 0:
             return
+        # Dynamische druk op WIND_REF_Z (één referentie-winddruk per gevel, CONTAM-conventie) —
+        # het element-hoogteverschil doet alleen mee in de stack-term via `z` hieronder. Zie de
+        # toelichting bij WIND_REF_Z: per-opening-hoogte gaf een kunstmatige zelfde-gevel-lus.
         pe = wind_pressure(elem.get("facade_azimuth_deg", 0.0),
-                           elem.get("center_height_m", 1.5), wind_s, wind_d, shelter, rho_out,
+                           WIND_REF_Z, wind_s, wind_d, shelter, rho_out,
                            elem.get("tilt_deg", 90.0))
         ops.append({"a": elem["room"], "b": "outside", "area": area, "Cd": cd,
                     "z": elem.get("center_height_m", 1.5), "Pe": pe, "id": elem_id})
@@ -2148,6 +2193,12 @@ def default_params(house: dict) -> dict:
     return p
 
 
+def physics_rev_migration_needed(learned: dict) -> bool:
+    """Is er geleerde staat van een oudere fysica-revisie? (Een lege/nieuwe staat hoeft
+    niets te migreren — de defaults zijn al de priors.)"""
+    return bool(learned.get("params")) and learned.get("physics_rev") != PHYSICS_REV
+
+
 def merged_params(house: dict, learned: dict) -> dict:
     """Geleerde params aangevuld met priors voor nieuwe kamers/keys (additief, robuust).
     Gedeeld door main() en night_forecast.py zodat de merge-logica niet dubbel bestaat."""
@@ -2156,6 +2207,12 @@ def merged_params(house: dict, learned: dict) -> dict:
     # niets leest params["cd"] — strip 'm hier zodat hij niet eeuwig in de artefacten meerijdt.
     params.pop("cd", None)
     base = default_params(house)
+    # Fysica-revisie-migratie (zie PHYSICS_REV): geleerde staat van een oudere revisie →
+    # alleen de globalen terug naar hun prior. Hier (en niet alleen in main) zodat óók
+    # night_forecast.py nooit oude-fysica-globalen op de nieuwe fysica loslaat.
+    if physics_rev_migration_needed(learned):
+        for g in GLOBAL_PARAMS:
+            params[g] = base[g]
     for g in GLOBAL_PARAMS:
         params.setdefault(g, base[g])
     for rid in house.get("rooms", {}):
@@ -2622,11 +2679,15 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                               "max_open_area_m2": w.get("max_open_area_m2", 0.0),
                               "center_height_m": w.get("center_height_m"),
                               "tilt_frac": w.get("tilt_frac"), "tilt_deg": w.get("tilt_deg"),
+                              # Opgelost effectief-oppervlak (open_type/override) voor de
+                              # JS-speeltuin, zodat die dezelfde korting rekent (additief).
+                              "eff_open_frac": _eff_open_area(w),
                               "plan_side": w.get("plan_side"), "plan_pos": w.get("plan_pos"),
                               "label": w.get("label", wid)}
                         for wid, w in house.get("windows", {}).items()},
             "vents": {vid: {"room": v.get("room"), "facade_azimuth_deg": v.get("facade_azimuth_deg"),
                             "area_m2": v.get("area_m2"), "max_open_area_m2": v.get("max_open_area_m2"),
+                            "eff_open_frac": _eff_open_area(v),
                             "center_height_m": v.get("center_height_m"),
                             "default_state": v.get("default_state", "open"),
                             "plan_side": v.get("plan_side"), "plan_pos": v.get("plan_pos"),
@@ -2638,7 +2699,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                             "plan_pos": d.get("plan_pos"),
                             "fixed": bool(d.get("fixed"))}
                       for did, d in house.get("doors", {}).items()},
-            "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM},
+            "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM, "wind_ref_z": WIND_REF_Z},
         },
     }
 
@@ -2785,6 +2846,17 @@ def main():
     print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C")
 
     learned = load_learned()
+    # Fysica-revisie-migratie (zie PHYSICS_REV): merged_params reset de globalen; hier vervalt
+    # daarnaast het checkpoint (params + skill-lat zijn op de oude fysica geoogst — een fossiel
+    # per definitie) en wordt de anomalie-poort deze ene run overgeslagen (haar RMSE-norm komt
+    # uit de oude-fysica-leercurve).
+    physics_migrated = physics_rev_migration_needed(learned)
+    if physics_migrated:
+        learned = dict(learned)
+        learned.pop("checkpoint", None)
+        print(f"[fysica] revisie {learned.get('physics_rev', 1)} → {PHYSICS_REV}: "
+              "cp_shelter/vent_eff terug naar hun prior, checkpoint vervallen, "
+              "anomalie-poort deze run overgeslagen.")
     params = merged_params(house, learned)
 
     since = now - _timedelta_h(CALIB_WINDOW_H)
@@ -2861,7 +2933,13 @@ def main():
         # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
         # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
         rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
-        anomaly_held, baseline = should_hold_learning(rmse_cur, learned.get("rmse_history", []))
+        if physics_migrated:
+            # De anomalie-norm komt uit de oude-fysica-leercurve; met net gereset-globalen zou
+            # een vals "anomaal" de éérste leer-run op de nieuwe fysica blokkeren.
+            anomaly_held, baseline = False, None
+        else:
+            anomaly_held, baseline = should_hold_learning(rmse_cur,
+                                                          learned.get("rmse_history", []))
         learning_held = anomaly_held or paused_now
         if learning_held:
             rmse_now = rmse_cur
@@ -2964,6 +3042,7 @@ def main():
         json.dump(dash, f, ensure_ascii=False, indent=2)
     with open(LEARNED_FILE, "w", encoding="utf-8") as f:
         json.dump({"updated_at": now.isoformat(), "model_version": model_version(),
+                   "physics_rev": PHYSICS_REV,   # zie PHYSICS_REV: poort voor de globalen-migratie
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "railed": railed_params(params),   # saturatie-tell (additief, diagnostisch)

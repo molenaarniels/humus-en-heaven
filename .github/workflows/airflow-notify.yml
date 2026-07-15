@@ -61,9 +61,18 @@ jobs:
           # One twin cycle: run the model, then commit/push the dashboard + learned
           # params if they changed. A transient failure (network, Open-Meteo hiccup)
           # must not kill the loop — log it and let the next iteration retry.
+          # Ventilatie 2 (Project 12) piggybacks in the same iteration: same inputs,
+          # own artefacts + the incrementally growing training shards.
           run_once () {
             python airflow_model.py || echo "::warning::airflow_model.py failed this iteration, continuing"
-            git add docs/airflow_data.json docs/airflow_learned.json
+            python airflow2_model.py || echo "::warning::airflow2_model.py failed this iteration, continuing"
+            # Per pad guarden: op een allereerste run (of na een gefaalde twin-2-run)
+            # bestaan de twin-2-artefacten/shards nog niet en zou één missende pathspec
+            # de hele git add — dus ook twin 1's commit — laten falen.
+            for p in docs/airflow_data.json docs/airflow_learned.json \
+                     docs/airflow2_data.json docs/airflow2_learned.json data/twin2_history; do
+              [ -e "$p" ] && git add "$p"
+            done
             if git diff --staged --quiet; then
               echo "No changes to commit"
             else

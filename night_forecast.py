@@ -15,18 +15,18 @@ de nacht doorkomt:
    geen ongecorrigeerde 24u-drift meer mee. De `end_h`-parameter van
    build_timeline rekt die tweede fase op; fetch_weather's forecast_days=2
    dekt de horizon ruim.
-2. **Raam-scenario** — twee forecast-sims: `ted_small_window` open vs dicht
-   vanaf nu (toekomstige timeline-stappen krijgen een overschreven
-   states-dict; `ted_vent` (het rooster) blijft in beide ongemoeid open).
-   **Dicht is de aanname voor de échte nacht** — deur én raampje gaan 's
-   nachts standaard dicht, alleen het rooster staat open, dus dat scenario is
-   het hoofdbericht + de basis voor het slaapzakadvies; de deur naar het
-   trapgat (`ted_stair`) wordt in **beide** scenario's expliciet dichtgezet
-   (niet alleen het raampje varieert) — zonder dat zou de sim 's nachts
-   blijven meekoelen met het (stratifiërende, dak-gekoelde) trapgat terwijl
-   de deur in werkelijkheid dicht gaat. Open blijft louter een informatieve
-   vergelijking ("zou dit schelen"), geen advies om het raampje ook echt open
-   te zetten.
+2. **Raam-scenario's** — drie forecast-sims vanaf nu: (a) `ted_small_window`
+   dicht, `ted_stair` dicht (rooster blijft in alle scenario's ongemoeid
+   open) — **dit is de aanname voor de échte nacht** — deur én raampje gaan
+   's nachts standaard dicht, dus dit scenario is het hoofdbericht + de basis
+   voor het slaapzakadvies; (b) `ted_small_window` open, `ted_stair` nog
+   steeds dicht — zonder de deur geforceerd dicht te houden zou de sim 's
+   nachts blijven meekoelen met het (stratifiërende, dak-gekoelde) trapgat
+   terwijl de deur in werkelijkheid dicht gaat; (c) **alles open** —
+   `ted_small_window` open én *elk* raam en *elke* deur in het huis open
+   (incl. `ted_stair`) — het meest gunstige doorwaai-scenario. (b) en (c)
+   zijn louter een informatieve vergelijking ("zou dit schelen"), geen advies
+   om het raampje of de deuren ook echt open te zetten.
 3. **Tog/slaapzak-advies** — het nachtgemiddelde van het dicht-scenario door de
    standaard peuter-slaapzaktabel.
 
@@ -90,6 +90,20 @@ def scenario_timeline(timeline: list[dict], now: datetime, state: str) -> list[d
             for step in timeline]
 
 
+def all_open_timeline(timeline: list[dict], house: dict, now: datetime) -> list[dict]:
+    """Kopie van de timeline waarin vanaf nu élk raam én élke deur in het huis open
+    staat (incl. `ted_stair`) — het meest gunstige doorwaai-scenario, puur informatief
+    (geen advies om alles ook echt open te zetten). Ramen zonder bewegend deel
+    (`max_open_area_m2` 0) blijven fysiek dicht, ook al krijgen ze de "open"-state — de
+    sim rekent er dan gewoon geen oppervlak voor. Het verleden (de gemelde log) blijft
+    onaangeroerd, het origineel wordt niet gemuteerd."""
+    override = {eid: "open" for eid in list(house.get("windows", {}))
+               + list(house.get("doors", {}))}
+    return [({**step, "states": {**step["states"], **override}}
+             if step["t"] >= now else step)
+            for step in timeline]
+
+
 def anchor_now(ta_now: dict, actual: dict, now: datetime,
               max_staleness_min: float = ANCHOR_MAX_STALENESS_MIN) -> dict:
     """Corrigeer de blind-gesimuleerde "nu"-luchttemp per zone (`ta_now`) met de meest
@@ -136,12 +150,14 @@ def tog_advice(night_mean: float) -> tuple[str, str]:
 
 
 def build_message(now: datetime, inside_now: float | None, out_min: float | None,
-                  closed_stats: dict, open_stats: dict,
+                  closed_stats: dict, open_stats: dict, all_open_stats: dict,
                   reported_open: bool) -> str:
     """Het avondbericht. `closed_stats` = het hoofdscenario (deur + raampje
-    dicht, rooster open — de aanname voor een echte nacht); `open_stats` is
-    puur een informatieve vergelijking. `reported_open` = de huidige gemelde
-    raampje-stand (waarschuwt als die van de aanname afwijkt)."""
+    dicht, rooster open — de aanname voor een echte nacht); `open_stats`
+    (raampje open, deur dicht) en `all_open_stats` (raampje + alle ramen/deuren
+    in het huis open) zijn puur informatieve vergelijkingen. `reported_open` =
+    de huidige gemelde raampje-stand (waarschuwt als die van de aanname
+    afwijkt)."""
     d = format_date_nl(now.date())
     lines = [f"🌙 <b>Teds nacht</b> — {d}"]
     ctx = []
@@ -166,6 +182,12 @@ def build_message(now: datetime, inside_now: float | None, out_min: float | None
         delta = o7 - c7
         lines.append(f"\n🪟 Raampje ook open zou <b>{delta:+.1f}°</b> schelen om 07:00 "
                      f"({o7:.1f}° i.p.v. {c7:.1f}°)")
+
+    a7 = all_open_stats["marks"].get(7)
+    if a7 is not None and c7 is not None:
+        delta_all = a7 - c7
+        lines.append(f"🏠 Alles open (heel huis) zou <b>{delta_all:+.1f}°</b> schelen om 07:00 "
+                     f"({a7:.1f}° i.p.v. {c7:.1f}°)")
 
     tog, clothing = tog_advice(closed_stats["mean"])
     lines.append(f"\n👶 Slaapzak: <b>{tog} + {clothing}</b> "
@@ -242,12 +264,16 @@ def main() -> None:
         sim = am.simulate(house, params, scenario_timeline(fcst_tl, now, state),
                           ta_now, tm_seed=tm_now)
         stats[state] = night_stats(sim["series"].get(ROOM_ID, []), now)
-    if not stats["open"] or not stats["dicht"]:
+    sim_all = am.simulate(house, params, all_open_timeline(fcst_tl, house, now),
+                          ta_now, tm_seed=tm_now)
+    stats["all_open"] = night_stats(sim_all["series"].get(ROOM_ID, []), now)
+    if not stats["open"] or not stats["dicht"] or not stats["all_open"]:
         print("[teds-nacht] Geen nachtvenster in de sim-serie → stop.")
         raise SystemExit(1)
 
     closed_stats = stats["dicht"]
     open_stats = stats["open"]
+    all_open_stats = stats["all_open"]
 
     # Huidige gemelde raampje-stand (voor de afwijking-kopregel).
     w = house["windows"][WINDOW_ID]
@@ -260,12 +286,12 @@ def main() -> None:
                  if s["t"] >= now and s.get("T_out") is not None]
     out_min = min(night_out) if night_out else None
 
-    night_max = max(stats["open"]["max"], stats["dicht"]["max"])
+    night_max = max(stats["open"]["max"], stats["dicht"]["max"], stats["all_open"]["max"])
     if not should_send(now, night_max):
         print(f"[teds-nacht] buiten seizoen en koele nacht (max {night_max:.1f}°) — stil.")
         return
 
-    msg = build_message(now, inside_now, out_min, closed_stats, open_stats,
+    msg = build_message(now, inside_now, out_min, closed_stats, open_stats, all_open_stats,
                         reported_open)
     print(msg)
     if os.environ.get("DRY_RUN") == "1":

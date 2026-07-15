@@ -98,6 +98,22 @@ def test_scenario_forces_door_closed_in_both_states():
                 assert step["states"]["ted_stair"] == "dicht"
 
 
+def test_all_open_timeline_opens_every_window_and_door():
+    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=4.0,
+                           end_h=6.0)
+    all_open = nf.all_open_timeline(tl, HOUSE, NOW)
+    for orig, sc in zip(tl, all_open):
+        if sc["t"] >= NOW:
+            for wid in HOUSE["windows"]:
+                assert sc["states"][wid] == "open"
+            for did in HOUSE["doors"]:
+                assert sc["states"][did] == "open"
+            assert sc is not orig                      # kopie, geen mutatie
+        else:
+            assert sc is orig                          # verleden blijft de log
+    assert "ted_stair" not in tl[-1]["states"]           # origineel ongemuteerd
+
+
 def test_closed_door_retains_more_heat_overnight():
     # Kille trap (14°, zoals de koudere schacht 's nachts); ted start warm. Met de deur
     # geforceerd dicht (het echte gedrag) moet ted minder afkoelen dan een controle-run
@@ -133,6 +149,20 @@ def test_open_window_cools_more_overnight():
         stats[state] = nf.night_stats(sim["series"]["ted"], NOW)
     assert stats["open"]["marks"][7] < stats["dicht"]["marks"][7]
     assert stats["open"]["min"] <= stats["dicht"]["min"]
+
+
+def test_all_open_cools_at_least_as_much_as_window_only():
+    # Alles open (incl. de trapdeur naar de koelere schacht) mag 's nachts niet
+    # minder afkoelen dan alleen het raampje open (deur dicht).
+    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
+                           end_h=nf.hours_until_morning(NOW))
+    params = am.default_params(HOUSE)
+    seed = {"ted": 24.0, "stair": 24.0}
+    sim_open = am.simulate(HOUSE, params, nf.scenario_timeline(tl, NOW, "open"), seed)
+    sim_all = am.simulate(HOUSE, params, nf.all_open_timeline(tl, HOUSE, NOW), seed)
+    stats_open = nf.night_stats(sim_open["series"]["ted"], NOW)
+    stats_all = nf.night_stats(sim_all["series"]["ted"], NOW)
+    assert stats_all["marks"][7] <= stats_open["marks"][7]
 
 
 # ── Anker-correctie (Fix 2: 24u-drift terugzetten op de laatste actuele meting) ──────
@@ -231,11 +261,15 @@ def test_message_format():
              "marks": {23: 20.5, 3: 19.5, 7: 18.8}}
     open_ = {"min": 17.0, "max": 20.5, "mean": 18.3,
              "marks": {23: 20.0, 3: 18.5, 7: 17.5}}
-    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, reported_open=True)
+    all_open = {"min": 16.2, "max": 20.0, "mean": 17.6,
+               "marks": {23: 19.5, 3: 17.8, 7: 16.5}}
+    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, all_open, reported_open=True)
     assert "Teds nacht" in msg
     assert "raampje dicht" in msg and "voorspelling gaat uit van dicht" in msg
     assert "23:00" in msg and "07:00" in msg
     assert "-1.3°" in msg                       # open zou 18.8 → 17.5 = -1.3° schelen
+    assert "-2.3°" in msg                       # alles open zou 18.8 → 16.5 = -2.3° schelen
+    assert "Alles open" in msg
     assert "2.5 tog" in msg                     # nachtgemiddeld (dicht) 19.5° → 18–21-band
     assert len(msg) < 4096
 
@@ -245,7 +279,9 @@ def test_message_format_matches_reported_stand():
              "marks": {23: 20.5, 3: 19.5, 7: 18.8}}
     open_ = {"min": 17.0, "max": 20.5, "mean": 18.3,
              "marks": {23: 20.0, 3: 18.5, 7: 17.5}}
-    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, reported_open=False)
+    all_open = {"min": 16.2, "max": 20.0, "mean": 17.6,
+               "marks": {23: 19.5, 3: 17.8, 7: 16.5}}
+    msg = nf.build_message(NOW, 22.5, 14.2, closed, open_, all_open, reported_open=False)
     assert "voorspelling gaat uit van dicht" not in msg
 
 

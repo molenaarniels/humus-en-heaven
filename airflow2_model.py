@@ -1226,7 +1226,7 @@ def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None
 
 def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
               time_budget_s: float | None = None,
-              start_params: dict | None = None) -> tuple[dict, dict]:
+              start_params: dict | None = None, lam0: float = 1e-3) -> tuple[dict, dict]:
     """Mini-batch Gauss-Newton over voorbereide vensters (prepare_windows): JᵀWJ/JᵀWr
     worden per epoch over álle vensters geaccumuleerd (Huber-gewogen, géén recency —
     batch weegt de hele historie gelijk), één gedempte stap per epoch, ridge naar de
@@ -1269,9 +1269,14 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
         return cost
 
     t_start = time.time()
-    lam = 1e-3
+    # lam0: start-demping. Default 1e-3 (CI, gladde voortzetting van een eigen anker);
+    # de campagne zet 'm hoog (~1.0) — de eerste vrijwel ongedempte GN-stap vanaf een
+    # geperturbeerde start groef zich in de 6 train-vensters in en generaliseerde
+    # slecht (screening ronde 1: train ~1.0 °C, held-out 1.3–1.5 °C).
+    lam = lam0
     best_cost = _total_cost(x)
     epochs = 0
+    accepted = 0
     converged = False
     for _ in range(max_epochs if max_epochs is not None else BATCH_MAX_EPOCHS):
         if time.time() - t_start > time_budget_s:
@@ -1332,6 +1337,7 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
         lam = max(1e-4, lam / 3.0)
         x = x_new
         best_cost = new_cost
+        accepted += 1
         if improved < BATCH_CONVERGED_RTOL:
             converged = True   # geaccepteerde stap zonder materiële winst → klaar
             break
@@ -1360,7 +1366,8 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
                 continue
             rr_all += [am._interp(pred, ts) - val for ts, val in samples]
     rmse_b, rmse_rh_b = am.rmse(rt_all), am.rmse(rr_all)
-    stats = {"windows": len(wins), "epochs": epochs, "converged": converged,
+    stats = {"windows": len(wins), "epochs": epochs, "accepted": accepted,
+             "converged": converged,
              "samples": len(rt_all),
              "rmse_batch": round(rmse_b, 3) if rmse_b == rmse_b else None,
              "rmse_rh_batch": round(rmse_rh_b, 2) if rmse_rh_b == rmse_rh_b else None,

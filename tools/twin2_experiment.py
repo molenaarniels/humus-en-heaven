@@ -41,6 +41,7 @@ import airflow2_model as a2         # noqa: E402
 WINDOW_D = 5.0
 STRIDE_D = 5.0            # == WINDOW_D: géén overlap → lek-vrije holdout
 DEFAULT_EPOCHS = 3
+LAM0 = 1e-3               # start-demping; ronde ≥2 zet dit hoog (--lam0) tegen train-overfit
 DEFAULT_OFFSET = 2        # held-out indices {2, 5, 8}: mild juni / na-hittegolf / warm juli
 SEG_OFFSETS_H = (0.0, 48.0)   # 48u-segmenten binnen elk held venster
 SEG_WARMUP_H = 24.0
@@ -206,12 +207,13 @@ def run_arm(arm: str, out_dir: str, epochs: int, offset: int) -> None:
           f"held: {held_idx}")
     start = start_params_for(house, cfg)
     eval0 = evaluate(house, held, start)     # pure-config-effect, vóór de refit
-    params, stats = a2.batch_fit(house, train, max_epochs=epochs, start_params=start)
+    params, stats = a2.batch_fit(house, train, max_epochs=epochs, start_params=start,
+                                 lam0=LAM0)
     ev = evaluate(house, held, params)
     result = {"arm": arm, "cfg": cfg, "epochs_budget": epochs, "holdout_offset": offset,
               "held_idx": held_idx, "n_train": len(train),
-              "fit": {k: stats[k] for k in ("epochs", "converged", "rmse_batch",
-                                            "rmse_rh_batch", "samples")},
+              "fit": {k: stats[k] for k in ("epochs", "accepted", "converged",
+                                            "rmse_batch", "rmse_rh_batch", "samples")},
               "eval0": eval0, "eval": ev,
               "railed": a2.railed_params2(params), "params": params,
               "wall_s": round(time.time() - t0, 1)}
@@ -232,7 +234,8 @@ def run_all(out_dir: str, epochs: int, offset: int, jobs: int, arms: list[str]) 
             arm = pending.pop(0)
             p = subprocess.Popen([sys.executable, os.path.abspath(__file__),
                                   "--arm", arm, "--out", out_dir,
-                                  "--epochs", str(epochs), "--holdout-offset", str(offset)],
+                                  "--epochs", str(epochs), "--holdout-offset", str(offset),
+                                  "--lam0", str(LAM0)],
                                  cwd=_ROOT)
             running.append((arm, p))
             print(f"[all] gestart: {arm} (pid {p.pid}); {len(pending)} in wachtrij")
@@ -270,9 +273,12 @@ def report(out_dir: str, offset: int) -> None:
         if base and r is not base:
             worst = max((ev["per_window"][k]["rmse"] or 0) - (b["per_window"].get(k, {}).get("rmse") or 0)
                         for k in ev["per_window"])
+        worst_s = "n.b." if worst is None else format(worst, "+.3f")
+        gap = (r["fit"]["rmse_batch"] - ev["rmse_5d"]) if r["fit"]["rmse_batch"] else None
+        gap_s = "n.b." if gap is None else format(-gap, "+.3f")
         print(f"{r['arm']:22} {ev['rmse_5d']:>7.3f} {d5:>+7.3f} {ev['rmse_48h']:>7.3f} "
-              f"{d48:>+7.3f} {ev['rmse_rh_5d']:>6.2f} {drh:>+6.2f} "
-              f"{worst if worst is None else format(worst, '+.3f'):>17}")
+              f"{d48:>+7.3f} {ev['rmse_rh_5d']:>6.2f} {drh:>+6.2f} {worst_s:>17} "
+              f"acc={r['fit'].get('accepted', '?')} overfit-gap={gap_s}")
 
 
 def main() -> int:
@@ -284,9 +290,14 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     ap.add_argument("--holdout-offset", type=int, default=DEFAULT_OFFSET)
     ap.add_argument("--jobs", type=int, default=3)
+    ap.add_argument("--lam0", type=float, default=None,
+                    help="start-demping voor de fits (default 1e-3; ronde ≥2: ~1.0)")
     ap.add_argument("--arms", default=None,
                     help="komma-lijst (voor --all), default alle ARMS")
     args = ap.parse_args()
+    global LAM0
+    if args.lam0 is not None:
+        LAM0 = args.lam0
     if args.report:
         report(args.out, args.holdout_offset)
     elif args.all:

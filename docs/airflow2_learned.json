@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-16T11:00:57.233123+02:00",
+  "updated_at": "2026-07-16T11:15:52.797725+02:00",
   "model_version": "0dbb29a",
   "physics2_rev": 1,
   "params": {
@@ -93,23 +93,13 @@
       "w_buf": 1.2458266345965772
     }
   },
-  "rmse": 1.355,
-  "rmse_rh": 9.45,
+  "rmse": 1.363,
+  "rmse_rh": 9.42,
   "railed": [
-    "global.stair_exch@ceil",
-    "living.solar_gain@floor",
-    "ted.c_fast@ceil",
-    "ted.h_af@floor",
-    "ted.ua_env@floor",
-    "ted.solar_gain@floor",
     "ted.ua_party@floor",
-    "hotties.solar_gain@floor",
-    "hotties.f_air@floor",
     "office.c_deep@floor",
     "office.ua_party@floor",
     "office.ua_roof@floor",
-    "office.f_air@floor",
-    "bath.ua_env@floor",
     "bath.ua_party@floor",
     "bath.q_int@floor"
   ],
@@ -415,6 +405,22 @@
       "rmse_rh": 9.45,
       "skill": 0.041,
       "rmse_naive": 1.414,
+      "wx": {
+        "tmax": 31.2,
+        "solar_peak": 864,
+        "solar_mean": 316
+      },
+      "pinned": true
+    },
+    {
+      "t": "2026-07-16T11:15:52.797725+02:00",
+      "rmse": 1.363,
+      "held": false,
+      "paused": false,
+      "version": "0dbb29a",
+      "rmse_rh": 9.42,
+      "skill": 0.016,
+      "rmse_naive": 1.385,
       "wx": {
         "tmax": 31.2,
         "solar_peak": 864,

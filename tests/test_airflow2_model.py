@@ -487,3 +487,18 @@ def test_filters_apply_to_rh_channel():
     filtered, dropped = am.filter_heating_samples(rh, heat_on)
     assert dropped == {"a": 1}
     assert filtered["a"] == [(t0 + timedelta(minutes=15), 51.0)]
+
+
+def test_batch_start_params_warm_start_and_rev_gate():
+    # Wekelijkse batch start dóór op het vorige anker (cumulatieve convergentie —
+    # het budget laat maar ~2 epochs per run toe); een rev-vreemd of leeg anker
+    # valt terug op de kale priors (None).
+    house = _toy_house()
+    prev = {"params": {**a2.default_params2(house), "vent_eff": 0.7},
+            "physics2_rev": a2.PHYSICS2_REV}
+    start = a2.batch_start_params(house, prev)
+    assert start["vent_eff"] == 0.7
+    assert start["a"]["c_fast"] == a2.PRIORS2["c_fast"]   # nieuwe keys aangevuld
+    assert a2.batch_start_params(house, {}) is None
+    assert a2.batch_start_params(house, {"params": {"vent_eff": 0.7},
+                                         "physics2_rev": a2.PHYSICS2_REV - 1}) is None

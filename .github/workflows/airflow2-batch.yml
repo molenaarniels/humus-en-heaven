@@ -14,6 +14,11 @@ on:
     - cron: "0 3 * * 0"          # zondag 03:00
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
+    inputs:
+      budget_min:
+        description: "Fit-budget in minuten (leeg = default ~70)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -42,7 +47,13 @@ jobs:
           # Crash-alert via run_guarded (bestaande secrets, geen nieuwe).
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python airflow2_model.py --batch
+          # Optionele budget-override (minuten → seconden), via env (securityregel).
+          BUDGET_MIN: ${{ inputs.budget_min }}
+        run: |
+          if [ -n "${BUDGET_MIN}" ]; then
+            export BATCH_TIME_BUDGET_S=$(( BUDGET_MIN * 60 ))
+          fi
+          python airflow2_model.py --batch
 
       - name: Commit batch anchor + refreshed shard weather
         run: |

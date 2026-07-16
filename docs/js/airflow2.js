@@ -44,16 +44,17 @@ function fmt(v, dec = 1, unit = "") {
 }
 function errCls(err) { return err == null ? "" : (err >= 0 ? "err-pos" : "err-neg"); }
 
-// Gemiddelde RMSE van de laatste `days` dagen uit een leercurve (alleen écht-geleerde
-// punten: held/gepauzeerd telt niet als model-skill).
-function recentRmse(hist, days = 7) {
+// Gemiddelde van een leercurve-veld over de laatste `days` dagen (alleen écht-geleerde/
+// geëvalueerde punten: held/gepauzeerd telt niet als model-skill).
+function recentMean(hist, days = 7, key = "rmse") {
   const cut = Date.now() - days * 864e5;
   const vals = (hist || [])
-    .filter(p => p.rmse != null && !p.held && !p.paused && new Date(p.t).getTime() >= cut)
-    .map(p => p.rmse);
+    .filter(p => p[key] != null && !p.held && !p.paused && new Date(p.t).getTime() >= cut)
+    .map(p => p[key]);
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
+function recentRmse(hist, days = 7) { return recentMean(hist, days, "rmse"); }
 
 // ===================== RENDER =====================
 function render() {
@@ -131,6 +132,7 @@ function duelPanel(learned) {
       ? `<div class="duel">Tweeling 2 is <span class="win">${pct}% nauwkeuriger</span> dan tweeling 1 over de laatste 7 dagen.</div>`
       : `<div class="duel">Tweeling 2 is <span class="lose">${-pct}% minder nauwkeurig</span> dan tweeling 1 over de laatste 7 dagen.</div>`;
   }
+  const s2 = recentMean(hist2, 7, "skill"), s1 = recentMean(hist1, 7, "skill");
   return `<div class="cell">
       <div class="rule-label">Het duel — model 2 vs. model 1</div>
       <div style="display:flex;gap:26px;align-items:baseline;margin-top:8px;flex-wrap:wrap;">
@@ -138,8 +140,13 @@ function duelPanel(learned) {
         <div><div class="big-num" style="color:var(--ink-soft);">${fmt(r1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse 7d</div></div>
       </div>
       ${verdict}
+      <div class="stat-row"><span class="lbl">skill 7d (weer-genormaliseerd — eerlijkste maat)</span>
+        <span>tweeling 2 ${fmt(s2, 2)} · tweeling 1 ${fmt(s1, 2)}</span></div>
       <div style="font-style:italic;color:var(--ink-soft);font-size:12px;margin-top:8px;">
-        Zelfde kalibratievenster, zelfde tado-grond-waarheid, zelfde meldingen — alleen het model verschilt.
+        Zelfde kalibratievenster, zelfde tado-grond-waarheid, zelfde meldingen — alleen het model
+        verschilt. Kanttekening: tweeling 1 fit elke 15 min op precies het venster waarop hij
+        gescoord wordt (in-sample); tweeling 2 staat vastgepind en scoort out-of-sample — de
+        RMSE-vergelijking vleit tweeling 1.
       </div>
     </div>`;
 }

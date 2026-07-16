@@ -189,6 +189,33 @@ def gist_write_files(files: dict[str, str]) -> None:
 # handmatige re-bootstrap. De PATCH is idempotent → agressief retryen mag.
 TOKEN_PERSIST_DELAYS = (2, 4, 8, 16, 32)  # s — ~6 pogingen, ~62s worst case
 
+# Retry-schema voor de tado-requests zelf (token-refresh + per-zone calls). tado's
+# API heeft af en toe een kortstondige ReadTimeout/verbindingshikje (geobserveerd);
+# zonder retry doet dat de hele kwartier-iteratie stranden vóórdat het dashboard
+# ook maar geschreven is (main() faalt al vóór write_dashboard()). Kort en klein
+# (twee pogingen na de eerste) zodat een échte, langdurige tado-storing niet een
+# hele iteratie laat verzuipen in wachttijd — dat geval blijft gewoon een mislukte
+# iteratie (de volgende kwartier-tick probeert opnieuw). Alleen transiënte
+# netwerkfouten (timeout/verbinding) retryen; een HTTP-foutstatus (401 etc.) is
+# geen netwerkhikje en moet meteen zichtbaar falen.
+TADO_RETRY_DELAYS = (3, 8)  # s — ~3 pogingen, ~11s extra worst case per call
+
+
+def _tado_request(method, url: str, **kwargs):
+    """`method` (bv. `requests.get`/`requests.post`) met retry op transiënte
+    timeouts/verbindingsfouten — zie TADO_RETRY_DELAYS hierboven."""
+    last_err: Exception | None = None
+    for attempt, delay in enumerate((0, *TADO_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return method(url, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_err = e
+            print(f"[tado] poging {attempt} mislukt ({sanitize_error(e)})"
+                  + (", retry" if attempt <= len(TADO_RETRY_DELAYS) else ""))
+    raise last_err
+
 
 def _persist_rotated_token(new_refresh: str) -> None:
     """Schrijf de geroteerde refresh token naar de Gist, met retry/backoff.
@@ -233,7 +260,8 @@ def get_access_token() -> str:
         print(f"[tado] `{TOKEN_FILE}` bevat geen refresh_token.", file=sys.stderr)
         sys.exit(1)
 
-    r = requests.post(
+    r = _tado_request(
+        requests.post,
         TADO_TOKEN_URL,
         data={
             "client_id":     TADO_CLIENT_ID,
@@ -260,7 +288,8 @@ def get_access_token() -> str:
 
 
 def _tado_get(path: str, access_token: str) -> dict:
-    r = requests.get(
+    r = _tado_request(
+        requests.get,
         f"{TADO_API}{path}",
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=20,

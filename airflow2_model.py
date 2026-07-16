@@ -96,15 +96,16 @@ REG_WEIGHT2_BY_PARAM = {"solar_gain": 6.0, "c_deep": 8.0, "h_fd": 8.0,
 # RH-residuen tellen mee in de fit, geschaald naar °C-equivalent: ~10%RH fout weegt
 # als ~1°C. Groot genoeg om vent_eff te binden, klein genoeg dat de temp-fit domineert.
 RH_RES_WEIGHT = 0.10
-# Online blend van de geleerde params naar een nieuw batch-anker (eenmalig per anker).
-ANCHOR_BLEND = 0.5
 
 # ── Batch-fit ──────────────────────────────────────────────────────────────────────
 BATCH_WINDOW_D  = 5.0    # dagen residu-venster per batch-window
 BATCH_STRIDE_D  = 3.0    # dagen stap tussen window-starts (overlap → gladdere fit)
 BATCH_WARMUP_H  = 24.0   # sim-only aanloop per window (massaknoop-equilibratie)
-BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "2400"))
+BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "4200"))
 BATCH_MAX_EPOCHS = 40
+# Convergentie-stop: een geaccepteerde stap die de kosten relatief minder dan dit
+# verbetert telt als "uitgeconvergeerd" — de resterende budget-tijd is dan verspild.
+BATCH_CONVERGED_RTOL = 1e-3
 
 # ── Vocht (tracer + EMPD-lite buffer) ──────────────────────────────────────────────
 P_ATM_KPA        = 101.325
@@ -855,31 +856,21 @@ def merged_params2(house: dict, learned: dict) -> dict:
     return params
 
 
-def maybe_adopt_anchor(params: dict, learned: dict, batch: dict) -> tuple[dict, dict | None, dict]:
-    """Batch-anker-adoptie: is er een batch-resultaat van de huidige fysica-revisie dat
-    nieuwer is dan het laatst geadopteerde (`anchor_at`), blend de geleerde params er
-    dan eenmalig ANCHOR_BLEND naartoe en gebruik het voortaan als ridge-anker. Geeft
-    (params, anker-params|None, anker-stempels)."""
-    stamps = {"anchor_at": learned.get("anchor_at"), "anchor_src": learned.get("anchor_src")}
+def anchor_from_batch(house: dict, batch: dict) -> tuple[dict | None, dict]:
+    """Het vastgepinde parameterstel uit het batch-anker: de batch-params (aangevuld
+    met priors voor nieuwe kamers/keys) + de anker-stempels — of (None, lege stempels)
+    bij geen/rev-vreemd anker (→ de kwartierrun valt terug op bootstrap-leren).
+
+    Dit ís het regime van tweeling 2: minder adaptief, maar in een goede staat. De
+    kwartierrun drift niet online rond het anker (dat was tweeling 1's regime opnieuw)
+    maar pint de params exact op het batch-optimum; adaptatie loopt uitsluitend via de
+    wekelijkse, cumulatieve (warm-gestarte) batch-herfit over de volle historie."""
     if not batch.get("params") or batch.get("physics2_rev") != PHYSICS2_REV:
-        return params, None, stamps
-    anchor = batch["params"]
-    fitted_at = batch.get("fitted_at")
-    if fitted_at and fitted_at != learned.get("anchor_at"):
-        keys = _param_keys2([rid for rid in params if isinstance(params.get(rid), dict)])
-        xv = params_to_vec2(params, keys)
-        av = []
-        for scope, name in keys:
-            if scope == "global":
-                av.append(anchor.get(name, PRIORS2[name]))
-            else:
-                av.append((anchor.get(scope) or {}).get(name, PRIORS2[name]))
-        blended = [xv[j] + ANCHOR_BLEND * (av[j] - xv[j]) for j in range(len(keys))]
-        params = vec_to_params2(blended, keys, params)
-        stamps = {"anchor_at": fitted_at, "anchor_src": batch.get("model_version")}
-        print(f"[anker] nieuw batch-anker geadopteerd (gefit {fitted_at}, "
-              f"rmse_batch {batch.get('rmse_batch')}°C) — params {ANCHOR_BLEND:.0%} geblend.")
-    return params, anchor, stamps
+        return None, {"anchor_at": None, "anchor_src": None}
+    params = merged_params2(house, {"params": json.loads(json.dumps(batch["params"])),
+                                    "physics2_rev": PHYSICS2_REV})
+    return params, {"anchor_at": batch.get("fitted_at"),
+                    "anchor_src": batch.get("model_version")}
 
 
 def collect_actual_rh(house: dict, wd: dict, since: datetime) -> dict:
@@ -1199,6 +1190,7 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
     lam = 1e-3
     best_cost = _total_cost(x)
     epochs = 0
+    converged = False
     for _ in range(BATCH_MAX_EPOCHS):
         if time.time() - t_start > time_budget_s:
             break
@@ -1254,9 +1246,13 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
             if lam > 1e6:
                 break
             continue
+        improved = (best_cost - new_cost) / max(best_cost, 1e-9)
         lam = max(1e-4, lam / 3.0)
         x = x_new
         best_cost = new_cost
+        if improved < BATCH_CONVERGED_RTOL:
+            converged = True   # geaccepteerde stap zonder materiële winst → klaar
+            break
 
     params = vec_to_params2(x, keys, params)
     # Eind-RMSE over alle vensters met de definitieve params.
@@ -1282,7 +1278,8 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
                 continue
             rr_all += [am._interp(pred, ts) - val for ts, val in samples]
     rmse_b, rmse_rh_b = am.rmse(rt_all), am.rmse(rr_all)
-    stats = {"windows": len(wins), "epochs": epochs, "samples": len(rt_all),
+    stats = {"windows": len(wins), "epochs": epochs, "converged": converged,
+             "samples": len(rt_all),
              "rmse_batch": round(rmse_b, 3) if rmse_b == rmse_b else None,
              "rmse_rh_batch": round(rmse_rh_b, 2) if rmse_rh_b == rmse_rh_b else None,
              "span": {"start": t_min.isoformat(), "end": t_max.isoformat()}}
@@ -1301,7 +1298,7 @@ def batch_start_params(house: dict, prev: dict) -> dict | None:
 def batch_main():
     """`python airflow2_model.py --batch`: ververs het shard-weer uit het archief,
     fit over de volle historie en schrijf het batch-anker (docs/airflow2_batch.json).
-    De kwartierrun adopteert het anker op zijn volgende iteratie (maybe_adopt_anchor)."""
+    De kwartierrun pint zich op zijn volgende iteratie op het anker vast (anchor_from_batch)."""
     now = datetime.now(TZ)
     print(f"[batch] Start — {now.isoformat()}")
     house = am.load_house()
@@ -1377,7 +1374,7 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
                      baseline=None, skill=None, rmse_baseline=None, wx=None,
                      ac_room=None, ac_excluded=None, heat_now=None, heat_excluded=None,
                      paused_now=False, paused_since=None, pause_excluded=None,
-                     anchor_stamps=None) -> dict:
+                     anchor_stamps=None, pinned=False) -> dict:
     """Stel docs/airflow2_data.json samen (additief schema, veldnamen mirroren
     airflow_data.json waar het kan zodat de frontend-logica herbruikbaar blijft)."""
     cur = weather["current"]
@@ -1470,9 +1467,11 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             entry["rmse_naive"] = round(rmse_baseline, 3)
         if wx:
             entry["wx"] = wx
+        if pinned:
+            entry["pinned"] = True     # vastgepind op het anker — pure model-kwaliteit
         if (anchor_stamps or {}).get("anchor_at") and \
                 anchor_stamps.get("anchor_at") != learned.get("anchor_at"):
-            entry["anchored"] = True   # markeer het punt waarop een batch-anker landde
+            entry["anchored"] = True   # markeer het punt waarop een (nieuw) batch-anker landde
         rmse_hist.append(entry)
     rmse_hist = am.thin_rmse_history(rmse_hist, now)
 
@@ -1508,6 +1507,7 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
                     "skill": skill,
                     "rmse_history": rmse_hist,
                     "held": bool(learning_held), "paused": bool(paused_now),
+                    "pinned": bool(pinned),
                     "solver_failures": sim.get("solver_failures", 0),
                     "baseline_rmse": round(baseline, 3) if baseline is not None else None,
                     "anchor_at": stamps.get("anchor_at"),
@@ -1556,9 +1556,16 @@ def main():
     am._NEIGHBOR_TEMP = am.neighbor_temp_estimate(weather.get("hourly", []), now)
 
     learned = load_learned2()
-    params = merged_params2(house, learned)
     batch = load_batch()
-    params, anchor, anchor_stamps = maybe_adopt_anchor(params, learned, batch)
+    # Vastgepind regime: is er een rev-passend batch-anker, dan zíjn de params het
+    # anker — geen online drift (zie anchor_from_batch). Zonder anker (verse deploy)
+    # bootstrap-leert de kwartierrun zoals tweeling 1, tot de eerste batch landt.
+    anchor_params, anchor_stamps = anchor_from_batch(house, batch)
+    pinned = anchor_params is not None
+    params = anchor_params if pinned else merged_params2(house, learned)
+    if pinned:
+        print(f"[anker] vastgepind op het batch-anker (gefit {anchor_stamps['anchor_at']}, "
+              f"rmse_batch {batch.get('rmse_batch')}°C, {batch.get('epochs')} epochs).")
 
     since = now - timedelta(hours=CALIB_WINDOW_H)
     actual = am.collect_actual(house, wd, since)
@@ -1601,32 +1608,41 @@ def main():
     learning_held = False
     baseline = None
     if actual:
-        print(f"[leren] {sum(len(v) for v in actual.values())} temp- + "
+        print(f"[eval] {sum(len(v) for v in actual.values())} temp- + "
               f"{sum(len(v) for v in actual_rh.values())} RH-samples over "
               f"{len(actual)} kamers.")
-        rmse_cur, rmse_rh_cur = rmse_split2(house, params, timeline, seed,
-                                            actual, actual_rh, seed_w_src)
-        # Anomalie-poort: zelfde semantiek als tweeling 1 (log↔werkelijkheid verdacht →
-        # params bevriezen, wél blijven voorspellen). Geen eigen Telegram-nudge —
-        # tweeling 1 nudget al voor de gedeelde openingen-log.
-        anomaly_held, baseline = am.should_hold_learning(rmse_cur,
-                                                         learned.get("rmse_history", []))
-        learning_held = anomaly_held or paused_now
-        if learning_held:
-            rmse_now, rmse_rh_now = rmse_cur, rmse_rh_cur
-            why = "gepauzeerd" if paused_now else f"anomaal (norm {baseline:.2f}°C)"
-            print(f"[leren] vastgehouden — {why}; RMSE {rmse_cur:.2f}°C.")
+        if pinned:
+            # Vastgepind: alleen evalueren — de fout op dit venster is pure model-
+            # kwaliteit (geen fit die 'm net heeft gladgestreken). Geen anomalie-poort
+            # nodig: er valt niets te beschermen, en tweeling 1 nudget al voor de
+            # gedeelde openingen-log.
+            rmse_now, rmse_rh_now = rmse_split2(house, params, timeline, seed,
+                                                actual, actual_rh, seed_w_src)
+            print(f"[eval] RMSE op het anker: {rmse_now:.3f}°C / RH {rmse_rh_now:.2f}%")
         else:
-            params, rmse_now, rmse_rh_now = calibrate2(house, params, timeline, seed,
-                                                       actual, actual_rh, anchor=anchor,
-                                                       seed_w=seed_w_src)
-            print(f"[leren] RMSE na kalibratie: {rmse_now:.3f}°C / RH {rmse_rh_now:.2f}%")
-            rails = railed_params2(params)
-            if rails:
-                print(f"[saturatie] params op hun grens: {', '.join(rails)}")
+            rmse_cur, rmse_rh_cur = rmse_split2(house, params, timeline, seed,
+                                                actual, actual_rh, seed_w_src)
+            # Bootstrap-leren (nog geen anker): anomalie-poort met tweeling-1-semantiek
+            # (log↔werkelijkheid verdacht → params bevriezen, wél blijven voorspellen).
+            anomaly_held, baseline = am.should_hold_learning(rmse_cur,
+                                                             learned.get("rmse_history", []))
+            learning_held = anomaly_held or paused_now
+            if learning_held:
+                rmse_now, rmse_rh_now = rmse_cur, rmse_rh_cur
+                why = "gepauzeerd" if paused_now else f"anomaal (norm {baseline:.2f}°C)"
+                print(f"[leren] vastgehouden — {why}; RMSE {rmse_cur:.2f}°C.")
+            else:
+                params, rmse_now, rmse_rh_now = calibrate2(house, params, timeline, seed,
+                                                           actual, actual_rh,
+                                                           seed_w=seed_w_src)
+                print(f"[leren] RMSE na bootstrap-kalibratie: {rmse_now:.3f}°C / "
+                      f"RH {rmse_rh_now:.2f}%")
+                rails = railed_params2(params)
+                if rails:
+                    print(f"[saturatie] params op hun grens: {', '.join(rails)}")
     else:
-        print("[leren] geen werkelijke kamertemps in het venster → alleen voorspellen.")
-    learning_held = learning_held or paused_now
+        print("[eval] geen werkelijke kamertemps in het venster → alleen voorspellen.")
+    learning_held = learning_held or (paused_now and not pinned)
 
     rmse_baseline = am.naive_rmse(actual) if actual else float("nan")
     skill = am.skill_score(rmse_now, rmse_baseline)
@@ -1653,7 +1669,8 @@ def main():
                             ac_room=ac_room_now, ac_excluded=ac_excluded,
                             heat_now=heat_now, heat_excluded=heat_excluded,
                             paused_now=paused_now, paused_since=paused_since,
-                            pause_excluded=pause_excluded, anchor_stamps=anchor_stamps)
+                            pause_excluded=pause_excluded, anchor_stamps=anchor_stamps,
+                            pinned=pinned)
     os.makedirs(os.path.dirname(DASHBOARD2_FILE) or ".", exist_ok=True)
     with open(DASHBOARD2_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)
@@ -1664,6 +1681,7 @@ def main():
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "rmse_rh": round(rmse_rh_now, 2) if rmse_rh_now == rmse_rh_now else None,
                    "railed": railed_params2(params),
+                   "pinned": pinned,
                    "anchor_at": anchor_stamps.get("anchor_at"),
                    "anchor_src": anchor_stamps.get("anchor_src"),
                    "rmse_history": dash["learned"]["rmse_history"]},

@@ -80,6 +80,7 @@ function render() {
       <div class="stat-row"><span class="lbl">RMSE (temp)</span><span>${fmt(learned.rmse, 3, " °C")}</span></div>
       <div class="stat-row"><span class="lbl">RMSE (vocht)</span><span>${fmt(learned.rmse_rh, 2, " %RH")}</span></div>
       <div class="stat-row"><span class="lbl">skill vs. persistentie</span><span>${fmt(learned.skill, 3)}</span></div>
+      <div class="stat-row"><span class="lbl">regime</span><span>${learned.pinned ? "📌 vastgepind op het batch-anker" : "bootstrap — online lerend tot de eerste batch"}</span></div>
       <div class="stat-row"><span class="lbl">batch-anker</span><span>${learned.anchor_at ? new Date(learned.anchor_at).toLocaleDateString("nl-NL", { day: "numeric", month: "short" }) + ` <span style="color:var(--ink-soft)">(${learned.anchor_src || "?"})</span>` : "— nog geen batch-fit"}</span></div>
       <div class="stat-row"><span class="lbl">buiten nu</span><span>${fmt(w.outside_temp, 1, "°")} · ${fmt(w.outside_humidity, 0, "%")} · ${w.outside_source || "?"}</span></div>
       <div class="stat-row"><span class="lbl">wind</span><span>${fmt(w.wind_speed, 1, " m/s")} uit ${fmt(w.wind_dir, 0, "°")}</span></div>

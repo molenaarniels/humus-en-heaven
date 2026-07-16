@@ -360,32 +360,33 @@ def test_calibrate2_anchor_is_ridge_target():
 
 # ── 5. Batch-anker + params-migratie ─────────────────────────────────────────────────
 
-def test_maybe_adopt_anchor_blends_once():
+def test_anchor_from_batch_pins_params():
+    # Het vastgepinde regime: de kwartierrun-params zíjn het batch-anker (aangevuld
+    # met priors voor nieuwe keys) — geen blend, geen online drift.
     house = _toy_house()
-    params = a2.default_params2(house)
-    params["vent_eff"] = 0.4
-    batch = {"params": {**a2.default_params2(house), "vent_eff": 1.2},
+    batch = {"params": {"vent_eff": 1.2, "a": {"c_air": 2.1}},
              "physics2_rev": a2.PHYSICS2_REV, "fitted_at": "2026-07-14T03:00:00+02:00",
              "model_version": "abc1234"}
-    p1, anchor, stamps = a2.maybe_adopt_anchor(params, {}, batch)
-    assert anchor is batch["params"]
+    params, stamps = a2.anchor_from_batch(house, batch)
+    assert params["vent_eff"] == 1.2
+    assert params["a"]["c_air"] == 2.1
+    assert params["a"]["c_fast"] == a2.PRIORS2["c_fast"]   # nieuwe keys → prior
+    assert params["b"]["c_air"] == a2.PRIORS2["c_air"]     # nieuwe kamer → priors
     assert stamps["anchor_at"] == "2026-07-14T03:00:00+02:00"
-    assert p1["vent_eff"] == pytest.approx(0.4 + a2.ANCHOR_BLEND * (1.2 - 0.4))
-    # Zelfde anker al geadopteerd (anchor_at gelijk) → geen tweede blend.
-    learned = {"anchor_at": "2026-07-14T03:00:00+02:00"}
-    p2, anchor2, stamps2 = a2.maybe_adopt_anchor(p1, learned, batch)
-    assert p2["vent_eff"] == pytest.approx(p1["vent_eff"])
-    assert anchor2 is batch["params"]     # blijft wél het ridge-anker
+    assert stamps["anchor_src"] == "abc1234"
+    # Het anker zelf blijft onaangeroerd (diepe kopie).
+    params["a"]["c_air"] = 9.9
+    assert batch["params"]["a"]["c_air"] == 2.1
 
 
-def test_maybe_adopt_anchor_rev_gate():
+def test_anchor_from_batch_rev_gate_and_absent():
     house = _toy_house()
-    params = a2.default_params2(house)
     batch = {"params": {"vent_eff": 1.5}, "physics2_rev": a2.PHYSICS2_REV - 1,
              "fitted_at": "2026-07-14T03:00:00+02:00"}
-    p, anchor, stamps = a2.maybe_adopt_anchor(params, {}, batch)
-    assert anchor is None and p is params
-    assert stamps["anchor_at"] is None
+    params, stamps = a2.anchor_from_batch(house, batch)
+    assert params is None and stamps["anchor_at"] is None
+    params, stamps = a2.anchor_from_batch(house, {})
+    assert params is None and stamps["anchor_at"] is None
 
 
 def test_merged_params2_rev_migration_resets_globals():

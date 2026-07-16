@@ -126,6 +126,43 @@ VERT_EXCH_C         = 0.10   # Brown–Solvason-achtige constante bij instabiel 
 # Cp-referentie-amplitude voor de Swami–Chandra-loefgevel (vóór de beschutting).
 CP_SC_REF = 0.6
 
+# ── Variant-haakjes (train-and-set-campagne, juli 2026) ──────────────────────────────
+# Elk haakje default = het bestaande gedrag; tools/twin2_experiment.py zet ze per arm
+# (proces-lokaal). Winnende standen worden na de bevestigingsronde de nieuwe defaults.
+# • NEIGHBOR_TRANSFORM: transformatie op het buur-anker — "none" (huidig),
+#   "damped" (19.5 + 0.5·(3d-mean − 19.5): het zomerse anker loopt te heet mee),
+#   "cap23" (min(23.0, ·): burenbinnenkant komt in een hittegolf niet boven ~23°C).
+# • TD_SEED_MODE: seeding van de diepe massaknoop — "blend" (huidig: 0.5·(seed+anker);
+#   het hete anker vervuilt zo de beginconditie van een τ~dagen-knoop) of "own"
+#   (kamer-eigen startmeting, gezet via simulate2's tm_seed).
+# • BEDROOM_NIGHT_ROOMS: kamers met een geïnverteerd dag/nacht-profiel voor interne
+#   warmte + vocht (slaapkamers: bewoners produceren dáár 's nachts, niet overdag).
+NEIGHBOR_TRANSFORM = "none"
+TD_SEED_MODE = "blend"
+BEDROOM_NIGHT_ROOMS: set = set()
+
+
+def neighbor_anchor(rows: list[dict], when) -> float:
+    """Het buur-anker voor de party-muren op tijdstip `when`, met de actieve
+    NEIGHBOR_TRANSFORM-variant toegepast — de éne plek waar batch én online run hun
+    anker vandaan halen, zodat een geadopteerde variant overal consistent geldt."""
+    nb = am.neighbor_temp_estimate(rows, when)
+    if NEIGHBOR_TRANSFORM == "damped":
+        nb = am.NEIGHBOR_WINTER_FLOOR + 0.5 * (nb - am.NEIGHBOR_WINTER_FLOOR)
+    elif NEIGHBOR_TRANSFORM == "cap23":
+        nb = min(23.0, nb)
+    return nb
+
+
+def gain_profile2(t, rid: str) -> float:
+    """Per-kamer dag/nacht-profiel voor interne warmte + vocht: het gedeelde
+    am.internal_gain_profile, voor BEDROOM_NIGHT_ROOMS gespiegeld (dag ↔ nacht —
+    wakker 1.0 → nachtfractie, slapend-nacht → 1.0)."""
+    p = am.internal_gain_profile(t)
+    if rid in BEDROOM_NIGHT_ROOMS:
+        return (1.0 + am.INTERNAL_NIGHT_FRACTION) - p
+    return p
+
 # Fractie van de tweeling-1-massabasis die naar de snelle knoop gaat (inboedel +
 # binnenschil); de rest is de diepe structurele massa. Vaste split — c_fast/c_deep
 # leren de groottes zelf bij.
@@ -533,6 +570,9 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
         irr_roof = step.get("irr_roof", {})
         night = step.get("sun_el", 90.0) <= 0.0
         profile = am.internal_gain_profile(step["t"])
+        # Slaapkamer-variant: per-zone profiel alleen berekenen als de haak actief is.
+        prof_z = ({z: gain_profile2(step["t"], z) for z in zones}
+                  if BEDROOM_NIGHT_ROOMS else None)
         nb = am._NEIGHBOR_TEMP
 
         for _ in range(nsub_steps):
@@ -541,7 +581,7 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
             for z in zones:
                 pa = par[z]
                 q_solar = step["irr"].get(z, 0.0) * pa["solar"]
-                q_int = pa["Q_int_base"] * profile
+                q_int = pa["Q_int_base"] * (prof_z[z] if prof_z else profile)
                 subs = subm[z]["subs"] if z in subm else [{"frac": 1.0}]
                 fi, di = f_idx[z], d_idx[z]
                 for si, sub in enumerate(subs):
@@ -599,7 +639,8 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                 m_fresh = rho_a * fresh_zone[z] * veff
                 k_buf = m_air / (BUF_TAU_H * 3600.0)
                 c_buf = BUF_CAP_FACTOR * m_air * pa["w_buf"]
-                s_moist = pa["vol"] * MOIST_GAIN_GH_M3 * q_moist_scale * profile / 3.6e6  # kg/s
+                s_moist = (pa["vol"] * MOIST_GAIN_GH_M3 * q_moist_scale
+                           * (prof_z[z] if prof_z else profile) / 3.6e6)  # kg/s
                 Aw[iw][iw] += m_air / h + m_fresh + k_buf
                 Aw[iw][ib] += -k_buf
                 bw[iw] += m_air / h * Wz[z] + m_fresh * w_out + s_moist
@@ -677,11 +718,12 @@ def _clamp_to_bounds2(vec: list[float], keys: list[tuple]) -> list[float]:
 
 
 def _residuals2_timed(house, params, timeline, seed, actual, actual_rh,
-                      rooms_set, seed_w=None) -> list[tuple]:
+                      rooms_set, seed_w=None, tm_seed=None) -> list[tuple]:
     """(meetmoment, residu) — temp-residuen in sensor-ruimte (°C) gevolgd door de
     RH-residuen × RH_RES_WEIGHT (°C-equivalent), in vaste dict-volgorde zodat de
     recency-gewichten over iteraties uitgelijnd blijven."""
-    sim = simulate2(house, params, timeline, seed, calib_only_rooms=rooms_set, seed_w=seed_w)
+    sim = simulate2(house, params, timeline, seed, calib_only_rooms=rooms_set,
+                    seed_w=seed_w, tm_seed=tm_seed)
     out = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
@@ -699,16 +741,19 @@ def _residuals2_timed(house, params, timeline, seed, actual, actual_rh,
     return out
 
 
-def _residuals2(house, params, timeline, seed, actual, actual_rh, rooms_set, seed_w=None):
+def _residuals2(house, params, timeline, seed, actual, actual_rh, rooms_set,
+                seed_w=None, tm_seed=None):
     return [r for _, r in _residuals2_timed(house, params, timeline, seed,
-                                            actual, actual_rh, rooms_set, seed_w)]
+                                            actual, actual_rh, rooms_set, seed_w, tm_seed)]
 
 
-def rmse_split2(house, params, timeline, seed, actual, actual_rh, seed_w=None) -> tuple[float, float]:
+def rmse_split2(house, params, timeline, seed, actual, actual_rh, seed_w=None,
+                tm_seed=None) -> tuple[float, float]:
     """(temp-RMSE °C, RH-RMSE %) met één simulatie — de temp-RMSE is de maat die met
     tweeling 1 vergeleken wordt; de RH-RMSE is het eigen tweede kanaal (ongeschaald)."""
     sim = simulate2(house, params, timeline, seed,
-                    calib_only_rooms=set(actual) | set(actual_rh or {}), seed_w=seed_w)
+                    calib_only_rooms=set(actual) | set(actual_rh or {}),
+                    seed_w=seed_w, tm_seed=tm_seed)
     rt = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
@@ -1094,18 +1139,22 @@ def refresh_shard_weather(rows: list[dict]) -> None:
 #  Batch-fit — volle-historie-kalibratie (het ridge-anker voor het online leren)
 # ════════════════════════════════════════════════════════════════════════════════════
 
-def batch_windows(t_min: datetime, t_max: datetime) -> list[tuple]:
-    """(venster-eind)-lijst: residu-vensters van BATCH_WINDOW_D dagen, stride
-    BATCH_STRIDE_D, achterwaarts vanaf t_max zodat het meest recente venster altijd
-    meedoet. Elk venster krijgt in de fit BATCH_WARMUP_H sim-only aanloop."""
+def batch_windows(t_min: datetime, t_max: datetime, window_d: float | None = None,
+                  stride_d: float | None = None) -> list[tuple]:
+    """(venster-start, venster-eind)-lijst: residu-vensters van `window_d` dagen (default
+    BATCH_WINDOW_D), stride `stride_d` (default BATCH_STRIDE_D), achterwaarts vanaf t_max
+    zodat het meest recente venster altijd meedoet. De campagne gebruikt stride == window
+    (géén overlap — anders lekt tot ~40% van een held-out venster naar de training)."""
+    window_d = BATCH_WINDOW_D if window_d is None else window_d
+    stride_d = BATCH_STRIDE_D if stride_d is None else stride_d
     ends = []
     end = t_max
-    first_end = t_min + timedelta(days=BATCH_WINDOW_D)
+    first_end = t_min + timedelta(days=window_d)
     while end >= first_end:
         ends.append(end)
-        end = end - timedelta(days=BATCH_STRIDE_D)
+        end = end - timedelta(days=stride_d)
     ends.reverse()
-    return [(e - timedelta(days=BATCH_WINDOW_D), e) for e in ends]
+    return [(e - timedelta(days=window_d), e) for e in ends]
 
 
 def _slice_actual(actual: dict, start: datetime, end: datetime) -> dict:
@@ -1117,25 +1166,26 @@ def _slice_actual(actual: dict, start: datetime, end: datetime) -> dict:
     return out
 
 
-def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDGET_S,
-              start_params: dict | None = None) -> tuple[dict, dict]:
-    """Mini-batch Gauss-Newton over de volle gedolven historie: JᵀWJ/JᵀWr worden per
-    epoch over álle vensters geaccumuleerd (Huber-gewogen, géén recency — batch weegt
-    de hele historie gelijk), één gedempte stap per epoch, ridge naar de kale PRIORS2.
-    AC-/pauze-perioden komen uit de gereconstrueerde log, stook-samples uit de per-
-    sample heat-vlaggen. Geeft (params, stats)."""
+def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None,
+                    stride_d: float | None = None, warmup_h: float | None = None,
+                    neighbor_mode: str = "end") -> list[dict]:
+    """Venster-bouw voor batch/campagne (voorheen inline in batch_fit): historische
+    filters (stook per sample, AC + pauze uit de log), timeline per venster, actual/RH-
+    slices, seeds en het buur-anker. `neighbor_mode`: "end" (huidig gedrag — anker
+    gesnapshot op venster-éinde en 5 dagen constant) of "mid" (venster-midden; het
+    einde-snapshot gaf tot ±6°C anker-fout aan de venster-rand — campagne-arm).
+    Elke win draagt `start`/`end`; bij TD_SEED_MODE=="own" ook een `tm_seed`
+    (diepe-massa-seed = kamer-eigen startmeting i.p.v. de blend met het anker)."""
+    warmup_h = BATCH_WARMUP_H if warmup_h is None else warmup_h
     log = dataset["log"]
     rows = dataset["weather_rows"]
     actual_all = dataset["actual"]
     rh_all = dataset["actual_rh"]
     ts_all = [t for s in actual_all.values() for t, _ in s]
     if not ts_all or not rows:
-        return start_params or default_params2(house), {"windows": 0, "epochs": 0,
-                                                        "samples": 0, "rmse_batch": None,
-                                                        "rmse_rh_batch": None}
+        return []
     t_min, t_max = min(ts_all), max(ts_all)
 
-    # Historische filters: stook (per sample), AC + pauze (uit de log).
     acc = am.ac_changes(log)
     p_intervals = am.paused_intervals(am.pause_changes(log), t_max)
     heat_on = dataset["heat_on"]
@@ -1149,14 +1199,13 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
     actual_all = _filtered(actual_all)
     rh_all = _filtered(rh_all)
 
-    # Vensters voorbereiden (timeline + slices + seeds), eenmalig vóór de epochs.
     wins = []
-    for w_start, w_end in batch_windows(t_min, t_max):
+    for w_start, w_end in batch_windows(t_min, t_max, window_d, stride_d):
         act = _slice_actual(actual_all, w_start, w_end)
         if not act:
             continue
         rh = _slice_actual(rh_all, w_start, w_end)
-        window_h = BATCH_WINDOW_D * 24.0 + BATCH_WARMUP_H
+        window_h = (w_end - w_start).total_seconds() / 3600.0 + warmup_h
         timeline = am.build_timeline(house, {"hourly": rows}, log, w_end,
                                      window_h, beam_iam=True, end_h=0.0)
         if not timeline:
@@ -1165,11 +1214,31 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
         for rid in house.get("rooms", {}):
             seed.setdefault(rid, timeline[0]["T_out"])
         seed_w = {rid: w_from_rh(s[0][1], seed.get(rid, 20.0)) for rid, s in rh.items()}
-        nb = am.neighbor_temp_estimate(rows, w_end)
-        wins.append({"timeline": timeline, "actual": act, "rh": rh,
-                     "seed": seed, "seed_w": seed_w, "neighbor": nb})
+        nb_when = w_end if neighbor_mode == "end" else w_start + (w_end - w_start) / 2
+        win = {"start": w_start, "end": w_end, "timeline": timeline, "actual": act,
+               "rh": rh, "seed": seed, "seed_w": seed_w,
+               "neighbor": neighbor_anchor(rows, nb_when)}
+        if TD_SEED_MODE == "own":
+            win["tm_seed"] = dict(seed)
+        wins.append(win)
+    return wins
+
+
+def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
+              time_budget_s: float | None = None,
+              start_params: dict | None = None) -> tuple[dict, dict]:
+    """Mini-batch Gauss-Newton over voorbereide vensters (prepare_windows): JᵀWJ/JᵀWr
+    worden per epoch over álle vensters geaccumuleerd (Huber-gewogen, géén recency —
+    batch weegt de hele historie gelijk), één gedempte stap per epoch, ridge naar de
+    kale PRIORS2. Budget: `time_budget_s` (CI, default BATCH_TIME_BUDGET_S) en/of
+    `max_epochs` (campagne: vaste epochs zodat armen met verschillende sim-kosten een
+    gelijk aantal stappen krijgen — een tijdbudget zou dat confounden). Geeft
+    (params, stats)."""
+    if time_budget_s is None:
+        time_budget_s = BATCH_TIME_BUDGET_S if max_epochs is None else float("inf")
     if not wins:
         return start_params or default_params2(house), {"windows": 0, "epochs": 0,
+                                                        "converged": False,
                                                         "samples": 0, "rmse_batch": None,
                                                         "rmse_rh_batch": None}
 
@@ -1186,7 +1255,8 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
         am._NEIGHBOR_TEMP = w["neighbor"]
         try:
             return _residuals2(house, p, w["timeline"], w["seed"], w["actual"],
-                               w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"])
+                               w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
+                               w.get("tm_seed"))
         finally:
             am._NEIGHBOR_TEMP = old_nb
 
@@ -1203,7 +1273,7 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
     best_cost = _total_cost(x)
     epochs = 0
     converged = False
-    for _ in range(BATCH_MAX_EPOCHS):
+    for _ in range(max_epochs if max_epochs is not None else BATCH_MAX_EPOCHS):
         if time.time() - t_start > time_budget_s:
             break
         JtJ = [[0.0] * nk for _ in range(nk)]
@@ -1275,7 +1345,7 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
         try:
             sim = simulate2(house, params, w["timeline"], w["seed"],
                             calib_only_rooms=set(w["actual"]) | set(w["rh"]),
-                            seed_w=w["seed_w"])
+                            seed_w=w["seed_w"], tm_seed=w.get("tm_seed"))
         finally:
             am._NEIGHBOR_TEMP = old_nb
         for rid, samples in w["actual"].items():
@@ -1294,7 +1364,8 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
              "samples": len(rt_all),
              "rmse_batch": round(rmse_b, 3) if rmse_b == rmse_b else None,
              "rmse_rh_batch": round(rmse_rh_b, 2) if rmse_rh_b == rmse_rh_b else None,
-             "span": {"start": t_min.isoformat(), "end": t_max.isoformat()}}
+             "span": {"start": min(w["start"] for w in wins).isoformat(),
+                      "end": max(w["end"] for w in wins).isoformat()}}
     return params, stats
 
 
@@ -1336,18 +1407,19 @@ def batch_main():
     print(f"[batch] weer ververst: {len(rows)} uur-rijen.")
 
     # Warm-start vanaf het vorige batch-anker (rev-passend): één epoch over alle
-    # vensters kost ~15–20 min, dus het budget laat maar ~2 gedempte stappen per run
-    # toe — vanaf de kale priors zou de wekelijkse batch daardoor nóóit verder dan
-    # 2 stappen convergeren. Doorstarten op het vorige optimum maakt de batches
-    # cumulatief (mirror van het online leren dat over runs convergeert). De ridge
-    # blijft naar de kale priors trekken, dus een fossiel kan niet wegdriften.
+    # vensters kost ~15–20 min, dus het budget laat maar enkele gedempte stappen per
+    # run toe — vanaf de kale priors zou de wekelijkse batch daardoor nóóit ver
+    # convergeren. Doorstarten op het vorige optimum maakt de batches cumulatief
+    # (mirror van het online leren dat over runs convergeert). De ridge blijft naar
+    # de kale priors trekken, dus een fossiel kan niet wegdriften.
     prev = load_batch()
     start_params = batch_start_params(house, prev)
     if start_params is not None:
         print(f"[batch] warm-start vanaf het vorige anker (gefit {prev.get('fitted_at')}).")
+    wins = prepare_windows(house, dataset)
     # Budget expliciet op call-time doorgeven (een def-time default zou de module-
     # constante bevriezen — env-override/test-monkeypatch werkte dan niet).
-    params, stats = batch_fit(house, dataset, time_budget_s=BATCH_TIME_BUDGET_S,
+    params, stats = batch_fit(house, wins, time_budget_s=BATCH_TIME_BUDGET_S,
                               start_params=start_params)
     rails = railed_params2(params)
     if rails:
@@ -1565,7 +1637,7 @@ def main():
 
     log = am.load_openings_log()
     am._OPENINGS_CACHE = log
-    am._NEIGHBOR_TEMP = am.neighbor_temp_estimate(weather.get("hourly", []), now)
+    am._NEIGHBOR_TEMP = neighbor_anchor(weather.get("hourly", []), now)
 
     learned = load_learned2()
     batch = load_batch()
@@ -1612,6 +1684,9 @@ def main():
     seed = dict(seed_src)
     for rid in house.get("rooms", {}):
         seed.setdefault(rid, timeline[0]["T_out"])
+    # Diepe-massa-seed volgens de actieve variant: "own" = kamer-eigen startmeting
+    # (alleen sensorkamers; de rest houdt de blend-fallback in simulate2).
+    tm_seed_src = dict(seed_src) if TD_SEED_MODE == "own" else None
 
     wx_summary = am.window_weather_summary(weather, now, CALIB_WINDOW_H)
 
@@ -1629,11 +1704,13 @@ def main():
             # nodig: er valt niets te beschermen, en tweeling 1 nudget al voor de
             # gedeelde openingen-log.
             rmse_now, rmse_rh_now = rmse_split2(house, params, timeline, seed,
-                                                actual, actual_rh, seed_w_src)
+                                                actual, actual_rh, seed_w_src,
+                                                tm_seed=tm_seed_src)
             print(f"[eval] RMSE op het anker: {rmse_now:.3f}°C / RH {rmse_rh_now:.2f}%")
         else:
             rmse_cur, rmse_rh_cur = rmse_split2(house, params, timeline, seed,
-                                                actual, actual_rh, seed_w_src)
+                                                actual, actual_rh, seed_w_src,
+                                                tm_seed=tm_seed_src)
             # Bootstrap-leren (nog geen anker): anomalie-poort met tweeling-1-semantiek
             # (log↔werkelijkheid verdacht → params bevriezen, wél blijven voorspellen).
             anomaly_held, baseline = am.should_hold_learning(rmse_cur,
@@ -1661,7 +1738,7 @@ def main():
 
     sim = simulate2(house, params, timeline, seed,
                     calib_only_rooms=set(house.get("rooms", {}).keys()),
-                    snapshot_t=now, seed_w=seed_w_src)
+                    snapshot_t=now, seed_w=seed_w_src, tm_seed=tm_seed_src)
     if sim.get("solver_failures"):
         print(f"[sim] {sim['solver_failures']} bijna-singuliere substap(pen).")
 

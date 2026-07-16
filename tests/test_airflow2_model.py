@@ -503,3 +503,78 @@ def test_batch_start_params_warm_start_and_rev_gate():
     assert a2.batch_start_params(house, {}) is None
     assert a2.batch_start_params(house, {"params": {"vent_eff": 0.7},
                                          "physics2_rev": a2.PHYSICS2_REV - 1}) is None
+
+
+# ── Campagne-harnas (prepare_windows / epoch-budget / variant-haakjes) ───────────────
+
+def _mini_dataset(days=12):
+    t0 = datetime(2026, 6, 1, 0, 0, tzinfo=am.TZ)
+    rows, samples = [], []
+    for h in range(-30, days * 24 + 1):
+        t = t0 + timedelta(hours=h)
+        hr = t.hour
+        rows.append({"dt": t, "T_out": 18 + 5 * math.sin((hr - 9) / 24 * 2 * math.pi),
+                     "rh": 60.0, "precip": 0.0, "wind_speed": 2.0, "wind_dir": 200.0,
+                     "gust": 3.0, "shortwave": 200 if 8 < hr < 18 else 0,
+                     "direct": 150 if 8 < hr < 18 else 0,
+                     "diffuse": 50 if 8 < hr < 18 else 0})
+    for q in range(days * 24 * 4):
+        t = t0 + timedelta(minutes=15 * q)
+        samples.append((t, 21.0 + 0.5 * math.sin(q / 96 * 2 * math.pi)))
+    return {"actual": {"a": samples}, "actual_rh": {"a": [(t, 55.0) for t, _ in samples]},
+            "heat_on": {}, "weather_rows": rows, "log": []}
+
+
+def test_prepare_windows_geometry_and_no_overlap():
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    assert len(wins) == 2                              # 12 dagen → 2 niet-overlappende 5d-vensters
+    assert wins[0]["end"] <= wins[1]["start"]          # stride == venster → geen overlap
+    for w in wins:
+        assert (w["end"] - w["start"]).days == 5
+        assert "tm_seed" not in w                      # default TD_SEED_MODE == "blend"
+        assert w["timeline"][0]["t"] <= w["start"] - timedelta(hours=23)   # warmup-aanloop
+
+
+def test_prepare_windows_td_seed_and_neighbor_cap(monkeypatch):
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    monkeypatch.setattr(a2, "TD_SEED_MODE", "own")
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    assert wins[0]["tm_seed"]["a"] == wins[0]["seed"]["a"]
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23")
+    wins_cap = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0, neighbor_mode="mid")
+    assert all(w["neighbor"] <= 23.0 for w in wins_cap)
+
+
+def test_neighbor_anchor_transforms(monkeypatch):
+    rows = [{"dt": datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ), "T_out": 28.0}]
+    when = datetime(2026, 7, 10, 13, 0, tzinfo=am.TZ)
+    raw = am.neighbor_temp_estimate(rows, when)        # 28.0 (3d-mean van één sample)
+    assert a2.neighbor_anchor(rows, when) == raw       # "none" = ongewijzigd
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23")
+    assert a2.neighbor_anchor(rows, when) == 23.0
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "damped")
+    assert a2.neighbor_anchor(rows, when) == pytest.approx(19.5 + 0.5 * (raw - 19.5))
+
+
+def test_gain_profile2_inverts_for_bedrooms(monkeypatch):
+    t_day = datetime(2026, 7, 10, 14, 0, tzinfo=am.TZ)
+    t_night = datetime(2026, 7, 10, 3, 0, tzinfo=am.TZ)
+    monkeypatch.setattr(a2, "BEDROOM_NIGHT_ROOMS", {"ted"})
+    assert a2.gain_profile2(t_day, "living") == pytest.approx(1.0)
+    assert a2.gain_profile2(t_day, "ted") == pytest.approx(am.INTERNAL_NIGHT_FRACTION)
+    assert a2.gain_profile2(t_night, "ted") == pytest.approx(1.0)
+
+
+def test_batch_fit_epoch_budget():
+    # max_epochs begrenst het aantal epochs; het tijd-budget wordt dan inf zodat
+    # armen met duurdere sims tóch evenveel stappen krijgen (geen confound).
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    params, stats = a2.batch_fit(house, wins, max_epochs=1)
+    assert stats["epochs"] <= 1
+    assert stats["windows"] == 2
+    assert stats["rmse_batch"] is not None

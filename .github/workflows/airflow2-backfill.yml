@@ -1,0 +1,66 @@
+name: Ventilatie 2 — historie-backfill
+
+# Eenmalige (her-runbare) mining van de git-historie naar de trainingsset van de
+# tweede tweeling (data/twin2_history/): tado-temps + RH uit de dagelijkse
+# window_data.json-commits, openingen uit de Gist-log (+ airflow_data.json als
+# gap-filler), weer uit het Open-Meteo-archief. Handmatig — geen cron.
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Vroegste datum (YYYY-MM-DD, leeg = alles)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: airflow2-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # fetch-depth 0: de mining leest oude versies van docs/window_data.json en
+      # docs/airflow_data.json — een shallow checkout ziet die niet.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        env:
+          GIST_ID:    ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          # Via env, niet rechtstreeks in het shell-commando (repo-securityregel).
+          SINCE:      ${{ inputs.since }}
+        run: |
+          if [ -n "${SINCE}" ]; then
+            python tools/twin2_backfill.py --since "${SINCE}"
+          else
+            python tools/twin2_backfill.py
+          fi
+
+      - name: Commit training shards
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/twin2_history
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "data: twin2 history backfill $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+            # De kwartierloop pusht vaak — regenereerbare shards: onze versie wint.
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

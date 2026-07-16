@@ -1,0 +1,60 @@
+name: Ventilatie 2 — batch-kalibratie
+
+# Wekelijkse (+ handmatige) volle-historie-fit van de tweede tweeling: ververst het
+# shard-weer uit het Open-Meteo-archief, fit over data/twin2_history/ en schrijft
+# het batch-anker (docs/airflow2_batch.json). De kwartierloop adopteert het anker
+# op zijn volgende iteratie. Bewust een eigen concurrency-groep — de
+# airflow-advisor-groep delen zou één van beide urenlang blokkeren. De fit raakt
+# wél dezelfde maand-shard als de kwartierloop (weer-verversing vs. sample-append);
+# een door `-X theirs` weggerebasede verse append heelt zichzelf: de volgende
+# loop-iteratie appendt alles wat nog in het ~2,6-daagse window_data-buffer zit
+# opnieuw (append is idempotent op tijdstip).
+on:
+  schedule:
+    - cron: "0 3 * * 0"          # zondag 03:00
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: airflow2-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run batch fit
+        env:
+          # Crash-alert via run_guarded (bestaande secrets, geen nieuwe).
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python airflow2_model.py --batch
+
+      - name: Commit batch anchor + refreshed shard weather
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for p in docs/airflow2_batch.json data/twin2_history; do
+            [ -e "$p" ] && git add "$p"
+          done
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "data: twin2 batch fit $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

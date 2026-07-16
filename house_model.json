@@ -31,6 +31,8 @@
     "elevation_m": 5
   },
   "terrain": "urban",
+  "front_azimuth_deg": 309,
+  "_front_azimuth": "Voorgevel-azimut (straatzijde, NW). Alleen gebruikt door Project 12 (airflow2_model): gevels binnen ±90° hiervan gelden als 'front' (straat), de rest als 'back' (tuin) voor de twee leerbare beschuttingsfactoren cp_shelter_front/back. Per element te overschrijven met 'exposure': 'front'|'back' (additief). Project 8 negeert dit veld.",
   "rooms": {
     "living": {
       "from_window_data": "Living room",
@@ -97,6 +99,27 @@
       ],
       "label": "Trappenhuis (bg→2e)",
       "stratify": true,
+      "subzones": [
+        {
+          "id": "bg",
+          "z_lo": 0.0,
+          "z_hi": 2.8,
+          "volume_frac": 0.34
+        },
+        {
+          "id": "1e",
+          "z_lo": 2.8,
+          "z_hi": 5.6,
+          "volume_frac": 0.33
+        },
+        {
+          "id": "2e",
+          "z_lo": 5.6,
+          "z_hi": 8.7,
+          "volume_frac": 0.33
+        }
+      ],
+      "_subzones": "Alleen gebruikt door Project 12 (airflow2_model): per-verdieping thermische sub-knopen van de koker (één drukknoop blijft; de tweeling-1 'stratify'-gradiënt geldt daar nog steeds). Elke verdiepingsdeur draagt een 'subzone'-sleutel die zegt op welke sub-knoop hij uitkomt. Project 8 negeert deze velden volledig.",
       "_note": "geen tado-sensor → niet gekalibreerd, wél gesimuleerd. Vangt de skylight-zon en drijft het schoorsteeneffect tussen de verdiepingen. Één gemengde knoop voor de kalibratie/airflow, maar met 'stratify': true legt het model een begrensde, niet-leerbare verticale gradiënt op (warme lucht bovenin): de gerapporteerde predicted_temp blijft het koker-gemiddelde, maar boven/onder worden apart getoond (predicted_temp_top/bottom) en elke verdiepingsdeur mengt tegen de lucht op zíjn hoogte i.p.v. het vlakke gemiddelde. Een volledige verdieping-per-verdieping-zone-split blijft afgewezen (geen sensor in de koker om sub-zone-temps op te ijken).",
       "plan_h": 3
     },
@@ -491,7 +514,8 @@
       "center_height_m": 1.5,
       "default_state": "open",
       "fixed": true,
-      "label": "Gang ↔ trap (open doorgang)"
+      "label": "Gang ↔ trap (open doorgang)",
+      "subzone": "bg"
     },
     "ted_stair": {
       "between": [
@@ -502,7 +526,8 @@
       "center_height_m": 1.0,
       "default_state": "open",
       "label": "Ted ↔ trap",
-      "plan_pos": 0.45
+      "plan_pos": 0.45,
+      "subzone": "bg"
     },
     "hotties_stair": {
       "between": [
@@ -512,7 +537,8 @@
       "area_m2": 1.8,
       "center_height_m": 3.9,
       "default_state": "open",
-      "label": "Hotties ↔ trap (1e)"
+      "label": "Hotties ↔ trap (1e)",
+      "subzone": "1e"
     },
     "office_stair": {
       "between": [
@@ -522,7 +548,8 @@
       "area_m2": 1.8,
       "center_height_m": 7.0,
       "default_state": "open",
-      "label": "Kantoor ↔ trap (2e)"
+      "label": "Kantoor ↔ trap (2e)",
+      "subzone": "2e"
     }
   }
 }

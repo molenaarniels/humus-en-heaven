@@ -87,19 +87,22 @@ WARMUP_H       = am.WARMUP_H
 LEARN_RATE2    = 0.5
 LEARN_TIME_BUDGET_S = 60.0
 REG_WEIGHT2    = 3.0
-# Zwaardere ankers op de zwak-identificeerbare nieuwkomers: de trage massaknoop
-# (c_deep/h_fd — pas de batch-fit over weken maakt ze echt zichtbaar), de vochtbuffer
-# (w_buf) en de koker-uitwisseling (stair_exch, geen sensor in de koker). solar_gain
-# houdt tweeling 1's anti-collapse-anker (+ de fysieke vloer in BOUNDS2).
-REG_WEIGHT2_BY_PARAM = {"solar_gain": 6.0, "c_deep": 8.0, "h_fd": 8.0,
-                        "w_buf": 8.0, "stair_exch": 8.0}
+# Matige extra ankers op de traagst-identificeerbare kanalen (diepe massa, vocht-
+# buffer). Bewust GEEN solar_gain/stair_exch-override meer: die zware ankers waren
+# tweeling 1's vangnet voor onidentificeerbare 48u-online-vensters, maar tweeling 2
+# fit in batch over wéken — daar is de zon-magnitude wél identificeerbaar en bleek
+# het anker de fit actief te vervormen (solar/stair_exch railden ondanks ridge 6–8,
+# gediagnosticeerd op batch #1–#3, juli 2026).
+REG_WEIGHT2_BY_PARAM = {"c_deep": 4.0, "h_fd": 4.0, "w_buf": 4.0}
 # RH-residuen tellen mee in de fit, geschaald naar °C-equivalent: ~10%RH fout weegt
 # als ~1°C. Groot genoeg om vent_eff te binden, klein genoeg dat de temp-fit domineert.
 RH_RES_WEIGHT = 0.10
 
 # ── Batch-fit ──────────────────────────────────────────────────────────────────────
 BATCH_WINDOW_D  = 5.0    # dagen residu-venster per batch-window
-BATCH_STRIDE_D  = 3.0    # dagen stap tussen window-starts (overlap → gladdere fit)
+BATCH_STRIDE_D  = 4.0    # dagen stap tussen window-starts (lichte overlap; 3d gaf ~15
+                         # vensters → ~17 min/epoch — minder overlap koopt ~25% meer
+                         # epochs per budget, en epochs zijn nu de schaarse grondstof)
 BATCH_WARMUP_H  = 24.0   # sim-only aanloop per window (massaknoop-equilibratie)
 BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "4200"))
 BATCH_MAX_EPOCHS = 40
@@ -141,15 +144,24 @@ PRIORS2 = {
     "f_air": 0.4,         # absolute fractie zonwinst → luchtknoop (rest → snelle massa)
     "w_buf": 1.0,         # vochtbuffer-capaciteit-schaal per kamer
 }
+# Banden verruimd op basis van de railing-diagnose van batch #1–#3 (juli 2026, 10
+# cumulatieve epochs over ~7 weken data) — de saturatie-tell wees consistent één kant
+# op: het huis houdt warmte véél beter vast dan de wand-oppervlak-priors (ua_env-vloer
+# knelde overal), de gordijn-kamers krijgen minder zon binnen dan de kale geometrie
+# zegt (solar_gain-vloer — tweeling 1's anti-collapse-vloer, hier onnodig: batch-zon
+# is identificeerbaar), Teds kamer is extreem gedempt (c_fast-plafond) en de koker
+# wil veel meer verticale menging (stair_exch-plafond). Puur band-verruiming: de
+# betekenis van geleerde params schuift níét, dus geen PHYSICS2_REV-bump en het
+# warm-start-anker blijft geldig.
 BOUNDS2 = {
     "cp_shelter_front": (0.1, 1.2), "cp_shelter_back": (0.1, 1.2),
     "vent_eff": (0.1, 2.0),
-    "q_moist": (0.0, 4.0), "stair_exch": (0.1, 4.0),
-    "c_air": (0.3, 8.0), "c_fast": (0.2, 8.0), "c_deep": (0.2, 10.0),
-    "h_af": (0.2, 5.0), "h_fd": (0.05, 5.0),
-    "ua_env": (0.2, 5.0), "solar_gain": (0.25, 3.0),   # zelfde fysieke zon-vloer als tweeling 1
+    "q_moist": (0.0, 4.0), "stair_exch": (0.1, 12.0),
+    "c_air": (0.3, 8.0), "c_fast": (0.05, 16.0), "c_deep": (0.05, 10.0),
+    "h_af": (0.05, 5.0), "h_fd": (0.05, 5.0),
+    "ua_env": (0.05, 5.0), "solar_gain": (0.05, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
-    "f_air": (0.1, 0.9), "w_buf": (0.2, 5.0),
+    "f_air": (0.02, 0.95), "w_buf": (0.2, 5.0),
 }
 GLOBAL_PARAMS2   = ["cp_shelter_front", "cp_shelter_back", "vent_eff", "q_moist", "stair_exch"]
 PER_ROOM_PARAMS2 = ["c_air", "c_fast", "c_deep", "h_af", "h_fd", "ua_env",

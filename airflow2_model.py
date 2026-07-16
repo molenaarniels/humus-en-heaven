@@ -1289,6 +1289,15 @@ def batch_fit(house: dict, dataset: dict, time_budget_s: float = BATCH_TIME_BUDG
     return params, stats
 
 
+def batch_start_params(house: dict, prev: dict) -> dict | None:
+    """Warm-start-params voor de batch: het vorige anker (aangevuld met priors voor
+    nieuwe kamers/keys), of None bij geen/rev-vreemd anker (→ kale priors)."""
+    if prev.get("params") and prev.get("physics2_rev") == PHYSICS2_REV:
+        return merged_params2(house, {"params": prev["params"],
+                                      "physics2_rev": PHYSICS2_REV})
+    return None
+
+
 def batch_main():
     """`python airflow2_model.py --batch`: ververs het shard-weer uit het archief,
     fit over de volle historie en schrijf het batch-anker (docs/airflow2_batch.json).
@@ -1317,9 +1326,20 @@ def batch_main():
     dataset["weather_rows"] = rows
     print(f"[batch] weer ververst: {len(rows)} uur-rijen.")
 
+    # Warm-start vanaf het vorige batch-anker (rev-passend): één epoch over alle
+    # vensters kost ~15–20 min, dus het budget laat maar ~2 gedempte stappen per run
+    # toe — vanaf de kale priors zou de wekelijkse batch daardoor nóóit verder dan
+    # 2 stappen convergeren. Doorstarten op het vorige optimum maakt de batches
+    # cumulatief (mirror van het online leren dat over runs convergeert). De ridge
+    # blijft naar de kale priors trekken, dus een fossiel kan niet wegdriften.
+    prev = load_batch()
+    start_params = batch_start_params(house, prev)
+    if start_params is not None:
+        print(f"[batch] warm-start vanaf het vorige anker (gefit {prev.get('fitted_at')}).")
     # Budget expliciet op call-time doorgeven (een def-time default zou de module-
     # constante bevriezen — env-override/test-monkeypatch werkte dan niet).
-    params, stats = batch_fit(house, dataset, time_budget_s=BATCH_TIME_BUDGET_S)
+    params, stats = batch_fit(house, dataset, time_budget_s=BATCH_TIME_BUDGET_S,
+                              start_params=start_params)
     rails = railed_params2(params)
     if rails:
         print(f"[batch][saturatie] params op hun grens: {', '.join(rails)}")

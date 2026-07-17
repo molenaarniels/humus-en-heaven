@@ -14,7 +14,7 @@
   base-uri 'none';
   form-action 'none';
 ">
-<title>Ventilatie 2 · Humus &amp; Heaven</title>
+<title>Ventilatie (stabiel) · Humus &amp; Heaven</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" integrity="sha384-oNtu+d18330MVFpltUTve1DatxCkkctlpA2AC3GulbVFOSqhHdDat3qHse/Lbuek" crossorigin="anonymous"></script>
@@ -58,12 +58,12 @@
   <div class="title-row">
     <div>
       <div class="corner-mark" id="folio-mark"></div>
-      <h1>Ventilatie 2</h1>
-      <div class="subtitle">De tweede tweeling — zelfde huis, zelfde raam/rooster/deur-meldingen, een rijker model:
-        drie thermische knopen per kamer, vocht als mede-geleerde tracer, koker-subzones per verdieping —
-        <em>vastgepind</em> op een batch-kalibratie over de volle historie (minder adaptief, wél in een goede
-        staat; herfit wekelijks, cumulatief). Puur een voorspel-experiment naast
-        <a class="link" href="airflow.html">tweeling&nbsp;1</a>; meldingen doe je dáár.</div>
+      <h1>Ventilatie (stabiel)</h1>
+      <div class="subtitle">De stabiele tweeling — zelfde huis, zelfde raam/rooster/deur-meldingen, een rijker model
+        (drie thermische knopen per kamer, vocht als mede-geleerde tracer, koker-subzones, gekapt buur-anker),
+        <em>vastgepind</em> op een batch-kalibratie over de volle historie: geen online drift, adaptatie alleen
+        via de wekelijkse cumulatieve her-fit. Vergelijkt zichzelf doorlopend met de adaptieve
+        <a class="link" href="airflow.html">Ventilatie-tweeling</a>; meldingen doe je dáár.</div>
     </div>
     <div style="text-align:right;">
       <div class="corner-mark">Vandaag</div>
@@ -87,13 +87,13 @@
 </div>
 
 <footer>
-  Ventilatie 2 leest dezelfde openingen-log en tado-temperaturen als tweeling 1, maar voorspelt met een
-  3-knoops RC-model + vocht-tracer + koker-subzones, verankerd op een batch-kalibratie over de volle
-  gedolven historie (<code>data/twin2_history/</code>). Alleen-lezen; geen Telegram, geen advies —
-  de leercurve hiernaast tegen die van tweeling 1 ís het experiment.
+  Ventilatie (stabiel) leest dezelfde openingen-log en tado-temperaturen als de adaptieve tweeling, maar
+  voorspelt met een 3-knoops RC-model + vocht-tracer + koker-subzones + gekapt buur-anker, exact vastgepind
+  op een batch-kalibratie over de volle gedolven historie (<code>data/twin2_history/</code>). Alleen-lezen;
+  geen Telegram, geen advies — de leercurve tegen die van de adaptieve tweeling ís de vergelijking.
 </footer>
 
 <script src="js/theme.js"></script>
-<script src="js/airflow2.js"></script>
+<script src="js/airflow2.js?v=2"></script>
 </body>
 </html>

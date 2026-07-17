@@ -9,7 +9,7 @@
 const state = { data: null, twin1: null, tempChart: null, rhChart: null, rmseChart: null };
 
 document.getElementById("folio-mark").textContent =
-  `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ventilatie 2`;
+  `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ventilatie (stabiel)`;
 document.getElementById("today-date").textContent =
   new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 document.getElementById("refresh-btn").addEventListener("click", loadData);
@@ -24,7 +24,7 @@ async function loadData() {
     state.data = await res.json();
   } catch (e) {
     document.getElementById("banner-slot").innerHTML =
-      `<div class="banner banner-error">Kon <code>airflow2_data.json</code> niet laden (${e.message}). De tweede tweeling draait elk kwartier mee in de ventilatie-workflow.</div>`;
+      `<div class="banner banner-error">Kon <code>airflow2_data.json</code> niet laden (${e.message}). De stabiele tweeling draait elk kwartier mee in de ventilatie-workflow.</div>`;
     document.getElementById("source-label").textContent = "";
     document.getElementById("content").innerHTML = "";
     return;
@@ -66,7 +66,7 @@ function render() {
     `Bijgewerkt ${asOf.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })} · model 2 + tado`;
 
   document.getElementById("banner-slot").innerHTML = d.paused
-    ? `<div class="banner banner-warn">⏸️ Gepauzeerd — de tweede tweeling voorspelt door maar leert dit venster niet mee (zelfde pauze als tweeling 1; beheer op het <a class="link" href="airflow.html">Ventilatie-dashboard</a>).</div>`
+    ? `<div class="banner banner-warn">⏸️ Gepauzeerd — de stabiele tweeling voorspelt door maar leert dit venster niet mee (zelfde pauze als tweeling 1; beheer op het <a class="link" href="airflow.html">Ventilatie-dashboard</a>).</div>`
     : (learned.held
       ? `<div class="banner banner-warn">🧭 Leren gepauzeerd — voorspelfout anomaal hoog; waarschijnlijk wijkt de gemelde raamstand af van de werkelijkheid. Corrigeer de standen op het <a class="link" href="airflow.html">Ventilatie-dashboard</a>.</div>`
       : "");

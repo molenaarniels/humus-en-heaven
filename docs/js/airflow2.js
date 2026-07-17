@@ -142,35 +142,41 @@ function render() {
 function duelPanel(learned) {
   const hist2 = learned.rmse_history || [];
   const hist1 = (state.twin1 && state.twin1.rmse_history) || [];
+  // Kop = de actuele stand: het jongste punt van elk. Elk leercurve-punt is zélf al
+  // een RMSE over een 48u-venster — dáár nog eens dagen overheen middelen maakt de
+  // kop alleen maar traag (een model-verbetering bleef dagen onzichtbaar).
+  const n2 = lastRmse(hist2), n1 = lastRmse(hist1);
   const cut = overlapCut(hist2);
   const win = windowLabel(cut);
   const r2 = meanSince(hist2, cut), r1 = meanSince(hist1, cut);
   let verdict = `<div class="duel" style="color:var(--ink-soft);">Nog te weinig gedeelde historie voor een eerlijke vergelijking — de curves groeien vanzelf naar elkaar toe.</div>`;
-  if (r1 != null && r2 != null) {
-    const pct = Math.round((1 - r2 / r1) * 100);
-    verdict = pct >= 0
-      ? `<div class="duel">Tweeling 2 is <span class="win">${pct}% nauwkeuriger</span> dan tweeling 1 over dezelfde uren (${win}).</div>`
-      : `<div class="duel">Tweeling 2 is <span class="lose">${-pct}% minder nauwkeurig</span> dan tweeling 1 over dezelfde uren (${win}).</div>`;
+  if (n1 != null && n2 != null) {
+    const ratio = n1 / n2;
+    const rtxt = ratio >= 1.5 ? `${ratio.toFixed(1)}× zo nauwkeurig`
+      : (ratio >= 1 ? `${Math.round((1 - n2 / n1) * 100)}% nauwkeuriger`
+                    : `${Math.round((n2 / n1 - 1) * 100)}% minder nauwkeurig`);
+    verdict = ratio >= 1
+      ? `<div class="duel">Tweeling 2 is nu <span class="win">${rtxt}</span> dan tweeling 1 (beide gescoord over hun laatste 48 uur).</div>`
+      : `<div class="duel">Tweeling 2 is nu <span class="lose">${rtxt}</span> dan tweeling 1 (beide gescoord over hun laatste 48 uur).</div>`;
   }
   const s2 = meanSince(hist2, cut, "skill"), s1 = meanSince(hist1, cut, "skill");
   return `<div class="cell">
-      <div class="rule-label">Het duel — model 2 vs. model 1 · zelfde venster (${win})</div>
+      <div class="rule-label">Het duel — model 2 vs. model 1 · actuele stand</div>
       <div style="display:flex;gap:26px;align-items:baseline;margin-top:8px;flex-wrap:wrap;">
-        <div><div class="big-num">${fmt(r2, 2)}<span>°C</span></div><div class="rule-label">tweeling 2 · rmse</div></div>
-        <div><div class="big-num" style="color:var(--ink-soft);">${fmt(r1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse</div></div>
+        <div><div class="big-num">${fmt(n2, 2)}<span>°C</span></div><div class="rule-label">tweeling 2 · rmse (48u)</div></div>
+        <div><div class="big-num" style="color:var(--ink-soft);">${fmt(n1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse (48u)</div></div>
       </div>
       ${verdict}
-      <div class="stat-row"><span class="lbl">nu (laatste punt)</span>
-        <span>tweeling 2 ${fmt(lastRmse(hist2), 2, "°")} · tweeling 1 ${fmt(lastRmse(hist1), 2, "°")}</span></div>
+      <div class="stat-row"><span class="lbl">duurtest — gemiddeld over dezelfde uren (${win})</span>
+        <span>tweeling 2 ${fmt(r2, 2, "°")} · tweeling 1 ${fmt(r1, 2, "°")}</span></div>
       <div class="stat-row"><span class="lbl">skill (weer-genormaliseerd — eerlijkste maat)</span>
         <span>tweeling 2 ${fmt(s2, 2)} · tweeling 1 ${fmt(s1, 2)}</span></div>
       <div style="font-style:italic;color:var(--ink-soft);font-size:12px;margin-top:8px;">
-        Beide gemiddeld over precies dezelfde uren — niet elk zijn eigen 7 dagen, want
-        tweeling 2's curve is jonger en een vaste-7d-vergelijking mengde er koele,
-        makkelijke dagen van vóór zijn start doorheen. Het gemiddelde sleept oudere
-        punten van vóór een model-verbetering (bijv. de tarrering) nog dagen mee —
-        de "nu"-regel is de actuele stand. Kanttekening blijft: tweeling 1 fit elke
-        15 min op precies het venster waarop hij gescoord wordt (in-sample);
+        De kop is het jongste leercurve-punt van elk — zelf al een RMSE over 48 uur,
+        dus stabiel. De duurtest middelt beide over precies dezelfde uren; die sleept
+        oudere punten van vóór een model-verbetering (bijv. de tarrering) nog dagen
+        mee en groeit vanzelf naar de kop toe. Kanttekening blijft: tweeling 1 fit
+        elke 15 min op precies het venster waarop hij gescoord wordt (in-sample);
         tweeling 2 staat vastgepind en scoort out-of-sample — de vergelijking vleit
         tweeling 1.
       </div>

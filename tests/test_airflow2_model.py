@@ -552,9 +552,14 @@ def test_neighbor_anchor_transforms(monkeypatch):
     rows = [{"dt": datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ), "T_out": 28.0}]
     when = datetime(2026, 7, 10, 13, 0, tzinfo=am.TZ)
     raw = am.neighbor_temp_estimate(rows, when)        # 28.0 (3d-mean van één sample)
-    assert a2.neighbor_anchor(rows, when) == raw       # "none" = ongewijzigd
-    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23")
+    # Default = "cap23" (campagne-uitkomst juli 2026): klemt in een hittegolf op 23°C…
+    assert a2.NEIGHBOR_TRANSFORM == "cap23"
     assert a2.neighbor_anchor(rows, when) == 23.0
+    # …en is wiskundig inert onder de kap.
+    rows_mild = [{"dt": rows[0]["dt"], "T_out": 20.0}]
+    assert a2.neighbor_anchor(rows_mild, when) == am.neighbor_temp_estimate(rows_mild, when)
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "none")
+    assert a2.neighbor_anchor(rows, when) == raw
     monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "damped")
     assert a2.neighbor_anchor(rows, when) == pytest.approx(19.5 + 0.5 * (raw - 19.5))
 

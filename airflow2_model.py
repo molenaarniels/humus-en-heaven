@@ -137,7 +137,15 @@ CP_SC_REF = 0.6
 #   (kamer-eigen startmeting, gezet via simulate2's tm_seed).
 # • BEDROOM_NIGHT_ROOMS: kamers met een geïnverteerd dag/nacht-profiel voor interne
 #   warmte + vocht (slaapkamers: bewoners produceren dáár 's nachts, niet overdag).
-NEIGHBOR_TRANSFORM = "none"
+#
+# CAMPAGNE-UITKOMST (juli 2026, 3-voudige 0-epoch-configtest, 9 gepaarde vensters):
+# "cap23" geadopteerd als default — wiskundig inert zolang het 3d-buitengemiddelde
+# < 23°C blijft (8/9 vensters exact Δ0.00) en −0.29°C op het hittegolf-venster 06-26
+# (baselines slechtste venster), guardrails groen. De overige hypothesen (no_subzones,
+# td_seed_own, bedroom_night_gain, warmup_48, damped-anker) zijn op dezelfde toets
+# verworpen. Géén PHYSICS2_REV-bump: de toets draaide op de huidige anker-params —
+# die blijven onder de cap aantoonbaar geldig (zelfs beter), dus warm-start blijft.
+NEIGHBOR_TRANSFORM = "cap23"
 TD_SEED_MODE = "blend"
 BEDROOM_NIGHT_ROOMS: set = set()
 

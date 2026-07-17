@@ -81,10 +81,12 @@ ARMS: dict[str, dict] = {
 
 
 def apply_config(cfg: dict) -> None:
-    """Zet de variant-haakjes in airflow2_model (proces-lokaal)."""
-    a2.NEIGHBOR_TRANSFORM = cfg.get("neighbor_transform", "none")
-    a2.TD_SEED_MODE = cfg.get("td_seed", "blend")
-    a2.BEDROOM_NIGHT_ROOMS = set(cfg.get("bedrooms", []))
+    """Zet de variant-haakjes in airflow2_model (proces-lokaal). Afwezige sleutels
+    laten de módule-defaults staan — "baseline" betekent dus altijd "de huidige
+    productie-configuratie", ook nadat een campagne-winnaar default is geworden."""
+    a2.NEIGHBOR_TRANSFORM = cfg.get("neighbor_transform", a2.NEIGHBOR_TRANSFORM)
+    a2.TD_SEED_MODE = cfg.get("td_seed", a2.TD_SEED_MODE)
+    a2.BEDROOM_NIGHT_ROOMS = set(cfg.get("bedrooms", a2.BEDROOM_NIGHT_ROOMS))
     if "rh_weight" in cfg:
         a2.RH_RES_WEIGHT = cfg["rh_weight"]
     if "ridge" in cfg:

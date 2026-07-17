@@ -44,17 +44,28 @@ function fmt(v, dec = 1, unit = "") {
 }
 function errCls(err) { return err == null ? "" : (err >= 0 ? "err-pos" : "err-neg"); }
 
-// Gemiddelde van een leercurve-veld over de laatste `days` dagen (alleen écht-geleerde/
-// geëvalueerde punten: held/gepauzeerd telt niet als model-skill).
-function recentMean(hist, days = 7, key = "rmse") {
-  const cut = Date.now() - days * 864e5;
+// Het duel-venster: beide twins gescoord over precies dezelfde uren — vanaf tweeling 2's
+// oudste geldige punt, hooguit 7 dagen terug. Een vaste-7d-vergelijking flatteerde
+// tweeling 1 met koele, makkelijke dagen van vóór tweeling 2's (jongere) curve.
+function overlapCut(hist2) {
+  const cut7 = Date.now() - 7 * 864e5;
+  const ts = (hist2 || [])
+    .filter(p => p.rmse != null && !p.held && !p.paused)
+    .map(p => new Date(p.t).getTime());
+  if (!ts.length) return cut7;
+  return Math.max(cut7, Math.min(...ts));
+}
+function meanSince(hist, cut, key = "rmse") {
   const vals = (hist || [])
     .filter(p => p[key] != null && !p.held && !p.paused && new Date(p.t).getTime() >= cut)
     .map(p => p[key]);
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
-function recentRmse(hist, days = 7) { return recentMean(hist, days, "rmse"); }
+function windowLabel(cut) {
+  const h = Math.round((Date.now() - cut) / 36e5);
+  return h < 48 ? `laatste ${h}u` : `laatste ${Math.round(h / 24)}d`;
+}
 
 // ===================== RENDER =====================
 function render() {
@@ -79,6 +90,7 @@ function render() {
   html += `<div class="cell">
       <div class="rule-label">Leerstand — tweeling 2</div>
       <div class="stat-row"><span class="lbl">RMSE (temp)</span><span>${fmt(learned.rmse, 3, " °C")}</span></div>
+      ${learned.rmse_raw != null ? `<div class="stat-row"><span class="lbl">RMSE vóór tarrering (pure fysica)</span><span>${fmt(learned.rmse_raw, 3, " °C")}</span></div>` : ""}
       <div class="stat-row"><span class="lbl">RMSE (vocht)</span><span>${fmt(learned.rmse_rh, 2, " %RH")}</span></div>
       <div class="stat-row"><span class="lbl">skill vs. persistentie</span><span>${fmt(learned.skill, 3)}</span></div>
       <div class="stat-row"><span class="lbl">regime</span><span>${learned.pinned ? "📌 vastgepind op het batch-anker" : "bootstrap — online lerend tot de eerste batch"}</span></div>
@@ -121,38 +133,44 @@ function render() {
 }
 
 function duelPanel(learned) {
-  const t1 = state.data.twin1 || {};
   const hist2 = learned.rmse_history || [];
   const hist1 = (state.twin1 && state.twin1.rmse_history) || [];
-  const r2 = recentRmse(hist2), r1 = recentRmse(hist1);
+  const cut = overlapCut(hist2);
+  const win = windowLabel(cut);
+  const r2 = meanSince(hist2, cut), r1 = meanSince(hist1, cut);
   let verdict = `<div class="duel" style="color:var(--ink-soft);">Nog te weinig gedeelde historie voor een eerlijke vergelijking — de curves groeien vanzelf naar elkaar toe.</div>`;
   if (r1 != null && r2 != null) {
     const pct = Math.round((1 - r2 / r1) * 100);
     verdict = pct >= 0
-      ? `<div class="duel">Tweeling 2 is <span class="win">${pct}% nauwkeuriger</span> dan tweeling 1 over de laatste 7 dagen.</div>`
-      : `<div class="duel">Tweeling 2 is <span class="lose">${-pct}% minder nauwkeurig</span> dan tweeling 1 over de laatste 7 dagen.</div>`;
+      ? `<div class="duel">Tweeling 2 is <span class="win">${pct}% nauwkeuriger</span> dan tweeling 1 over dezelfde uren (${win}).</div>`
+      : `<div class="duel">Tweeling 2 is <span class="lose">${-pct}% minder nauwkeurig</span> dan tweeling 1 over dezelfde uren (${win}).</div>`;
   }
-  const s2 = recentMean(hist2, 7, "skill"), s1 = recentMean(hist1, 7, "skill");
+  const s2 = meanSince(hist2, cut, "skill"), s1 = meanSince(hist1, cut, "skill");
   return `<div class="cell">
-      <div class="rule-label">Het duel — model 2 vs. model 1</div>
+      <div class="rule-label">Het duel — model 2 vs. model 1 · zelfde venster (${win})</div>
       <div style="display:flex;gap:26px;align-items:baseline;margin-top:8px;flex-wrap:wrap;">
-        <div><div class="big-num">${fmt(r2, 2)}<span>°C</span></div><div class="rule-label">tweeling 2 · rmse 7d</div></div>
-        <div><div class="big-num" style="color:var(--ink-soft);">${fmt(r1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse 7d</div></div>
+        <div><div class="big-num">${fmt(r2, 2)}<span>°C</span></div><div class="rule-label">tweeling 2 · rmse</div></div>
+        <div><div class="big-num" style="color:var(--ink-soft);">${fmt(r1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse</div></div>
       </div>
       ${verdict}
-      <div class="stat-row"><span class="lbl">skill 7d (weer-genormaliseerd — eerlijkste maat)</span>
+      <div class="stat-row"><span class="lbl">skill (weer-genormaliseerd — eerlijkste maat)</span>
         <span>tweeling 2 ${fmt(s2, 2)} · tweeling 1 ${fmt(s1, 2)}</span></div>
       <div style="font-style:italic;color:var(--ink-soft);font-size:12px;margin-top:8px;">
-        Zelfde kalibratievenster, zelfde tado-grond-waarheid, zelfde meldingen — alleen het model
-        verschilt. Kanttekening: tweeling 1 fit elke 15 min op precies het venster waarop hij
-        gescoord wordt (in-sample); tweeling 2 staat vastgepind en scoort out-of-sample — de
-        RMSE-vergelijking vleit tweeling 1.
+        Beide gemiddeld over precies dezelfde uren — niet elk zijn eigen 7 dagen, want
+        tweeling 2's curve is jonger en een vaste-7d-vergelijking mengde er koele,
+        makkelijke dagen van vóór zijn start doorheen. Kanttekening blijft: tweeling 1
+        fit elke 15 min op precies het venster waarop hij gescoord wordt (in-sample);
+        tweeling 2 staat vastgepind en scoort out-of-sample — de vergelijking vleit
+        tweeling 1.
       </div>
     </div>`;
 }
 
 function roomCard(rid, r) {
   const chips = [];
+  if (r.bias_corr_c != null && Math.abs(r.bias_corr_c) >= 0.05) {
+    chips.push(`<span class="chip-tag" title="Tarrering: langzaam meelopende offset (EMA ~24u) bovenop de gepinde fysica — ruwe modeltemp ${fmt(r.predicted_temp_raw, 1)}°">⚖️ tarrering ${r.bias_corr_c > 0 ? "+" : ""}${fmt(r.bias_corr_c, 1)}°</span>`);
+  }
   if (r.ac) chips.push(`<span class="chip-tag" style="color:var(--rain);">❄️ airco — niet gekalibreerd</span>`);
   if (r.heating) chips.push(`<span class="chip-tag" style="color:var(--clay);">🔥 verwarming — stook-samples uit de fit</span>`);
   if (r.paused) chips.push(`<span class="chip-tag">⏸️ gepauzeerd</span>`);

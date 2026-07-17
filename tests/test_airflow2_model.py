@@ -552,8 +552,9 @@ def test_neighbor_anchor_transforms(monkeypatch):
     rows = [{"dt": datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ), "T_out": 28.0}]
     when = datetime(2026, 7, 10, 13, 0, tzinfo=am.TZ)
     raw = am.neighbor_temp_estimate(rows, when)        # 28.0 (3d-mean van één sample)
-    # Default = "cap23" (campagne-uitkomst juli 2026): klemt in een hittegolf op 23°C…
-    assert a2.NEIGHBOR_TRANSFORM == "cap23"
+    # Default = "cap23_night" (campagne-uitkomst 2, juli 2026): de basis-anchor klemt
+    # in een hittegolf op de dág-cap 23°C (de nachtverlaging zit in neighbor_at).
+    assert a2.NEIGHBOR_TRANSFORM == "cap23_night"
     assert a2.neighbor_anchor(rows, when) == 23.0
     # …en is wiskundig inert onder de kap.
     rows_mild = [{"dt": rows[0]["dt"], "T_out": 20.0}]
@@ -571,6 +572,106 @@ def test_gain_profile2_inverts_for_bedrooms(monkeypatch):
     assert a2.gain_profile2(t_day, "living") == pytest.approx(1.0)
     assert a2.gain_profile2(t_day, "ted") == pytest.approx(am.INTERNAL_NIGHT_FRACTION)
     assert a2.gain_profile2(t_night, "ted") == pytest.approx(1.0)
+
+
+# ── Bias-corrector (tarrering) + nacht-anker ─────────────────────────────────────────
+
+def test_update_bias_state_ema_clamp_and_freeze():
+    alpha = 0.25 / a2.BIAS_TAU_H
+    b1 = a2.update_bias_state({}, {"a": -1.2})
+    assert b1["a"] == pytest.approx(-1.2 * alpha, abs=1e-3)
+    # bestaande offset beweegt richting de verse fout…
+    b2 = a2.update_bias_state({"a": -1.0}, {"a": -2.0})
+    assert -1.0 - 1.1 * alpha < b2["a"] < -1.0
+    # …en klemt op ±BIAS_CLAMP_C
+    b3 = a2.update_bias_state({"a": -1.99}, {"a": -80.0})
+    assert b3["a"] == -a2.BIAS_CLAMP_C
+    # kamer zonder verse fout bevriest; NaN wordt genegeerd
+    assert a2.update_bias_state({"a": -1.0}, {})["a"] == -1.0
+    assert a2.update_bias_state({"a": -1.0}, {"a": float("nan")})["a"] == -1.0
+
+
+def test_bias_offsets_rev_reset():
+    learned = {"physics2_rev": a2.PHYSICS2_REV, "bias_state": {"a": -1.1}}
+    assert a2.bias_offsets(learned) == {"a": -1.1}
+    learned["physics2_rev"] = a2.PHYSICS2_REV - 1
+    assert a2.bias_offsets(learned) == {}          # reset met de globals mee
+    assert a2.bias_offsets({}) == {}
+
+
+def test_rmse_eval2_bias_corrects_constant_offset():
+    house = _toy_house()
+    tl = _tl(20.0, hours=8.0)
+    seed = {"a": 24.0, "b": 24.0, "hall": 24.0}
+    params = a2.merged_params2(house, {})
+    sim = a2.simulate2(house, params, tl, seed, calib_only_rooms={"a"})
+    pred = am._to_sensor_series(house, tl, "a", sim["series"]["a"])
+    # "gemeten" = voorspeld + 1.0 → rauwe RMSE 1.0; tarrering b=+1.0 corrigeert exact
+    # (b is de waarde die bíj de voorspelling wordt opgeteld: actual − predicted_raw)
+    actual = {"a": [(t, v + 1.0) for t, v in pred[4:20]]}
+    corr, _rh, raw = a2.rmse_eval2(house, params, tl, seed, actual, {}, bias={"a": 1.0})
+    assert raw == pytest.approx(1.0, abs=0.02)
+    assert corr < 0.02
+    # zonder bias zijn corr en raw identiek (causaal nulpunt)
+    corr0, _rh0, raw0 = a2.rmse_eval2(house, params, tl, seed, actual, {})
+    assert corr0 == pytest.approx(raw0)
+
+
+def test_room_now_errors_sign_and_staleness():
+    house = _toy_house()
+    tl = _tl(20.0, hours=4.0)
+    now = tl[-1]["t"]
+    seed = {"a": 24.0, "b": 24.0, "hall": 24.0}
+    params = a2.merged_params2(house, {})
+    sim = a2.simulate2(house, params, tl, seed, calib_only_rooms={"a", "b"})
+    pred = am._to_sensor_series(house, tl, "a", sim["series"]["a"])
+    ts, pv = pred[-1]
+    actual = {"a": [(ts, pv - 1.5)],                     # gemeten kouder → offset negatief
+              "b": [(now - timedelta(hours=3), 20.0)]}   # verouderd sample → bevroren
+    errs = a2.room_now_errors(house, tl, sim, actual, now)
+    assert errs["a"] == pytest.approx(-1.5, abs=0.05)
+    assert "b" not in errs
+
+
+def test_night_cap_profile():
+    def at(h, m=0):
+        return a2._night_cap(datetime(2026, 7, 10, h, m, tzinfo=am.TZ))
+    assert at(13) == 23.0
+    assert at(3) == a2.NEIGHBOR_NIGHT_CAP
+    assert at(23) == a2.NEIGHBOR_NIGHT_CAP
+    mid = 0.5 * (23.0 + a2.NEIGHBOR_NIGHT_CAP)
+    assert at(22, 30) == pytest.approx(mid)              # gladde overgang dag → nacht
+    assert at(7, 30) == pytest.approx(mid)               # en nacht → dag
+    assert at(8) == 23.0
+
+
+def test_neighbor_at_transform(monkeypatch):
+    t_day = datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ)
+    t_night = datetime(2026, 7, 10, 2, 0, tzinfo=am.TZ)
+    # default (cap23_night): overdag de basiswaarde, 's nachts de lagere cap
+    assert a2.neighbor_at(23.0, t_day) == 23.0
+    assert a2.neighbor_at(23.0, t_night) == a2.NEIGHBOR_NIGHT_CAP
+    assert a2.neighbor_at(20.0, t_night) == 20.0         # basis onder de nachtcap: ongemoeid
+    # cap23 (run-constante): geen tijdsafhankelijkheid, ook 's nachts
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23")
+    assert a2.neighbor_at(23.0, t_night) == 23.0
+    # neighbor_anchor levert voor cap23_night de dág-waarde (= cap23-klem)
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23_night")
+    rows = [{"dt": datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ), "T_out": 28.0}]
+    assert a2.neighbor_anchor(rows, t_day) == 23.0
+
+
+def test_sim2_cap23_night_cools_nights(monkeypatch):
+    house = _toy_house()
+    tl = _tl(18.0, hours=10.0)                           # start 00:00 → dekt de nachturen
+    seed = {"a": 23.0, "b": 23.0, "hall": 23.0}
+    params = a2.merged_params2(house, {})
+    monkeypatch.setattr(am, "_NEIGHBOR_TEMP", 23.0)
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23")
+    res_base = a2.simulate2(house, params, tl, seed)
+    monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23_night")
+    res_night = a2.simulate2(house, params, tl, seed)
+    assert res_night["Ta"]["a"] < res_base["Ta"]["a"]    # nachtcap → party-term stookt minder
 
 
 def test_batch_fit_epoch_budget():

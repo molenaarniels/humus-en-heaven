@@ -77,6 +77,10 @@ ARMS: dict[str, dict] = {
     # 0-epoch-configtest, waar een reset juist ruis zou toevoegen.
     "neighbor_damped_nr": {"neighbor_transform": "damped", "neighbor_mode": "mid"},
     "neighbor_cap_nr": {"neighbor_transform": "cap23"},
+    # nacht-verlaagd buur-anker: buren koelen 's nachts óók af; het vaste 23°C-plafond
+    # "stookte" 's nachts door (de nachtelijke warm-bias, juli 2026). Param-compatibel
+    # (geen reset) → geschikt voor de 0-epoch-configtest, net als de _nr-armen.
+    "neighbor_cap_night": {"neighbor_transform": "cap23_night"},
 }
 
 

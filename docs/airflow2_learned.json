@@ -1,6 +1,6 @@
 {
-  "updated_at": "2026-07-17T07:00:59.755143+02:00",
-  "model_version": "a3c3071",
+  "updated_at": "2026-07-17T07:11:15.849773+02:00",
+  "model_version": "983e288",
   "physics2_rev": 1,
   "params": {
     "cp_shelter_front": 0.28388465876452085,
@@ -93,8 +93,8 @@
       "w_buf": 3.1374017918269743
     }
   },
-  "rmse": 0.989,
-  "rmse_rh": 9.84,
+  "rmse": 0.927,
+  "rmse_rh": 9.54,
   "railed": [
     "ted.ua_env@floor",
     "ted.solar_gain@floor",
@@ -1501,6 +1501,22 @@
       "rmse_rh": 9.84,
       "skill": 0.464,
       "rmse_naive": 1.846,
+      "wx": {
+        "tmax": 30.5,
+        "solar_peak": 864,
+        "solar_mean": 251
+      },
+      "pinned": true
+    },
+    {
+      "t": "2026-07-17T07:11:15.849773+02:00",
+      "rmse": 0.927,
+      "held": false,
+      "paused": false,
+      "version": "983e288",
+      "rmse_rh": 9.54,
+      "skill": 0.496,
+      "rmse_naive": 1.84,
       "wx": {
         "tmax": 30.5,
         "solar_peak": 864,

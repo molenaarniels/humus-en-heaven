@@ -72,6 +72,11 @@ ARMS: dict[str, dict] = {
     # A/A-ruisvloer: baseline met alternerende ±2%-start-jitter (deterministisch).
     "aa_jitter_1": {"jitter": 0.02},
     "aa_jitter_2": {"jitter": -0.02},
+    # Param-compatibele buur-varianten (géén ua_party-reset): meten het anker-effect
+    # via de kamers die nú party-koppeling hebben (living/hotties) — voor de
+    # 0-epoch-configtest, waar een reset juist ruis zou toevoegen.
+    "neighbor_damped_nr": {"neighbor_transform": "damped", "neighbor_mode": "mid"},
+    "neighbor_cap_nr": {"neighbor_transform": "cap23"},
 }
 
 

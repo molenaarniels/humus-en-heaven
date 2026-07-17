@@ -2730,46 +2730,52 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     if checkpoint else None,
                     "fell_back": bool(fell_back)},
         # Volledige geometrie (additief) zodat de browser-speeltuin (airflow.html) hetzelfde
-        # luchtstroomnetwerk lokaal kan oplossen: openingsoppervlakken, hoogtes en de
-        # roosters/deuren horen er nu óók bij, plus de sim-constanten die Python gebruikt.
-        "house_meta": {
-            "rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid),
-                            "floor": r.get("floor", 0), "plan_h": r.get("plan_h", 1),
-                            "volume_m3": r.get("volume_m3"),
-                            "sensor": bool(r.get("from_window_data"))}
-                      for rid, r in house.get("rooms", {}).items()},
-            "junctions": {jid: {"plan_xy": j.get("plan_xy"), "label": j.get("label", jid),
-                                "floor": j.get("floor", 0), "volume_m3": j.get("volume_m3"),
-                                "sensor": False}
-                          for jid, j in house.get("junctions", {}).items()},
-            "windows": {wid: {"room": w.get("room"), "facade_azimuth_deg": w.get("facade_azimuth_deg"),
-                              "kind": "skylight" if w.get("tilt_deg", 90) < 45 else "window",
-                              "area_m2": w.get("area_m2"), "glass_m2": w.get("glass_m2"),
-                              "max_open_area_m2": w.get("max_open_area_m2", 0.0),
-                              "center_height_m": w.get("center_height_m"),
-                              "tilt_frac": w.get("tilt_frac"), "tilt_deg": w.get("tilt_deg"),
-                              # Opgelost effectief-oppervlak (open_type/override) voor de
-                              # JS-speeltuin, zodat die dezelfde korting rekent (additief).
-                              "eff_open_frac": _eff_open_area(w),
-                              "plan_side": w.get("plan_side"), "plan_pos": w.get("plan_pos"),
-                              "label": w.get("label", wid)}
-                        for wid, w in house.get("windows", {}).items()},
-            "vents": {vid: {"room": v.get("room"), "facade_azimuth_deg": v.get("facade_azimuth_deg"),
-                            "area_m2": v.get("area_m2"), "max_open_area_m2": v.get("max_open_area_m2"),
-                            "eff_open_frac": _eff_open_area(v),
-                            "center_height_m": v.get("center_height_m"),
-                            "default_state": v.get("default_state", "open"),
-                            "plan_side": v.get("plan_side"), "plan_pos": v.get("plan_pos"),
-                            "label": v.get("label", vid)}
-                      for vid, v in house.get("vents", {}).items()},
-            "doors": {did: {"between": d.get("between"), "label": d.get("label", did),
-                            "area_m2": d.get("area_m2"), "center_height_m": d.get("center_height_m"),
-                            "default_state": d.get("default_state", "open"),
-                            "plan_pos": d.get("plan_pos"),
-                            "fixed": bool(d.get("fixed"))}
-                      for did, d in house.get("doors", {}).items()},
-            "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM, "wind_ref_z": WIND_REF_Z},
-        },
+        # luchtstroomnetwerk lokaal kan oplossen — gedeeld met tweeling 2 via house_meta_out.
+        "house_meta": house_meta_out(house),
+    }
+
+
+def house_meta_out(house: dict) -> dict:
+    """Volledige geometrie voor de browser-speeltuin: openingsoppervlakken, hoogtes,
+    roosters/deuren en de sim-constanten die Python gebruikt. Gedeeld door beide
+    tweeling-dashboards (tweeling 2 voegt er additief zijn Cp-metadata aan toe)."""
+    return {
+        "rooms": {rid: {"plan_xy": r.get("plan_xy"), "label": r.get("label", rid),
+                        "floor": r.get("floor", 0), "plan_h": r.get("plan_h", 1),
+                        "volume_m3": r.get("volume_m3"),
+                        "sensor": bool(r.get("from_window_data"))}
+                  for rid, r in house.get("rooms", {}).items()},
+        "junctions": {jid: {"plan_xy": j.get("plan_xy"), "label": j.get("label", jid),
+                            "floor": j.get("floor", 0), "volume_m3": j.get("volume_m3"),
+                            "sensor": False}
+                      for jid, j in house.get("junctions", {}).items()},
+        "windows": {wid: {"room": w.get("room"), "facade_azimuth_deg": w.get("facade_azimuth_deg"),
+                          "kind": "skylight" if w.get("tilt_deg", 90) < 45 else "window",
+                          "area_m2": w.get("area_m2"), "glass_m2": w.get("glass_m2"),
+                          "max_open_area_m2": w.get("max_open_area_m2", 0.0),
+                          "center_height_m": w.get("center_height_m"),
+                          "tilt_frac": w.get("tilt_frac"), "tilt_deg": w.get("tilt_deg"),
+                          # Opgelost effectief-oppervlak (open_type/override) voor de
+                          # JS-speeltuin, zodat die dezelfde korting rekent (additief).
+                          "eff_open_frac": _eff_open_area(w),
+                          "plan_side": w.get("plan_side"), "plan_pos": w.get("plan_pos"),
+                          "label": w.get("label", wid)}
+                    for wid, w in house.get("windows", {}).items()},
+        "vents": {vid: {"room": v.get("room"), "facade_azimuth_deg": v.get("facade_azimuth_deg"),
+                        "area_m2": v.get("area_m2"), "max_open_area_m2": v.get("max_open_area_m2"),
+                        "eff_open_frac": _eff_open_area(v),
+                        "center_height_m": v.get("center_height_m"),
+                        "default_state": v.get("default_state", "open"),
+                        "plan_side": v.get("plan_side"), "plan_pos": v.get("plan_pos"),
+                        "label": v.get("label", vid)}
+                  for vid, v in house.get("vents", {}).items()},
+        "doors": {did: {"between": d.get("between"), "label": d.get("label", did),
+                        "area_m2": d.get("area_m2"), "center_height_m": d.get("center_height_m"),
+                        "default_state": d.get("default_state", "open"),
+                        "plan_pos": d.get("plan_pos"),
+                        "fixed": bool(d.get("fixed"))}
+                  for did, d in house.get("doors", {}).items()},
+        "sim": {"leak_area": LEAK_AREA, "dp_lam": DP_LAM, "wind_ref_z": WIND_REF_Z},
     }
 
 

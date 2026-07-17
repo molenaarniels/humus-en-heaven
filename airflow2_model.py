@@ -207,15 +207,18 @@ def neighbor_at(nb_base: float, when) -> float:
 # een weegschaal. Diagnose juli 2026: twin 2's fout was vrijwel volledig één
 # systematische warm-bias per kamer (bias ≈ RMSE: living +1.2 van 1.3, office +1.1
 # van 1.5), geen ruis; de 17 floor-railings van batch #5 waren hetzelfde signaal.
-# De offset leert traag (EMA, τ = BIAS_TAU_H) op de actuele fout en wordt bij de
-# voorspelling opgeteld (sensor-ruimte). De fysica-params blijven exact gepind —
+# De offset ís de directe meting: per kamer het gemiddelde van de fout over het
+# hele 48u-residu-venster, elke run opnieuw. Bewust géén trage EMA erbovenop —
+# het venster zélf is de demping (één nieuw kwartiersample verschuift het
+# gemiddelde ~0,5%, dus de offset is inherent glad) en een EMA voegde alleen een
+# etmaal onnodige aanloopvertraging toe. De fysica-params blijven exact gepind —
 # dit is een meet-laag, geen kalibratie. Alleen actief in het gepinde regime
 # (bootstrap-leren adapteert de params al zelf; een offset erbovenop zou dubbel
 # leren). Bevriezings-gates komen gratis mee: AC/verwarming/pauze-samples zijn al
 # uit `actual` gefilterd vóór de fout wordt gemeten. Reset bij PHYSICS2_REV-
 # mismatch, met de globals mee.
-BIAS_TAU_H = 24.0     # EMA-tijdconstante (u) — ~63% van een sprong na een etmaal
-BIAS_CLAMP_C = 2.0    # maximale |offset| (°C) — groter = structureel, hoort in de fysica
+BIAS_CLAMP_C = 2.0      # maximale |offset| (°C) — groter = structureel, hoort in de fysica
+BIAS_MIN_SAMPLES = 8    # minimaal ~2u verse samples in het venster, anders bevriest de offset
 
 
 def bias_offsets(learned: dict) -> dict:
@@ -227,35 +230,34 @@ def bias_offsets(learned: dict) -> dict:
     return {rid: float(v) for rid, v in st.items() if isinstance(v, (int, float))}
 
 
-def room_now_errors(house, timeline, sim, actual, now, max_age_h: float = 1.0) -> dict:
-    """Per kamer de actuele fout `actual − predicted_raw` (sensor-ruimte) op het
-    jongste tado-sample, mits dat vers genoeg is. `actual` is de al-gefilterde set
-    (AC/verwarming/pauze eruit), dus een uitgesloten kamer valt hier vanzelf weg."""
+def window_mean_errors(house, timeline, sim, actual,
+                       min_samples: int = BIAS_MIN_SAMPLES) -> dict:
+    """Per kamer de gemiddelde fout `actual − predicted_raw` (sensor-ruimte) over het
+    residu-venster — de directe meting van de systematische bias. `actual` is de
+    al-gefilterde set (AC/verwarming/pauze eruit), dus een uitgesloten kamer valt
+    hier vanzelf weg; te weinig samples → geen meting (offset bevriest)."""
     out = {}
     for rid, samples in (actual or {}).items():
-        if not samples:
-            continue
-        ts, val = samples[-1]
-        if (now - ts).total_seconds() > max_age_h * 3600.0:
+        if len(samples) < min_samples:
             continue
         pred = sim["series"].get(rid, [])
         if not pred:
             continue
         pred = am._to_sensor_series(house, timeline, rid, pred)
-        out[rid] = val - am._interp(pred, ts)
+        errs = [val - am._interp(pred, ts) for ts, val in samples]
+        out[rid] = sum(errs) / len(errs)
     return out
 
 
-def update_bias_state(bias: dict, err_now: dict, step_h: float = 0.25) -> dict:
-    """EMA-stap van de tarrering: b ← (1−α)·b + α·(actual − predicted_raw), geklemd
-    op ±BIAS_CLAMP_C. Kamers zonder verse fout houden hun offset (bevroren)."""
-    alpha = min(1.0, step_h / BIAS_TAU_H)
+def update_bias_state(bias: dict, win_err: dict) -> dict:
+    """Zet de tarrering per kamer direct op het venstergemiddelde van de fout,
+    geklemd op ±BIAS_CLAMP_C. Kamers zonder verse venster-meting houden hun
+    offset (bevroren)."""
     out = dict(bias)
-    for rid, err in (err_now or {}).items():
+    for rid, err in (win_err or {}).items():
         if err is None or err != err:
             continue
-        b = (1.0 - alpha) * out.get(rid, 0.0) + alpha * err
-        out[rid] = round(max(-BIAS_CLAMP_C, min(BIAS_CLAMP_C, b)), 3)
+        out[rid] = round(max(-BIAS_CLAMP_C, min(BIAS_CLAMP_C, err)), 3)
     return out
 
 
@@ -1907,16 +1909,16 @@ def main():
     if sim.get("solver_failures"):
         print(f"[sim] {sim['solver_failures']} bijna-singuliere substap(pen).")
 
-    # Tarrering-EMA bijwerken op de actuele fout (alleen gepind; bootstrap-leren
-    # adapteert de params zelf al). Uitgesloten kamers (AC/verwarming/pauze) hebben
-    # geen vers sample in `actual` en bevriezen dus vanzelf.
+    # Tarrering bijwerken: direct het venstergemiddelde van de fout (alleen gepind;
+    # bootstrap-leren adapteert de params zelf al). Uitgesloten kamers (AC/
+    # verwarming/pauze) missen samples in `actual` en bevriezen dus vanzelf.
     if pinned:
-        err_now = room_now_errors(house, timeline, sim, actual, now)
-        bias_state = update_bias_state(bias_prev, err_now)
+        win_err = window_mean_errors(house, timeline, sim, actual)
+        bias_state = update_bias_state(bias_prev, win_err)
         if bias_state != bias_prev:
             moved = {r: bias_state[r] for r in bias_state
                      if bias_state[r] != bias_prev.get(r)}
-            print(f"[tarrering] offsets bijgewerkt: {moved}")
+            print(f"[tarrering] offsets op venstergemiddelde: {moved}")
     else:
         bias_state = bias_prev
 

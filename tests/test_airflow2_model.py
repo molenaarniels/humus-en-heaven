@@ -576,17 +576,13 @@ def test_gain_profile2_inverts_for_bedrooms(monkeypatch):
 
 # ── Bias-corrector (tarrering) + nacht-anker ─────────────────────────────────────────
 
-def test_update_bias_state_ema_clamp_and_freeze():
-    alpha = 0.25 / a2.BIAS_TAU_H
-    b1 = a2.update_bias_state({}, {"a": -1.2})
-    assert b1["a"] == pytest.approx(-1.2 * alpha, abs=1e-3)
-    # bestaande offset beweegt richting de verse fout…
-    b2 = a2.update_bias_state({"a": -1.0}, {"a": -2.0})
-    assert -1.0 - 1.1 * alpha < b2["a"] < -1.0
-    # …en klemt op ±BIAS_CLAMP_C
-    b3 = a2.update_bias_state({"a": -1.99}, {"a": -80.0})
-    assert b3["a"] == -a2.BIAS_CLAMP_C
-    # kamer zonder verse fout bevriest; NaN wordt genegeerd
+def test_update_bias_state_direct_clamp_and_freeze():
+    # direct op het venstergemiddelde — geen aanloop-EMA
+    assert a2.update_bias_state({}, {"a": -1.2})["a"] == pytest.approx(-1.2)
+    assert a2.update_bias_state({"a": -0.1}, {"a": -1.0})["a"] == pytest.approx(-1.0)
+    # klemt op ±BIAS_CLAMP_C
+    assert a2.update_bias_state({}, {"a": -80.0})["a"] == -a2.BIAS_CLAMP_C
+    # kamer zonder verse venster-meting bevriest; NaN wordt genegeerd
     assert a2.update_bias_state({"a": -1.0}, {})["a"] == -1.0
     assert a2.update_bias_state({"a": -1.0}, {"a": float("nan")})["a"] == -1.0
 
@@ -617,18 +613,17 @@ def test_rmse_eval2_bias_corrects_constant_offset():
     assert corr0 == pytest.approx(raw0)
 
 
-def test_room_now_errors_sign_and_staleness():
+def test_window_mean_errors_sign_and_min_samples():
     house = _toy_house()
     tl = _tl(20.0, hours=4.0)
-    now = tl[-1]["t"]
     seed = {"a": 24.0, "b": 24.0, "hall": 24.0}
     params = a2.merged_params2(house, {})
     sim = a2.simulate2(house, params, tl, seed, calib_only_rooms={"a", "b"})
     pred = am._to_sensor_series(house, tl, "a", sim["series"]["a"])
-    ts, pv = pred[-1]
-    actual = {"a": [(ts, pv - 1.5)],                     # gemeten kouder → offset negatief
-              "b": [(now - timedelta(hours=3), 20.0)]}   # verouderd sample → bevroren
-    errs = a2.room_now_errors(house, tl, sim, actual, now)
+    # "gemeten" = voorspeld − 1.5 over het hele venster → gemiddelde fout −1.5
+    actual = {"a": [(t, v - 1.5) for t, v in pred],
+              "b": [pred[0]]}                            # < BIAS_MIN_SAMPLES → geen meting
+    errs = a2.window_mean_errors(house, tl, sim, actual)
     assert errs["a"] == pytest.approx(-1.5, abs=0.05)
     assert "b" not in errs
 

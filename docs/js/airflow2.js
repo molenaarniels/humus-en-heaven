@@ -169,7 +169,7 @@ function duelPanel(learned) {
 function roomCard(rid, r) {
   const chips = [];
   if (r.bias_corr_c != null && Math.abs(r.bias_corr_c) >= 0.05) {
-    chips.push(`<span class="chip-tag" title="Tarrering: langzaam meelopende offset (EMA ~24u) bovenop de gepinde fysica — ruwe modeltemp ${fmt(r.predicted_temp_raw, 1)}°">⚖️ tarrering ${r.bias_corr_c > 0 ? "+" : ""}${fmt(r.bias_corr_c, 1)}°</span>`);
+    chips.push(`<span class="chip-tag" title="Tarrering: het 48u-venstergemiddelde van de fout, opgeteld bij de gepinde fysica — ruwe modeltemp ${fmt(r.predicted_temp_raw, 1)}°">⚖️ tarrering ${r.bias_corr_c > 0 ? "+" : ""}${fmt(r.bias_corr_c, 1)}°</span>`);
   }
   if (r.ac) chips.push(`<span class="chip-tag" style="color:var(--rain);">❄️ airco — niet gekalibreerd</span>`);
   if (r.heating) chips.push(`<span class="chip-tag" style="color:var(--clay);">🔥 verwarming — stook-samples uit de fit</span>`);

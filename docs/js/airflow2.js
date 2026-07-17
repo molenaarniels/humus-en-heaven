@@ -66,6 +66,13 @@ function windowLabel(cut) {
   const h = Math.round((Date.now() - cut) / 36e5);
   return h < 48 ? `laatste ${h}u` : `laatste ${Math.round(h / 24)}d`;
 }
+function lastRmse(hist) {
+  for (let i = (hist || []).length - 1; i >= 0; i--) {
+    const p = hist[i];
+    if (p.rmse != null && !p.held && !p.paused) return p.rmse;
+  }
+  return null;
+}
 
 // ===================== RENDER =====================
 function render() {
@@ -153,13 +160,17 @@ function duelPanel(learned) {
         <div><div class="big-num" style="color:var(--ink-soft);">${fmt(r1, 2)}<span>°C</span></div><div class="rule-label">tweeling 1 · rmse</div></div>
       </div>
       ${verdict}
+      <div class="stat-row"><span class="lbl">nu (laatste punt)</span>
+        <span>tweeling 2 ${fmt(lastRmse(hist2), 2, "°")} · tweeling 1 ${fmt(lastRmse(hist1), 2, "°")}</span></div>
       <div class="stat-row"><span class="lbl">skill (weer-genormaliseerd — eerlijkste maat)</span>
         <span>tweeling 2 ${fmt(s2, 2)} · tweeling 1 ${fmt(s1, 2)}</span></div>
       <div style="font-style:italic;color:var(--ink-soft);font-size:12px;margin-top:8px;">
         Beide gemiddeld over precies dezelfde uren — niet elk zijn eigen 7 dagen, want
         tweeling 2's curve is jonger en een vaste-7d-vergelijking mengde er koele,
-        makkelijke dagen van vóór zijn start doorheen. Kanttekening blijft: tweeling 1
-        fit elke 15 min op precies het venster waarop hij gescoord wordt (in-sample);
+        makkelijke dagen van vóór zijn start doorheen. Het gemiddelde sleept oudere
+        punten van vóór een model-verbetering (bijv. de tarrering) nog dagen mee —
+        de "nu"-regel is de actuele stand. Kanttekening blijft: tweeling 1 fit elke
+        15 min op precies het venster waarop hij gescoord wordt (in-sample);
         tweeling 2 staat vastgepind en scoort out-of-sample — de vergelijking vleit
         tweeling 1.
       </div>

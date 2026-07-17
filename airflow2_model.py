@@ -145,21 +145,118 @@ CP_SC_REF = 0.6
 # td_seed_own, bedroom_night_gain, warmup_48, damped-anker) zijn op dezelfde toets
 # verworpen. Géén PHYSICS2_REV-bump: de toets draaide op de huidige anker-params —
 # die blijven onder de cap aantoonbaar geldig (zelfs beter), dus warm-start blijft.
-NEIGHBOR_TRANSFORM = "cap23"
+NEIGHBOR_TRANSFORM = "cap23_night"
 TD_SEED_MODE = "blend"
 BEDROOM_NIGHT_ROOMS: set = set()
+
+# • "cap23_night": als cap23, maar 's nachts (23–07u) zakt het plafond naar
+#   NEIGHBOR_NIGHT_CAP — buren koelen 's nachts óók af, terwijl het vaste 23°C-anker
+#   dan door bleef "stoken" (de nachtelijke warm-bias van juli 2026, zie de
+#   bias-corrector hieronder). Gladde 1-uurs overgang (22–23u in, 07–08u uit) zodat
+#   er geen knik in de voorspelde temp ontstaat. Per-tijdstap toegepast ín simulate2
+#   (via neighbor_at) — het anker is dan niet langer één run-constante.
+#
+# CAMPAGNE-UITKOMST 2 (17 juli 2026, zelfde 3-voudige 0-epoch-toets, 9 vensters):
+# "cap23_night" geadopteerd — wint of is exact gelijk op álle 9 held-out vensters:
+# Δ0.000 op de 5 milde (inert onder de cap), −0.031/−0.024/−0.022/−0.099 op de vier
+# warme, met de grootste winst op het hittegolf-venster 07-17 (0.919 → 0.820).
+# Zelfde redenering als cap23: geen PHYSICS2_REV-bump — de toets draaide op de
+# huidige anker-params, die onder de nieuwe transform aantoonbaar beter passen;
+# de eerstvolgende wekelijkse batch her-fit onder de nieuwe default.
+NEIGHBOR_NIGHT_CAP = 21.0
 
 
 def neighbor_anchor(rows: list[dict], when) -> float:
     """Het buur-anker voor de party-muren op tijdstip `when`, met de actieve
     NEIGHBOR_TRANSFORM-variant toegepast — de éne plek waar batch én online run hun
-    anker vandaan halen, zodat een geadopteerde variant overal consistent geldt."""
+    anker vandaan halen, zodat een geadopteerde variant overal consistent geldt.
+    Voor "cap23_night" is dit de dág-waarde (= cap23); de nachtverlaging wordt
+    per tijdstap toegepast via neighbor_at()."""
     nb = am.neighbor_temp_estimate(rows, when)
     if NEIGHBOR_TRANSFORM == "damped":
         nb = am.NEIGHBOR_WINTER_FLOOR + 0.5 * (nb - am.NEIGHBOR_WINTER_FLOOR)
-    elif NEIGHBOR_TRANSFORM == "cap23":
+    elif NEIGHBOR_TRANSFORM in ("cap23", "cap23_night"):
         nb = min(23.0, nb)
     return nb
+
+
+def _night_cap(when) -> float:
+    """Het tijdsafhankelijke plafond voor het cap23_night-anker: 23.0 overdag,
+    NEIGHBOR_NIGHT_CAP 's nachts (23–07u), lineair overvloeiend in 22–23u en 07–08u."""
+    h = when.hour + when.minute / 60.0
+    if h >= 23.0 or h < 7.0:
+        return NEIGHBOR_NIGHT_CAP
+    if 22.0 <= h < 23.0:
+        return 23.0 + (h - 22.0) * (NEIGHBOR_NIGHT_CAP - 23.0)
+    if 7.0 <= h < 8.0:
+        return NEIGHBOR_NIGHT_CAP + (h - 7.0) * (23.0 - NEIGHBOR_NIGHT_CAP)
+    return 23.0
+
+
+def neighbor_at(nb_base: float, when) -> float:
+    """Het buur-anker op tijdstap `when` binnen een simulatie: voor "cap23_night"
+    wordt de nachtcap op de run-basiswaarde (am._NEIGHBOR_TEMP) gelegd; alle andere
+    varianten geven de basiswaarde ongewijzigd terug (anker = run-constante)."""
+    if NEIGHBOR_TRANSFORM == "cap23_night":
+        return min(nb_base, _night_cap(when))
+    return nb_base
+
+
+# ── Bias-corrector (tarrering) ───────────────────────────────────────────────────────
+# Een per-kamer additieve offset bovenop de gepinde fysica — zoals het tarreren van
+# een weegschaal. Diagnose juli 2026: twin 2's fout was vrijwel volledig één
+# systematische warm-bias per kamer (bias ≈ RMSE: living +1.2 van 1.3, office +1.1
+# van 1.5), geen ruis; de 17 floor-railings van batch #5 waren hetzelfde signaal.
+# De offset leert traag (EMA, τ = BIAS_TAU_H) op de actuele fout en wordt bij de
+# voorspelling opgeteld (sensor-ruimte). De fysica-params blijven exact gepind —
+# dit is een meet-laag, geen kalibratie. Alleen actief in het gepinde regime
+# (bootstrap-leren adapteert de params al zelf; een offset erbovenop zou dubbel
+# leren). Bevriezings-gates komen gratis mee: AC/verwarming/pauze-samples zijn al
+# uit `actual` gefilterd vóór de fout wordt gemeten. Reset bij PHYSICS2_REV-
+# mismatch, met de globals mee.
+BIAS_TAU_H = 24.0     # EMA-tijdconstante (u) — ~63% van een sprong na een etmaal
+BIAS_CLAMP_C = 2.0    # maximale |offset| (°C) — groter = structureel, hoort in de fysica
+
+
+def bias_offsets(learned: dict) -> dict:
+    """De persistente per-kamer tarrerings-offsets uit de learned-state (°C, additief
+    op de voorspelling). Rev-mismatch → leeg (reset met de globals mee)."""
+    if bool(learned.get("bias_state")) and learned.get("physics2_rev") != PHYSICS2_REV:
+        return {}
+    st = learned.get("bias_state") or {}
+    return {rid: float(v) for rid, v in st.items() if isinstance(v, (int, float))}
+
+
+def room_now_errors(house, timeline, sim, actual, now, max_age_h: float = 1.0) -> dict:
+    """Per kamer de actuele fout `actual − predicted_raw` (sensor-ruimte) op het
+    jongste tado-sample, mits dat vers genoeg is. `actual` is de al-gefilterde set
+    (AC/verwarming/pauze eruit), dus een uitgesloten kamer valt hier vanzelf weg."""
+    out = {}
+    for rid, samples in (actual or {}).items():
+        if not samples:
+            continue
+        ts, val = samples[-1]
+        if (now - ts).total_seconds() > max_age_h * 3600.0:
+            continue
+        pred = sim["series"].get(rid, [])
+        if not pred:
+            continue
+        pred = am._to_sensor_series(house, timeline, rid, pred)
+        out[rid] = val - am._interp(pred, ts)
+    return out
+
+
+def update_bias_state(bias: dict, err_now: dict, step_h: float = 0.25) -> dict:
+    """EMA-stap van de tarrering: b ← (1−α)·b + α·(actual − predicted_raw), geklemd
+    op ±BIAS_CLAMP_C. Kamers zonder verse fout houden hun offset (bevroren)."""
+    alpha = min(1.0, step_h / BIAS_TAU_H)
+    out = dict(bias)
+    for rid, err in (err_now or {}).items():
+        if err is None or err != err:
+            continue
+        b = (1.0 - alpha) * out.get(rid, 0.0) + alpha * err
+        out[rid] = round(max(-BIAS_CLAMP_C, min(BIAS_CLAMP_C, b)), 3)
+    return out
 
 
 def gain_profile2(t, rid: str) -> float:
@@ -581,7 +678,7 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
         # Slaapkamer-variant: per-zone profiel alleen berekenen als de haak actief is.
         prof_z = ({z: gain_profile2(step["t"], z) for z in zones}
                   if BEDROOM_NIGHT_ROOMS else None)
-        nb = am._NEIGHBOR_TEMP
+        nb = neighbor_at(am._NEIGHBOR_TEMP, step["t"])
 
         for _ in range(nsub_steps):
             A = [[0.0] * ntot for _ in range(ntot)]
@@ -776,6 +873,35 @@ def rmse_split2(house, params, timeline, seed, actual, actual_rh, seed_w=None,
             continue
         rr += [am._interp(pred, ts) - val for ts, val in samples]
     return am.rmse(rt), am.rmse(rr)
+
+
+def rmse_eval2(house, params, timeline, seed, actual, actual_rh, seed_w=None,
+               tm_seed=None, bias=None) -> tuple[float, float, float]:
+    """(gecorrigeerde temp-RMSE °C, RH-RMSE %, rauwe temp-RMSE °C) met één simulatie —
+    de evaluatie van het gepinde regime. `bias` = de tarrerings-offsets zoals ze aan
+    het begin van de run stonden (causaal: de EMA-update volgt pas ná deze meting);
+    alleen het temp-kanaal verschuift, RH blijft ongecorrigeerd."""
+    sim = simulate2(house, params, timeline, seed,
+                    calib_only_rooms=set(actual) | set(actual_rh or {}),
+                    seed_w=seed_w, tm_seed=tm_seed)
+    rt_raw, rt_corr = [], []
+    for rid, samples in actual.items():
+        pred = sim["series"].get(rid, [])
+        if not pred:
+            continue
+        pred = am._to_sensor_series(house, timeline, rid, pred)
+        b = (bias or {}).get(rid, 0.0)
+        for ts, val in samples:
+            r = am._interp(pred, ts) - val
+            rt_raw.append(r)
+            rt_corr.append(r + b)
+    rr = []
+    for rid, samples in (actual_rh or {}).items():
+        pred = sim["series_rh"].get(rid, [])
+        if not pred:
+            continue
+        rr += [am._interp(pred, ts) - val for ts, val in samples]
+    return am.rmse(rt_corr), am.rmse(rr), am.rmse(rt_raw)
 
 
 def calibrate2(house, params, timeline, seed, actual, actual_rh, anchor: dict | None = None,
@@ -1473,7 +1599,8 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
                      baseline=None, skill=None, rmse_baseline=None, wx=None,
                      ac_room=None, ac_excluded=None, heat_now=None, heat_excluded=None,
                      paused_now=False, paused_since=None, pause_excluded=None,
-                     anchor_stamps=None, pinned=False) -> dict:
+                     anchor_stamps=None, pinned=False, bias=None, bias_state=None,
+                     rmse_raw=None) -> dict:
     """Stel docs/airflow2_data.json samen (additief schema, veldnamen mirroren
     airflow_data.json waar het kan zodat de frontend-logica herbruikbaar blijft)."""
     cur = weather["current"]
@@ -1506,7 +1633,11 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
         ta_now = ta_all.get(rid)
         frac = room.get("sensor_outdoor_frac", 0.0)
         t_out_now = now_step["T_out"] if now_step else None
-        pred_now = am._sensor_temp(ta_now, t_out_now, frac)
+        pred_raw_now = am._sensor_temp(ta_now, t_out_now, frac)
+        # Tarrering: de offset verschuift alleen de sensor-ruimte-voorspelling (en
+        # dus de fout); de fysieke knopen (lucht/snel/diep) blijven ongecorrigeerd.
+        b_off = (bias or {}).get(rid, 0.0)
+        pred_now = (pred_raw_now + b_off) if pred_raw_now is not None else None
         act_now = rd.get("inside")
         err = (pred_now - act_now) if (pred_now is not None and act_now is not None) else None
         pred_rh_now = rh_from_w(sim.get("W_now", {}).get(rid), ta_now)
@@ -1522,6 +1653,9 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             "from_window_data": wd_key,
             "actual_temp": act_now,
             "predicted_temp": round(pred_now, 2) if pred_now is not None else None,
+            "predicted_temp_raw": (round(pred_raw_now, 2)
+                                   if pred_raw_now is not None else None),
+            "bias_corr_c": round(b_off, 2),
             "predicted_air_temp": round(ta_now, 2) if ta_now is not None else None,
             "predicted_fast_temp": (round(sim.get("Tf_now", {}).get(rid), 2)
                                     if sim.get("Tf_now", {}).get(rid) is not None else None),
@@ -1543,7 +1677,7 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             "paused": bool(paused_now),
             "pause_excluded_samples": (pause_excluded or {}).get(rid, 0),
             "subzones": sim.get("sub_now", {}).get(rid),
-            "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
+            "predicted_series": [{"t": t.isoformat(), "temp": round(v + b_off, 2)}
                                  for t, v in sens_series if t >= horizon],
             "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
             "predicted_rh_series": [{"t": t.isoformat(), "rh": round(v, 1)}
@@ -1560,6 +1694,8 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
                  "version": am.model_version()}
         if rmse_rh_now == rmse_rh_now:
             entry["rmse_rh"] = round(rmse_rh_now, 2)
+        if rmse_raw is not None and rmse_raw == rmse_raw:
+            entry["rmse_raw"] = round(rmse_raw, 3)   # vóór tarrering — pure fysica
         if skill is not None:
             entry["skill"] = skill
         if rmse_baseline is not None and rmse_baseline == rmse_baseline:
@@ -1599,6 +1735,10 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
         "rooms": rooms_out,
         "learned": {"params": params,
                     "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
+                    "rmse_raw": (round(rmse_raw, 3)
+                                 if (rmse_raw is not None and rmse_raw == rmse_raw)
+                                 else None),
+                    "bias_state": bias_state or {},
                     "rmse_rh": round(rmse_rh_now, 2) if rmse_rh_now == rmse_rh_now else None,
                     "rmse_naive": (round(rmse_baseline, 3)
                                    if (rmse_baseline is not None and rmse_baseline == rmse_baseline)
@@ -1705,8 +1845,15 @@ def main():
 
     wx_summary = am.window_weather_summary(weather, now, CALIB_WINDOW_H)
 
+    # Tarrering: de offsets zoals ze aan het begin van deze run stonden gelden voor
+    # de héle run (evaluatie + dashboard); de EMA-update volgt pas ná de meting —
+    # causaal, één waarde per run. Alleen actief in het gepinde regime.
+    bias_prev = bias_offsets(learned)
+    bias_run = bias_prev if pinned else {}
+
     rmse_now = float("nan")
     rmse_rh_now = float("nan")
+    rmse_raw_now = float("nan")
     learning_held = False
     baseline = None
     if actual:
@@ -1718,10 +1865,13 @@ def main():
             # kwaliteit (geen fit die 'm net heeft gladgestreken). Geen anomalie-poort
             # nodig: er valt niets te beschermen, en tweeling 1 nudget al voor de
             # gedeelde openingen-log.
-            rmse_now, rmse_rh_now = rmse_split2(house, params, timeline, seed,
-                                                actual, actual_rh, seed_w_src,
-                                                tm_seed=tm_seed_src)
-            print(f"[eval] RMSE op het anker: {rmse_now:.3f}°C / RH {rmse_rh_now:.2f}%")
+            rmse_now, rmse_rh_now, rmse_raw_now = rmse_eval2(house, params, timeline,
+                                                             seed, actual, actual_rh,
+                                                             seed_w_src,
+                                                             tm_seed=tm_seed_src,
+                                                             bias=bias_run)
+            print(f"[eval] RMSE op het anker: {rmse_now:.3f}°C (rauw {rmse_raw_now:.3f}) "
+                  f"/ RH {rmse_rh_now:.2f}%")
         else:
             rmse_cur, rmse_rh_cur = rmse_split2(house, params, timeline, seed,
                                                 actual, actual_rh, seed_w_src,
@@ -1757,6 +1907,19 @@ def main():
     if sim.get("solver_failures"):
         print(f"[sim] {sim['solver_failures']} bijna-singuliere substap(pen).")
 
+    # Tarrering-EMA bijwerken op de actuele fout (alleen gepind; bootstrap-leren
+    # adapteert de params zelf al). Uitgesloten kamers (AC/verwarming/pauze) hebben
+    # geen vers sample in `actual` en bevriezen dus vanzelf.
+    if pinned:
+        err_now = room_now_errors(house, timeline, sim, actual, now)
+        bias_state = update_bias_state(bias_prev, err_now)
+        if bias_state != bias_prev:
+            moved = {r: bias_state[r] for r in bias_state
+                     if bias_state[r] != bias_prev.get(r)}
+            print(f"[tarrering] offsets bijgewerkt: {moved}")
+    else:
+        bias_state = bias_prev
+
     # Trainingsset laten meegroeien: verse tado-samples + nieuwe log-snapshots naar de
     # maand-shard (bytes per run; het weer ververst de batch uit het archief).
     try:
@@ -1774,7 +1937,8 @@ def main():
                             heat_now=heat_now, heat_excluded=heat_excluded,
                             paused_now=paused_now, paused_since=paused_since,
                             pause_excluded=pause_excluded, anchor_stamps=anchor_stamps,
-                            pinned=pinned)
+                            pinned=pinned, bias=bias_run, bias_state=bias_state,
+                            rmse_raw=rmse_raw_now)
     os.makedirs(os.path.dirname(DASHBOARD2_FILE) or ".", exist_ok=True)
     with open(DASHBOARD2_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)
@@ -1784,6 +1948,8 @@ def main():
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "rmse_rh": round(rmse_rh_now, 2) if rmse_rh_now == rmse_rh_now else None,
+                   "rmse_raw": round(rmse_raw_now, 3) if rmse_raw_now == rmse_raw_now else None,
+                   "bias_state": bias_state,
                    "railed": railed_params2(params),
                    "pinned": pinned,
                    "anchor_at": anchor_stamps.get("anchor_at"),

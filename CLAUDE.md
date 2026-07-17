@@ -85,6 +85,10 @@ This repo contains twelve independent automation pipelines, all running on GitHu
 - Vanilla HTML + Chart.js 4.4 — no frameworks, no build step
 - Cache-bust pattern: `data.json?t=${Date.now()}` — always keep this; on the writer pages use the
   `bust(url)` helper from shared.js (read-only pages keep it inline; ipad.js has its own `bust()`)
+- **Page-asset cache-bust:** static `<script src="js/<page>.js?v=N">`/`<link ... shared.css?v=N>`
+  version params **must be bumped on every change to that file** (mirror of the SRI-bump rule for
+  CDN versions) — the JSON `?t=` bust refreshes data but not the page assets, so a forgotten bump
+  shows fresh data through stale JS (bit us twice on airflow2, juli 2026)
 - **JS layout:** per-page script in `docs/js/<page>.js`; shared Gist/token/workflow-dispatch logic
   plus `bust()`/`gistReadJSON()` in `docs/js/shared.js` (loaded *before* the page script on
   index/mowing/airflow — the writer pages). The shared `COLORS` palette lives in

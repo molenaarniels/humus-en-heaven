@@ -39,6 +39,21 @@
     .chip-dicht { color: var(--ink-soft); }
     .err-pos { color: var(--clay); }
     .err-neg { color: var(--rain); }
+    /* speeltuin (gedeelde js/speeltuin.js) — zelfde regels als op airflow.html */
+    .ctl-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #2a241b22; }
+    .ctl-label { font-family: "Cormorant Garamond", serif; font-size: 16px; }
+    .ctl-sub { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--ink-soft); text-transform: uppercase; }
+    .seg { display: flex; gap: 0; }
+    .seg button { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 8px 12px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; cursor: pointer; color: var(--ink-soft); }
+    .seg button.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+    .seg button:not(:last-child) { border-right: none; }
+    .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
+    @keyframes flowdash { to { stroke-dashoffset: -24; } }
+    @keyframes breathe { 0%,100% { opacity:.5 } 50% { opacity:.95 } }
+    .flowline { animation: flowdash 1s linear infinite; }
+    .airy { animation: breathe 3.5s ease-in-out infinite; }
+    .zone-rect { transition: fill .4s; }
+    .fp-svg text { -webkit-user-select: none; user-select: none; }
     .room-temp { font-family: "JetBrains Mono", monospace; font-size: 13px; }
     .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed #2a241b22; font-family: "JetBrains Mono", monospace; font-size: 12px; }
     .stat-row .lbl { color: var(--ink-soft); }
@@ -94,6 +109,7 @@
 </footer>
 
 <script src="js/theme.js"></script>
-<script src="js/airflow2.js?v=5"></script>
+<script src="js/speeltuin.js?v=1"></script>
+<script src="js/airflow2.js?v=6"></script>
 </body>
 </html>

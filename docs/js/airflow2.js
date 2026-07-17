@@ -133,7 +133,15 @@ function render() {
       <div class="chips" style="margin-top:8px;">${openingChips(d.openings)}</div>
     </div></div>`;
 
+  // — Speeltuin (gedeelde js/speeltuin.js, twin-2-windfysica) — pas tonen zodra het
+  // artefact house_meta draagt (oude data van vóór deze release → geen kapotte card).
+  if (d.house_meta) html += sandboxCardHTML();
+
   document.getElementById("content").innerHTML = html;
+  if (d.house_meta) {  // vóór de charts: een chart-fout mag de speeltuin niet meenemen
+    speeltuinStrategy("twin2");
+    renderSandbox();
+  }
   drawTempChart();
   drawRhChart();
   drawRmseChart();

@@ -1580,6 +1580,21 @@ def batch_main():
 #  Dashboard + main (kwartierrun)
 # ════════════════════════════════════════════════════════════════════════════════════
 
+def house_meta_out2(house: dict) -> dict:
+    """Tweeling 1's house_meta (am.house_meta_out) + additief de metadata die de
+    JS-speeltuin nodig heeft voor twin 2's wind-fysica: `front_azimuth_deg`
+    (voor/achter-gevelkeuze) en per element de expliciete `exposure`-override.
+    (`tilt_deg` voor de dak-Cp-menging zit al in de gedeelde emit.)"""
+    hm = am.house_meta_out(house)
+    hm["front_azimuth_deg"] = house.get("front_azimuth_deg")
+    for coll in ("windows", "vents"):
+        for eid, meta in hm.get(coll, {}).items():
+            exp = house.get(coll, {}).get(eid, {}).get("exposure")
+            if exp is not None:
+                meta["exposure"] = exp
+    return hm
+
+
 def _twin1_snapshot() -> dict | None:
     """Compacte tweeling-1-stand (uit diens learned-artefact) voor het vergelijk-paneel."""
     try:
@@ -1625,6 +1640,9 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
         net_now = am.solve_network(zones, ops, ta_all, now_step["T_out"])
 
     horizon = now - timedelta(hours=CALIB_WINDOW_H)
+    par2 = _zone_thermal_params2(house, params)
+    rho_cp = 1.2 * am.CP_AIR
+    veff = params.get("vent_eff", 1.0)
     rooms_out = {}
     for rid, room in house.get("rooms", {}).items():
         wd_key = room.get("from_window_data")
@@ -1647,9 +1665,18 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
         rh_err = (pred_rh_now - act_rh_now) if (pred_rh_now is not None
                                                 and act_rh_now is not None) else None
         ach = None
+        env_w = vent_w = None    # warmtestroom naar/uit buiten (W, + = winst, − = verlies)
         if net_now is not None:
             vol = room.get("volume_m3", 40.0)
-            ach = round(net_now["fresh"].get(rid, 0.0) * 3600.0 / vol, 2)
+            fresh_m3s = net_now["fresh"].get(rid, 0.0)
+            ach = round(fresh_m3s * 3600.0 / vol, 2)
+            # Zelfde twee "naar buiten"-termen als tweeling 1 (schil-conductie +
+            # ventilatie-uitwisseling) — de speeltuin-thermiek ankert hierop.
+            if ta_now is not None and t_out_now is not None:
+                ua_env = par2.get(rid, {}).get("UA_env", 0.0)
+                env_w = round(ua_env * (t_out_now - ta_now), 0)
+                vent_w = round(rho_cp * veff * fresh_m3s * (t_out_now - ta_now), 0)
+        trend = am._series_trend(sens_series, since=now)
         rooms_out[rid] = {
             "label": room.get("label", rid),
             "from_window_data": wd_key,
@@ -1669,6 +1696,8 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             "predicted_rh": round(pred_rh_now, 1) if pred_rh_now is not None else None,
             "rh_error": round(rh_err, 1) if rh_err is not None else None,
             "ach": ach,
+            "env_w": env_w, "vent_w": vent_w,
+            "trend_c_per_h": round(trend, 2) if trend is not None else None,
             "solar_w": round(now_step["irr"].get(rid, 0.0), 0) if now_step else None,
             "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
             "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
@@ -1731,6 +1760,10 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
                                if weather.get("wu_solar_scale") is not None else None),
         },
         "openings": states_now,
+        # Voor de JS-speeltuin (gedeelde docs/js/speeltuin.js): geometrie + bedienbare
+        # elementen, zelfde vorm als tweeling 1 + additieve Cp-metadata (house_meta_out2).
+        "house_meta": house_meta_out2(house),
+        "controls": am._controls(house, states_now),
         "paused": bool(paused_now),
         "paused_since": paused_since.isoformat() if paused_since else None,
         "ac": {"room": ac_room},

@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-19T19:46:02.480911+02:00",
+  "updated_at": "2026-07-19T20:01:05.470058+02:00",
   "model_version": "b9ca5ae",
   "physics2_rev": 1,
   "params": {
@@ -93,15 +93,15 @@
       "w_buf": 1.891209684577536
     }
   },
-  "rmse": 0.724,
+  "rmse": 0.72,
   "rmse_rh": 6.12,
-  "rmse_raw": 0.982,
+  "rmse_raw": 0.969,
   "bias_state": {
-    "living": -0.368,
-    "ted": -0.432,
-    "hotties": -1.257,
-    "office": -0.462,
-    "bath": -0.299
+    "living": -0.364,
+    "ted": -0.431,
+    "hotties": -1.238,
+    "office": -0.441,
+    "bath": -0.25
   },
   "railed": [
     "living.c_deep@floor",
@@ -3617,6 +3617,23 @@
       "rmse_naive": 2.219,
       "wx": {
         "tmax": 22.5,
+        "solar_peak": 846,
+        "solar_mean": 176
+      },
+      "pinned": true
+    },
+    {
+      "t": "2026-07-19T20:01:05.470058+02:00",
+      "rmse": 0.72,
+      "held": false,
+      "paused": false,
+      "version": "b9ca5ae",
+      "rmse_rh": 6.12,
+      "rmse_raw": 0.969,
+      "skill": 0.666,
+      "rmse_naive": 2.156,
+      "wx": {
+        "tmax": 21.9,
         "solar_peak": 846,
         "solar_mean": 176
       },

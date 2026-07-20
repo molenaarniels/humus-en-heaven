@@ -96,18 +96,29 @@ def test_facade_irradiance_diffuse_only_drops_beam():
 
 def test_facade_irradiance_horizon_blocks_low_sun():
     # Overburen (+ boom) vóór de NW-gevel: staat de zon lager dan de obstakel-elevatie, dan
-    # valt de directe beam weg en blijft enkel diffuus over — als diffuse_only, maar
-    # elevatie-afhankelijk i.p.v. permanent.
+    # valt de directe beam weg en blijft enkel het (voor het obstakel gereduceerde) diffuus
+    # over — als diffuse_only, maar elevatie-afhankelijk i.p.v. permanent.
     az = 309.0
     above = am.facade_irradiance(az, az, 20.0, 700.0, 120.0, 90.0, False, 14.0)  # 20° > obstakel
     below = am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False, 14.0)   # 8° < obstakel
-    assert below == pytest.approx(120.0 * 0.5, abs=1e-9)   # enkel diffuus (verticaal → sky_view 0.5)
+    reduced_sky_view = 0.5 * (1.0 - am.horizon_diffuse_reduction(14.0))
+    assert below == pytest.approx(120.0 * reduced_sky_view, abs=1e-9)
+    assert below < 120.0 * 0.5   # het obstakel neemt ook een deel van de diffuse hemel weg
     assert below < above
     # horizon_deg default 0 → identiek aan geen-obstakel, en die ziet de 8°-zon nog wél als beam.
     no_obstacle = am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False)
     assert no_obstacle == pytest.approx(
         am.facade_irradiance(az, az, 8.0, 700.0, 120.0, 90.0, False, 0.0), abs=1e-12)
     assert no_obstacle > below
+
+
+def test_horizon_diffuse_reduction_bounds():
+    # Geen obstakel → geen reductie; recht-op-de-gevel-hoog obstakel (90°) → volledige blokkade.
+    assert am.horizon_diffuse_reduction(0.0) == pytest.approx(0.0, abs=1e-12)
+    assert am.horizon_diffuse_reduction(90.0) == pytest.approx(1.0, abs=1e-9)
+    # Monotoon stijgend: een hoger obstakel neemt nooit minder hemel weg.
+    fracs = [am.horizon_diffuse_reduction(h) for h in (0.0, 14.0, 28.0, 42.0, 60.0, 90.0)]
+    assert fracs == sorted(fracs)
 
 
 def test_build_timeline_averages_solar_over_step():

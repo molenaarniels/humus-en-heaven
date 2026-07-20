@@ -702,6 +702,22 @@ def beam_iam_factor(cos_inc: float, b0: float = GLASS_IAM_B0) -> float:
     return max(0.0, min(1.0, 1.0 - b0 * (1.0 / cos_inc - 1.0)))
 
 
+def horizon_diffuse_reduction(horizon_deg: float) -> float:
+    """Fractie van de diffuse hemelkoepel-viewfactor die een gevel-obstakel (`horizon_elevation_deg`,
+    b.v. overburen of een boom) wegneemt van een verticaal raam — het stuk dat eerder bewust
+    "tweede-orde" bleef (zie `facade_irradiance`). Exact afgeleid voor een isotrope hemel op een
+    verticaal vlak: de invalshoek-cosinus is cos(θ) = cos(e)·cos(a) (e = elevatie, a = azimut t.o.v.
+    de gevelnormaal), dus de bijdrage per hemel-band weegt cos²(e) — een verticale muur "ziet"
+    verhoudingsgewijs veel van de lage hemel vlak boven de horizon en niets van het zenit. Blokkeer je
+    alles onder elevatie h, dan resteert F(h) = 0.5 − h/π − sin(2h)/(2π) (uit ∫cos²(e)de over [h,π/2],
+    genormaliseerd op de onbeschaduwde F(0) = 0.5 = (1+cosβ)/2 bij β=90°); de teruggenomen fractie
+    t.o.v. die onbeschaduwde 0.5 is dus 2h/π + sin(2h)/π. Alleen toegepast op verticale ramen (de
+    enige die vandaag `horizon_elevation_deg` zetten); voor een ijl/doorlatend obstakel (een boom met
+    gaten in de kroon, i.p.v. een dichte overburen-gevel) is dit een bovengrens."""
+    h = math.radians(max(0.0, min(90.0, horizon_deg)))
+    return max(0.0, min(1.0, 2.0 * h / math.pi + math.sin(2.0 * h) / math.pi))
+
+
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
                       direct: float, diffuse: float, tilt_deg: float = 90.0,
                       diffuse_only: bool = False, horizon_deg: float = 0.0,
@@ -719,10 +735,15 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
     overburen aan de NW-straatzijde, plus (voor de laagste ramen) een boom. Staat de zon
     lager dan deze hoek, dan is de directe straal geblokkeerd en blijft enkel diffuus over
     (dezelfde beam-uit-tak als `diffuse_only`, maar elevatie-afhankelijk i.p.v. permanent).
-    Bewust grof: de diffuse view-factor wordt niet verlaagd voor het weggenomen hemeldeel
-    (tweede-orde), en de boom is een seizoens-/azimut-benadering — verfijn op de echte straat."""
+    De diffuse view-factor wordt ook verlaagd voor het weggenomen hemeldeel (`horizon_diffuse_reduction`)
+    — zónder die correctie bleef een laag raam achter een dichte boom/overburen een onrealistisch
+    groot diffuus zonvermogen behouden, ook zodra de zon onder de horizon-elevatie zakte (de
+    massaknoop-warmbias van juli 2026, Ted's kamer). De boom-hoogte zelf is een seizoens-/
+    azimut-benadering — verfijn op de echte straat."""
     beta = math.radians(tilt_deg)
     sky_view = (1.0 + math.cos(beta)) / 2.0          # diffuse view factor (0.5 verticaal, 1.0 plat)
+    if horizon_deg > 0.0:
+        sky_view *= (1.0 - horizon_diffuse_reduction(horizon_deg))
     diff_on = (diffuse or 0.0) * sky_view
     if diffuse_only or sun_el <= horizon_deg:
         return max(0.0, diff_on)

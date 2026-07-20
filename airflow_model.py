@@ -1531,11 +1531,14 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     strat = _stratify_zones(house)   # verticale-koker-zones (opt-in via "stratify"); leeg → geen effect
 
     Ta = {z: seed.get(z, timeline[0]["T_out"]) for z in zones}
-    # Massaknoop richting een warme blend (NEIGHBOR_TEMP) i.p.v. = luchtknoop: met de sim-only
-    # WARMUP_H aanloop equilibreert hij ruim vóór het residu-venster (massa-tijdconstante ~uren),
-    # zodat zijn beginwaarde geen vrije laagfrequente bias meer is die de fit scheeftrekt.
-    # `tm_seed` overschrijft dit per-zone wanneer een caller de al-geëvolueerde massatemp
-    # heeft (zie docstring); anders ongewijzigd de warme blend.
+    # Massaknoop-startwaarde. `tm_seed` (per zone) is de voorkeur: main() geeft het venster-
+    # gemiddelde van de gemeten luchttemp door — de trage massaknoop ís fysisch een gedempt
+    # gemiddelde van de kamerlucht, dus dat is een op data geankerde start i.p.v. een gok.
+    # Fallback (geen tm_seed voor deze zone, bv. een junctie of cold-start): een warme blend
+    # richting NEIGHBOR_TEMP, die de sim-only WARMUP_H aanloop hoort uit te wassen — mits de
+    # massa-tijdconstante ~uren blijft. Juist die aanname breekt wanneer c_mass/h_am de τ voorbij
+    # 24u leren duwen; dán bleef de blend-warm-bias hangen en trok hij (via H_am) de luchtknoop
+    # mee omhoog — de reden dat de venster-gemiddelde-seed nu de voorkeur is.
     Tm = {z: (tm_seed[z] if tm_seed is not None and tm_seed.get(z) is not None
               else 0.5 * (Ta[z] + _NEIGHBOR_TEMP))
           for z in zones}
@@ -1755,11 +1758,13 @@ def _series_trend(series: list[tuple], since: datetime | None = None) -> float |
     return num / den
 
 
-def _residuals_timed(house, params, timeline, seed, actual, rooms_set) -> list[tuple]:
+def _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=None) -> list[tuple]:
     """(meetmoment, voorspeld−werkelijk) op elk sample — als `_residuals` maar mét de tijdstempel
     behouden zodat de fit een recency-weging kan toepassen. Voorspelling eerst naar sensor-ruimte
-    (buitenmuur-bias) zodat tegen de werkelijk gemeten — gebiasde — tado-temp vergeleken wordt."""
-    sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set)
+    (buitenmuur-bias) zodat tegen de werkelijk gemeten — gebiasde — tado-temp vergeleken wordt.
+    `tm_seed` (optioneel): per-zone massaknoop-beginwaarde (bv. het venster-gemiddelde van de
+    gemeten luchttemp) i.p.v. de warme buur-blend — zie simulate()."""
+    sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set, tm_seed=tm_seed)
     out = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
@@ -1771,11 +1776,13 @@ def _residuals_timed(house, params, timeline, seed, actual, rooms_set) -> list[t
     return out
 
 
-def _residuals(house, params, timeline, seed, actual, rooms_set) -> list[float]:
+def _residuals(house, params, timeline, seed, actual, rooms_set, tm_seed=None) -> list[float]:
     """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
     voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
-    bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt."""
-    return [r for _, r in _residuals_timed(house, params, timeline, seed, actual, rooms_set)]
+    bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt.
+    `tm_seed` wordt doorgegeven aan simulate() (massaknoop-beginwaarde)."""
+    return [r for _, r in _residuals_timed(house, params, timeline, seed, actual, rooms_set,
+                                           tm_seed=tm_seed)]
 
 
 def _recency_weights(times: list, half_life_h: float | None = None) -> list[float]:
@@ -1999,11 +2006,14 @@ def _wcost(res: list[float], extra_w: list[float] | None = None) -> float:
 
 
 def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
-              time_budget_s: float = 40.0, solar_mean: float | None = None) -> tuple[dict, float]:
+              time_budget_s: float = 40.0, solar_mean: float | None = None,
+              tm_seed=None) -> tuple[dict, float]:
     """Minimaliseer Σ(voorspeld−werkelijk)² + Tikhonov-ridge naar de priors over het venster
     met gedempte Gauss-Newton. Online: schuif maar LEARN_RATE naar het optimum (stabiel,
     convergeert over runs). `solar_mean` (venster-zon-gemiddelde, W/m²) maakt het solar_gain-anker
-    regime-bewust (zie reg_weight). Geeft (nieuwe params, RMSE-na)."""
+    regime-bewust (zie reg_weight). `tm_seed` (per-zone massaknoop-beginwaarde) wordt aan élke
+    interne simulatie doorgegeven zodat de fit dezelfde massa-startwaarde ziet als de eind-run.
+    Geeft (nieuwe params, RMSE-na)."""
     rooms = [rid for rid in actual if actual[rid]]
     if not rooms:
         return params, float("nan")
@@ -2023,7 +2033,7 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     # Eén timed-residu-call vooraf: levert zowel r0 als de sample-tijdstempels. De residu-volgorde
     # is identiek aan elke latere `_residuals`-call (zelfde actual/rooms_set), dus de recency-
     # gewichten `tw` blijven uitgelijnd door de hele fit.
-    r0_timed = _residuals_timed(house, params, timeline, seed, actual, rooms_set)
+    r0_timed = _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=tm_seed)
     if not r0_timed:
         return params, float("nan")
     r0 = [v for _, v in r0_timed]
@@ -2036,7 +2046,7 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         if time.time() - t_start > time_budget_s:
             break
         p_cur = vec_to_params(x, keys, base)
-        r = _residuals(house, p_cur, timeline, seed, actual, rooms_set)
+        r = _residuals(house, p_cur, timeline, seed, actual, rooms_set, tm_seed=tm_seed)
         if not r:
             break
         m = len(r)
@@ -2051,7 +2061,8 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
             dx = max(1e-3, abs(x[j]) * 0.05)
             xj = x[:]
             xj[j] += dx
-            rj = _residuals(house, vec_to_params(xj, keys, base), timeline, seed, actual, rooms_set)
+            rj = _residuals(house, vec_to_params(xj, keys, base), timeline, seed, actual, rooms_set,
+                            tm_seed=tm_seed)
             if len(rj) != m:
                 continue
             for i in range(m):
@@ -2078,7 +2089,8 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         # buiten de band zwerven terwijl de ridge-anker-term (x−prior) op dat fantoompunt rekent.
         x_new = _clamp_to_bounds([x[j] + delta[j] for j in range(nk)], keys)
         new_cost = _total_cost(
-            _residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set), x_new)
+            _residuals(house, vec_to_params(x_new, keys, base), timeline, seed, actual, rooms_set,
+                       tm_seed=tm_seed), x_new)
         if math.isnan(new_cost) or new_cost >= best_cost:
             lam *= 4.0                      # geen verbetering → meer demping
             if lam > 1e6:
@@ -2092,7 +2104,7 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     x_old = params_to_vec(params, keys)
     x_blend = [x_old[j] + LEARN_RATE * (x[j] - x_old[j]) for j in range(len(keys))]
     new_params = vec_to_params(x_blend, keys, base)
-    final_rmse = rmse(_residuals(house, new_params, timeline, seed, actual, rooms_set))
+    final_rmse = rmse(_residuals(house, new_params, timeline, seed, actual, rooms_set, tm_seed=tm_seed))
     if final_rmse != final_rmse:   # NaN: vertrouw de geblende params niet — geef de oude terug
         return params, rmse(r0)   # (kan zelf NaN zijn → downstream vangt de niet-NaN-poort dat af)
     return new_params, final_rmse
@@ -2960,6 +2972,15 @@ def main():
     # Seed-bron vóór de AC-filter: de eerste (oudste) sample per kamer blijft de seed, óók als de
     # AC-filter latere samples wegneemt — zo blijft de voorspelling van de AC-kamer geankerd.
     seed_src = {rid: s[0][1] for rid, s in actual.items() if s}
+    # Massaknoop-seed = het venster-gemiddelde van de gemeten luchttemp per kamer (i.p.v. de warme
+    # buur-blend 0.5·(Ta+NEIGHBOR_TEMP) in simulate()). De trage massaknoop ís fysisch een gedempt
+    # gemiddelde van de kamerlucht waaraan hij koppelt; met echte historie als startwaarde vervalt
+    # de zomerse warm-bias die de buur-blend + een lange geleerde massa-tijdconstante achterlieten
+    # (de 24u warmup wast een 2°C-te-warme seed niet meer uit als c_mass/h_am de τ voorbij 24u
+    # duwen). Vóór de AC/verwarming/pauze-filter berekend (zoals seed_src) → ook een AC-/gestookte
+    # kamer houdt een op de eigen metingen geankerde massa-start. Kamers zónder samples ontbreken
+    # → simulate() valt daar terug op de oude blend (additief, geen breuk).
+    tm_seed_src = {rid: sum(t for _, t in s) / len(s) for rid, s in actual.items() if s}
 
     # Mobiele airco: het model heeft géén actieve-koel-term, dus de kamer waar de airco staat leest
     # kouder dan de fysica kan verklaren. Fitten op die AC-koude zou de kamer-params + RMSE/leercurve
@@ -3029,7 +3050,8 @@ def main():
         # Anomalie-poort: hoe goed voorspellen de húidige parameters? Is die fout veel
         # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
         # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
-        rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
+        rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys()),
+                                   tm_seed=tm_seed_src))
         if physics_migrated:
             # De anomalie-norm komt uit de oude-fysica-leercurve; met net gereset-globalen zou
             # een vals "anomaal" de éérste leer-run op de nieuwe fysica blokkeren.
@@ -3059,7 +3081,8 @@ def main():
                     anomaly_nudge_at = now.isoformat()
         else:
             params, rmse_now = calibrate(house, params, timeline, seed, actual,
-                                         solar_mean=wx_summary.get("solar_mean"))
+                                         solar_mean=wx_summary.get("solar_mean"),
+                                         tm_seed=tm_seed_src)
             print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
             rails = railed_params(params)
             if rails:
@@ -3098,7 +3121,8 @@ def main():
                 params.setdefault(rid, default_params(house)[rid])
                 for k in PER_ROOM_PARAMS:
                     params[rid].setdefault(k, PRIORS[k])
-            rmse_fb = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys())))
+            rmse_fb = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys()),
+                                      tm_seed=tm_seed_src))
             if rmse_fb == rmse_fb and rmse_fb <= rmse_now:
                 rmse_now = rmse_fb
                 skill = skill_score(rmse_now, rmse_baseline)
@@ -3124,7 +3148,7 @@ def main():
     # Voorspelling met de (geleerde) params over het volledige venster + vooruitblik.
     sim = simulate(house, params, timeline, seed,
                    calib_only_rooms=set(house.get("rooms", {}).keys()),
-                   snapshot_t=now)
+                   snapshot_t=now, tm_seed=tm_seed_src)
     if sim.get("solver_failures"):
         print(f"[sim] {sim['solver_failures']} substap(pen) met een bijna-singulier thermisch "
               "stelsel — Ta/Tm die stap bevroren (zie learned.solver_failures).")

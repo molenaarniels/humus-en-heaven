@@ -34,6 +34,7 @@ weggeschreven; de token-rotatie mág niet overgeslagen worden).
 import json
 import math
 import os
+import statistics
 import sys
 import time
 from datetime import datetime, timedelta
@@ -66,6 +67,8 @@ LOOKAHEAD_H  = 12     # uur — vooruitblik voor "open weer rond HH:00"
 SMOOTH_WINDOW_H = 0.75  # uur — mediaanvenster op de buitentemp vóór decide() (anti-flapping)
 MIN_CLOSE_H  = 1.0    # uur — sluit een open raam niet voor een warmte-instroom die binnen
                       #       dit venster alweer voorbij is (kort momentje ≠ moeite waard)
+SOLAR_AVG_WINDOW_MIN = 45  # min — middelingsvenster op de WU-pyranometer vóór de
+                      #       stralingsbiascorrectie (zie fetch_wu_recent_solar)
 
 # ── Per-kamer comfortband (low, high) in °C ────────────────────────────────────
 # Bóven `high` is de kamer te warm → koelen (raam open als buiten kouder is). Ónder
@@ -373,6 +376,53 @@ def fetch_wu_current_temp() -> tuple[float | None, float | None, float | None]:
         # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
         print(f"[WU] current call failed: {sanitize_error(e)}")
         return None, None, None
+
+
+def fetch_wu_recent_solar(now: datetime, window_min: float = SOLAR_AVG_WINDOW_MIN) -> float | None:
+    """Mediaan van de WU-pyranometer over de laatste `window_min` minuten, via het
+    raw (~5-min) `history/all`-endpoint voor vandaag.
+
+    Instraling schommelt écht binnen seconden (passerende bewolking) — dat is geen
+    sensorruis maar een fysiek feit. Het stralingskap-opwarmeffect dat de bias
+    veroorzaakt heeft juist thermische traagheid over meerdere minuten, dus een
+    enkel instant-sample (de `current`-call, `fetch_wu_current_temp`) importeerde
+    zo'n voorbijgaande wolkenschaduw 1-op-1 in de stralingsbiascorrectie — de
+    piekige "gecorrigeerde" buitentemp tussen 12–15u op dagen met wisselende
+    bewolking (gediagnosticeerd juli 2026). Middelen over een venster benadert de
+    kap-traagheid i.p.v. het instant-moment. None bij falen/geen recente data —
+    de aanroeper valt dan terug op de instant-waarde."""
+    station_id = os.environ.get("WU_STATION_ID")
+    api_key    = os.environ.get("WU_API_KEY")
+    if not (station_id and api_key):
+        return None
+    url = (
+        "https://api.weather.com/v2/pws/history/all"
+        f"?stationId={station_id}&format=json&units=m"
+        f"&date={now.strftime('%Y%m%d')}&numericPrecision=decimal&apiKey={api_key}"
+    )
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            return None
+        obs_list = r.json().get("observations", [])
+    except Exception as e:
+        # sanitize_error: de WU-URL bevat apiKey — nooit rauw printen.
+        print(f"[WU] history/all call failed: {sanitize_error(e)}")
+        return None
+    cutoff = now - timedelta(minutes=window_min)
+    vals = []
+    for obs in obs_list:
+        ts = obs.get("obsTimeUtc")
+        solar = obs.get("solarRadiation")
+        if not ts or solar is None:
+            continue
+        try:
+            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if cutoff <= t <= now:
+            vals.append(solar)
+    return statistics.median(vals) if vals else None
 
 
 def _parse_local(t: str) -> datetime:
@@ -1034,11 +1084,20 @@ def main():
     else:
         outside_source = "wu"
         # Stralingsbiascorrectie (zie wu_bias.py): het WU-station leest in de zon
-        # te warm. Driver = eigen pyranometer, met Open-Meteo als fallback. Dit
-        # schoont meteen de microklimaat-bias-blend, decide() en outside_history op.
+        # te warm. Driver bij voorkeur de mediaan van de eigen pyranometer over de
+        # laatste SOLAR_AVG_WINDOW_MIN (fetch_wu_recent_solar) — een enkel instant-
+        # sample importeerde voorbijgaande wolkenschaduw 1-op-1 in de correctie
+        # (piekige gecorrigeerde temp rond 12-15u op wisselend bewolkte dagen).
+        # Valt terug op de instant-WU-waarde, dan Open-Meteo. Dit schoont meteen de
+        # microklimaat-bias-blend, decide() en outside_history op.
         raw = outside
-        solar_now = wu_solar if wu_solar is not None else om.get("current_solar")
-        src = "wu" if wu_solar is not None else "om"
+        solar_recent = fetch_wu_recent_solar(now)
+        if solar_recent is not None:
+            solar_now, src = solar_recent, "wu_hist"
+        elif wu_solar is not None:
+            solar_now, src = wu_solar, "wu_now"
+        else:
+            solar_now, src = om.get("current_solar"), "om"
         outside = round(correct_temp(outside, solar_now), 1)
         print(f"[buiten] WU: {raw}°C → gecorrigeerd {outside}°C "
               f"(zon {solar_now} W/m², bron {src})")

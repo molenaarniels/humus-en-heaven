@@ -27,7 +27,19 @@ de nacht doorkomt:
    (incl. `ted_stair`) — het meest gunstige doorwaai-scenario. (b) en (c)
    zijn louter een informatieve vergelijking ("zou dit schelen"), geen advies
    om het raampje of de deuren ook echt open te zetten.
-3. **Tog/slaapzak-advies** — het nachtgemiddelde van het dicht-scenario door de
+3. **Gordijnroutine (`apply_shade_routine`)** — het verduisteringsgordijn vóór
+   `ted_window` (het grote vaste raam, een boom + overburen schaduwen het al
+   deels — vandaar het lage horizon_elevation_deg — maar niet 's avonds vóór
+   het dichtgaat) gaat elke avond om `SHADE_CLOSE_H` (19:00) dicht bij het
+   slapengaan, ongeacht wat de openingen-log op dat moment toevallig meldt.
+   Toegepast op **beide** fasen: zonder dit rekende de aanloopsim een avond
+   met een in werkelijkheid al dicht gordijn alsnog als open door (fors
+   avondzon-vermogen door een 3×1.5m raam), wat de niet-geankerde massaknoop
+   een structurele warm-bias gaf die de forecast-fase optilde — een
+   voorspelde nachtstijging die in de echte tado-metingen niet terugkwam
+   (gediagnosticeerd juli 2026: 07:00 voorspeld ~1°C te warm, twee dagen op
+   rij, terwijl de gemeten kamer al aan het dalen was).
+4. **Tog/slaapzak-advies** — het nachtgemiddelde van het dicht-scenario door de
    standaard peuter-slaapzaktabel.
 
 Bewust GEEN WU-verfijning (de sim is forecast-gedreven en de seed komt van
@@ -51,6 +63,8 @@ ROOM_ID = "ted"                  # zone-id in house_model.json
 WINDOW_ID = "ted_small_window"   # het openbare raampje voor het scenario
 DOOR_ID = "ted_stair"            # deur naar het trapgat — 's nachts standaard dicht
 WD_KEY = "Ted"                   # sleutel in window_data.json / ROOM_COMFORT
+SHADE_ID = "ted_window_shade"    # verduisteringsgordijn vóór ted_window (het grote vaste raam)
+SHADE_CLOSE_H = 19               # lokaal uur: gordijn gaat elke avond dicht (vaste bedtijdroutine)
 
 NIGHT_START_H = 21               # nachtvenster: vanavond 21:00 → morgen 08:00
 NIGHT_END_H = 8
@@ -78,6 +92,20 @@ def hours_until_morning(now: datetime, end_h: int = NIGHT_END_H) -> float:
     target = (now + timedelta(days=1)).replace(hour=end_h, minute=0,
                                                second=0, microsecond=0)
     return (target - now).total_seconds() / 3600.0
+
+
+def apply_shade_routine(timeline: list[dict], close_h: int = SHADE_CLOSE_H,
+                        end_h: int = NIGHT_END_H) -> list[dict]:
+    """Kopie van de timeline waarin `SHADE_ID` (Teds verduisteringsgordijn) van `close_h`
+    lokale tijd tot `end_h` de volgende ochtend op 'dicht' staat — een vaste bedtijdroutine
+    (elke avond dicht bij het slapengaan), niet afhankelijk van wat de openingen-log op dat
+    moment toevallig meldt. Toegepast op zowel de aanloop- als de forecast-fase: zonder dit
+    rekent de aanloopsim een avond met een in werkelijkheid al dicht gordijn alsnog als open
+    door, wat de (niet-geankerde) massaknoop een structurele warm-bias meegeeft die de hele
+    nachtvoorspelling verder optilt. Overdag/vóór `close_h` blijft de gemelde stand gelden."""
+    return [({**step, "states": {**step["states"], SHADE_ID: "dicht"}}
+             if step["t"].hour >= close_h or step["t"].hour < end_h else step)
+            for step in timeline]
 
 
 def scenario_timeline(timeline: list[dict], now: datetime, state: str) -> list[dict]:
@@ -230,6 +258,7 @@ def main() -> None:
     if not warmup_tl:
         print("[teds-nacht] Geen weerdata → stop.")
         raise SystemExit(1)
+    warmup_tl = apply_shade_routine(warmup_tl)
 
     actual = am.collect_actual(house, wd, now - timedelta(hours=WARMUP_H))
     warmup_seed = {rid: s[0][1] for rid, s in actual.items() if s}   # oudste meting in het venster
@@ -257,6 +286,7 @@ def main() -> None:
     if not fcst_tl:
         print("[teds-nacht] Geen forecast-data → stop.")
         raise SystemExit(1)
+    fcst_tl = apply_shade_routine(fcst_tl)
     print(f"[teds-nacht] forecast t/m {fcst_tl[-1]['t'].isoformat()} (end_h={end_h:.1f})")
 
     stats = {}

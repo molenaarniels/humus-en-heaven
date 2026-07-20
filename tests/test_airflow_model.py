@@ -730,6 +730,73 @@ def test_simulate_tm_seed_overrides_default_blend():
     assert partial_sim["Tm"]["a"] == pytest.approx(seeded_sim["Tm"]["a"])
 
 
+def test_residuals_forward_tm_seed_to_simulate():
+    # _residuals(_timed) geven tm_seed door aan simulate(), zodat de fit dezelfde massaknoop-
+    # startwaarde ziet als de eind-run. Korte tijdlijn zodat het startverschil nog in de samples
+    # doorwerkt; via H_am koppelt een warme/koude massa terug op de voorspelde luchttemp.
+    house = _toy_house()
+    params = am.default_params(house)
+    tl = _const_timeline(20.0, hours=3, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    times = [tl[i]["t"] for i in (4, 8, 12)]
+    actual = {rid: [(t, 20.0) for t in times] for rid in house["rooms"]}
+    rooms_set = set(house["rooms"])
+    warm = am._residuals(house, params, tl, seed, actual, rooms_set, tm_seed={z: 30.0 for z in zones})
+    cold = am._residuals(house, params, tl, seed, actual, rooms_set, tm_seed={z: 10.0 for z in zones})
+    assert len(warm) == len(cold) == len(times) * len(house["rooms"])
+    assert sum(warm) > sum(cold)   # warme massa → warmere voorspelling → grotere residuen
+    # geen tm_seed → terugval op de warme blend (default gedrag, geen breuk)
+    default = am._residuals(house, params, tl, seed, actual, rooms_set)
+    assert len(default) == len(warm)
+
+
+def test_calibrate_forwards_tm_seed():
+    # calibrate() reikt tm_seed door tot élke interne simulatie (r0, Jacobiaan, accept-check,
+    # eind-RMSE): een warme vs. gematchte massa-seed levert een andere eind-RMSE.
+    house = _toy_house()
+    params = am.default_params(house)
+    tl = _const_timeline(20.0, hours=3, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    times = [tl[i]["t"] for i in (4, 8, 12)]
+    actual = {rid: [(t, 20.0) for t in times] for rid in house["rooms"]}
+    _, rmse_warm = am.calibrate(house, params, tl, seed, actual, tm_seed={z: 30.0 for z in zones})
+    _, rmse_match = am.calibrate(house, params, tl, seed, actual, tm_seed={z: 20.0 for z in zones})
+    assert rmse_warm == rmse_warm and rmse_match == rmse_match   # beide eindig
+    assert rmse_warm > rmse_match   # de warme massa-bias overleeft één online kalibratiestap
+
+
+def test_window_mean_tm_seed_beats_warm_blend_on_slow_mass():
+    # De kern van de fix: bij een trage massaknoop (grote c_mass, zwakke h_am) wast de 24u warmup
+    # de warme buur-blend NIET uit → de massa blijft te warm en trekt via H_am de lucht mee omhoog.
+    # Een op de gemeten historie geankerde tm_seed (venster-gemiddelde) vermijdt die bias. ua_party
+    # + q_int op 0 zodat het contrast puur de massa-seed is (geen party/interne warmte-confound).
+    house = _toy_house()
+    params = am.default_params(house)
+    for rid in house["rooms"]:
+        params[rid]["c_mass"] = 10.0   # trage massa → τ ≫ 24u → warmup equilibreert niet
+        params[rid]["h_am"] = 0.3
+        params[rid]["ua_party"] = 0.0
+        params[rid]["q_int"] = 0.0
+    tl = _const_timeline(20.0, hours=24, irr=0.0)   # huis in evenwicht met 20°C buiten
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    times = [tl[i]["t"] for i in range(len(tl) // 2, len(tl), 8)]
+    actual = {rid: [(t, 20.0) for t in times] for rid in house["rooms"]}
+    rooms_set = set(house["rooms"])
+    saved = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = 26.0   # zomers buur-anker → warme blend seed = 0.5·(20+26) = 23°C
+        blend = am._residuals(house, params, tl, seed, actual, rooms_set)        # geen tm_seed
+        seeded = am._residuals(house, params, tl, seed, actual, rooms_set,
+                               tm_seed={z: 20.0 for z in zones})                  # venster-mean
+    finally:
+        am._NEIGHBOR_TEMP = saved
+    assert am.rmse(seeded) < am.rmse(blend)   # data-geankerde seed → lagere fout
+    assert sum(blend) > sum(seeded)           # de blend is systematisch te warm (positieve bias)
+
+
 # ── 10. solar_gain beschermd tegen instorten ─────────────────────────────────────────
 
 def test_solar_gain_floor_and_per_param_ridge():

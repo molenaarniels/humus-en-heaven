@@ -1,0 +1,65 @@
+name: ML-dataset export
+
+# Bouwt op aanvraag de platte, ML-klare ventilatie-dataset uit de gecommitte
+# maand-shards (data/twin2_history/*.json) en biedt hem als download-artefact
+# aan — zodat je 'm zonder de repo te clonen op je MacBook kunt binnenhalen en
+# er lokaal een model op kunt trainen. Volledig offline: geen secrets, geen API.
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Fysica-baseline (tweeling 1/2 voorspellingen) meenemen"
+        type: boolean
+        default: true
+      window_days:
+        description: "Hergeseed-venster voor de baseline-sims (dagen, leeg = 5)"
+        type: string
+        default: ""
+
+# Alleen lezen: dit schrijft niets terug naar de repo, enkel een artefact.
+permissions:
+  contents: read
+
+concurrency:
+  group: ml-dataset
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # pandas + pyarrow zodat het artefact ook de compacte .parquet-varianten bevat.
+      - name: Install dependencies
+        run: pip install -r requirements.txt pandas pyarrow
+
+      - name: Build dataset
+        env:
+          ML_BASELINE: ${{ inputs.baseline && '1' || '' }}
+          ML_WINDOW_DAYS: ${{ inputs.window_days }}
+        run: |
+          args="--out data/ml"
+          if [ -z "$ML_BASELINE" ]; then args="$args --no-baseline"; fi
+          if [ -n "$ML_WINDOW_DAYS" ]; then args="$args --window-days $ML_WINDOW_DAYS"; fi
+          python tools/export_ml_dataset.py $args
+
+      - name: Upload dataset artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ventilation-ml-dataset
+          path: |
+            data/ml/ventilation_long.csv
+            data/ml/ventilation_wide.csv
+            data/ml/ventilation_long.parquet
+            data/ml/ventilation_wide.parquet
+            data/ml/schema.json
+          if-no-files-found: error
+          retention-days: 30

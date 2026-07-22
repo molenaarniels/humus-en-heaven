@@ -403,6 +403,10 @@ def fetch_wu_recent_solar(now: datetime, window_min: float = SOLAR_AVG_WINDOW_MI
     try:
         r = requests.get(url, timeout=15)
         if r.status_code != 200:
+            # Diagnostisch: history/all vereist mogelijk een ander entitlement dan
+            # de current/hourly/daily-endpoints die elders al werken — de status hier
+            # onderscheidt dat van "geen data vandaag" (leeg maar 200).
+            print(f"[WU] history/all status {r.status_code} — val terug op lokale mediaan")
             return None
         obs_list = r.json().get("observations", [])
     except Exception as e:
@@ -735,6 +739,37 @@ def smoothed_outside(history: list[dict], now: datetime,
     return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
 
 
+def smoothed_solar(history: list[dict], now: datetime,
+                   current: float | None,
+                   window_min: float = SOLAR_AVG_WINDOW_MIN) -> float | None:
+    """Mediaan van de eigen (per-run gepersisteerde) `solar`-samples in `history` over
+    de laatste `window_min` minuten, inclusief de huidige meting — de lokale fallback
+    voor `fetch_wu_recent_solar()` wanneer het `history/all`-endpoint faalt (bv. geen
+    entitlement op dat WU-productniveau). Werkt met wat we al elke 15 min ophalen en
+    bewaren, dus geen extra API-call nodig; bouwt vanzelf op na de deploy die `solar`
+    additief aan `outside_history` toevoegt (oudere samples zonder dat veld tellen
+    simpelweg niet mee). `current` None → None."""
+    if current is None:
+        return None
+    vals = [current]
+    cutoff = window_min * 60.0
+    for s in (history or []):
+        try:
+            t = datetime.fromisoformat(s["t"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        solar = s.get("solar")
+        if solar is None:
+            continue
+        age = (now - t).total_seconds()
+        if 0.0 <= age <= cutoff:
+            vals.append(solar)
+    vals.sort()
+    n = len(vals)
+    mid = n // 2
+    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+
+
 # ── Beslislogica per kamer (met dode band voor hysterese) ─────────────────────────
 
 def humidity_offset(vent_rh: float | None) -> float:
@@ -973,7 +1008,8 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
                     gated: bool, gate_reason: str, warm_ahead: bool = False,
                     outside_rh: float | None = None,
                     outside_rh_temp: float | None = None,
-                    outside_decide: float | None = None) -> dict:
+                    outside_decide: float | None = None,
+                    wu_solar: float | None = None) -> dict:
     """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
     binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken.
 
@@ -1014,6 +1050,10 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             sample["om"] = round(om_now, 1)
         if outside_rh is not None:
             sample["hum"] = round(outside_rh)  # gemeten buiten-RH → vochttrend op het scatterplot
+        if wu_solar is not None:
+            # Rauwe WU-pyranometerstand (vóór de biascorrectie) — additief, voedt de
+            # lokale mediaan-fallback (smoothed_solar) voor als history/all faalt.
+            sample["solar"] = round(wu_solar, 1)
         out_hist = _append_trim(out_hist, sample)
     outside_slope = room_trend(out_hist, now)
     outside_hum_slope = room_trend(out_hist, now, "hum", RH_TREND_MAX)
@@ -1077,6 +1117,11 @@ def main():
         outside_rh, outside_rh_temp = wu_humid, outside
     else:
         outside_rh, outside_rh_temp = om.get("current_humidity"), om.get("current")
+    # Vooraf ophalen (i.p.v. pas ná de correctie) zodat de lokale solar-mediaan hieronder
+    # 'm ook kan gebruiken — dezelfde gepersisteerde historie als de anti-flapping-mediaan
+    # verderop.
+    prev_hist = read_prev_dashboard().get("outside_history", [])
+
     if outside is None:
         outside = om["current"]
         outside_source = "open-meteo"
@@ -1085,15 +1130,23 @@ def main():
         outside_source = "wu"
         # Stralingsbiascorrectie (zie wu_bias.py): het WU-station leest in de zon
         # te warm. Driver bij voorkeur de mediaan van de eigen pyranometer over de
-        # laatste SOLAR_AVG_WINDOW_MIN (fetch_wu_recent_solar) — een enkel instant-
-        # sample importeerde voorbijgaande wolkenschaduw 1-op-1 in de correctie
-        # (piekige gecorrigeerde temp rond 12-15u op wisselend bewolkte dagen).
-        # Valt terug op de instant-WU-waarde, dan Open-Meteo. Dit schoont meteen de
-        # microklimaat-bias-blend, decide() en outside_history op.
+        # laatste SOLAR_AVG_WINDOW_MIN, via het `history/all`-endpoint
+        # (fetch_wu_recent_solar) — een enkel instant-sample importeerde voorbijgaande
+        # wolkenschaduw 1-op-1 in de correctie (piekige gecorrigeerde temp rond 12-15u
+        # op wisselend bewolkte dagen). Dat endpoint bleek in de praktijk altijd te
+        # falen (elke iteratie viel terug op de instant-waarde, gediagnosticeerd juli
+        # 2026 — vermoedelijk een ander WU-productniveau dan current/hourly/daily),
+        # dus een lokale mediaan (smoothed_solar) over onze eigen 15-minuten-historie
+        # zit er tussenin: geen extra endpoint-afhankelijkheid, wel dezelfde demping.
+        # Laatste redmiddel: de instant-WU-waarde, dan Open-Meteo. Dit schoont meteen
+        # de microklimaat-bias-blend, decide() en outside_history op.
         raw = outside
         solar_recent = fetch_wu_recent_solar(now)
+        solar_local  = smoothed_solar(prev_hist, now, wu_solar)
         if solar_recent is not None:
-            solar_now, src = solar_recent, "wu_hist"
+            solar_now, src = solar_recent, "wu_hist_api"
+        elif solar_local is not None:
+            solar_now, src = solar_local, "wu_hist_local"
         elif wu_solar is not None:
             solar_now, src = wu_solar, "wu_now"
         else:
@@ -1108,8 +1161,8 @@ def main():
     # — meer dan de hysterese-band — om daarna weer te herstellen, wat het advies liet
     # flippen (en je wilt sowieso geen raam open in een bui). De mediaan negeert zo'n losse
     # dip. De ruwe `outside` blijft de uitlezing/historie/bias voeden; `outside_decide` is
-    # wat decide() ziet.
-    prev_hist = read_prev_dashboard().get("outside_history", [])
+    # wat decide() ziet. `prev_hist` is hierboven al opgehaald (ook gebruikt voor de
+    # solar-mediaan).
     outside_decide = smoothed_outside(prev_hist, now, outside)
     if outside_decide is not None and outside is not None and abs(outside_decide - outside) >= 0.1:
         print(f"[buiten] beslis-temp (mediaan {SMOOTH_WINDOW_H}u): {outside_decide:.1f}°C")
@@ -1140,7 +1193,7 @@ def main():
     write_dashboard(build_dashboard(
         now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
         warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp,
-        outside_decide=outside_decide))
+        outside_decide=outside_decide, wu_solar=wu_solar))
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")

@@ -129,3 +129,29 @@ d["residual"] = d["temp_c"] - d["pred_twin2_c"]          # doel = de fysica-fout
   commit-tijdperk); juni–juli zijn dicht.
 - De export raakt **niets** in de pipelines aan; het is een read-only afgeleide
   van de gecommitte shards.
+
+## Overdracht (een nieuwe sessie oppakken)
+
+Draai `python tools/export_ml_dataset.py` vanaf de repo-root (`--no-baseline`
+voor een snelle data-only build in seconden, of laat 'm aan voor de ~1-min-run
+die de tweeling-1/2-fysica-baselines toevoegt; eerst `pip install pandas
+pyarrow` als je `.parquet` naast de altijd-geschreven CSV's wilt). Volledig
+offline, raakt niets in de pipelines. De **bron van waarheid** is
+`data/twin2_history/<YYYY-MM>.json` — gecommitte maand-shards (kolomsgewijs: per
+kamer `ts`/`temp`×10/`hum`/`heat`, plus uur-`weather`-rijen en
+`openings`-snapshots), elk kwartier aangevuld, dus een `git pull` ververst de
+data en opnieuw draaien regenereert alles. De exporter hergebruikt de bestaande
+loaders (`airflow2_model.load_dataset` → `airflow_model.build_timeline` + de
+pure helpers) en schrijft naar het gitignore'de `data/ml/`:
+`ventilation_long.csv/.parquet` (één rij per tijdstip × kamer),
+`ventilation_wide.csv/.parquet` (één rij per tijdstip, kamers als
+`__<kamer>`-kolommen) en `schema.json` (de kolom-dictionary — lees die eerst).
+Kolommen splitsen in features (weer, zon az/el, per-raam zon-door-glas,
+dak-instraling, `open_<element>`-fracties), doelwaarden (`temp_c`, `humidity`),
+uitsluit-vlaggen (`heating`/`ac_here`/`paused`, die de tweeling uit de
+kalibratie laat vallen) en optionele baselines (`pred_twin1_c`/`pred_twin2_c`).
+Om een verse sessie te oriënteren: begin met deze `README.md`, dan
+`tools/export_ml_dataset.py`, met de tweeling-interne werking gedocumenteerd
+onder Projecten 8 & 12 in `CLAUDE.md`; de manual-dispatch `ml-dataset.yml`-
+workflow bouwt dezelfde bestanden als download-artefact als je liever niet
+cloont.

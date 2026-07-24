@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-07-24T02:45:06.790612+00:00",
-  "as_of_local": "2026-07-24T04:45:00.323510+02:00",
+  "generated_at": "2026-07-24T03:00:07.232716+00:00",
+  "as_of_local": "2026-07-24T05:00:01.063883+02:00",
   "source": "window_advisor",
   "gated": false,
   "gate_reason": "warme dag",
@@ -9,7 +9,7 @@
   "outside_source": "wu",
   "outside_humidity": 80,
   "om_now": 17.1,
-  "outside_trend": 0.2,
+  "outside_trend": 0.16,
   "outside_hum_trend": 0.0,
   "bias": -0.6,
   "day_max": 24.9,
@@ -43,12 +43,6 @@
     }
   },
   "outside_history": [
-    {
-      "t": "2026-07-21T17:45:00.714254+02:00",
-      "temp": 21.2,
-      "om": 22.3,
-      "hum": 53
-    },
     {
       "t": "2026-07-21T18:00:00.210864+02:00",
       "temp": 21.2,
@@ -1316,6 +1310,13 @@
       "om": 17.1,
       "hum": 80,
       "solar": 0.0
+    },
+    {
+      "t": "2026-07-24T05:00:01.063883+02:00",
+      "temp": 16.5,
+      "om": 17.1,
+      "hum": 80,
+      "solar": 0.0
     }
   ],
   "forecast": [
@@ -1353,12 +1354,12 @@
       "dt": "2026-07-24T05:00:00+02:00",
       "out_raw": 17.1,
       "out_corr": 16.5,
-      "is_future": true
+      "is_future": false
     },
     {
       "dt": "2026-07-24T06:00:00+02:00",
       "out_raw": 17.1,
-      "out_corr": 16.6,
+      "out_corr": 16.5,
       "is_future": true
     },
     {
@@ -1370,7 +1371,7 @@
     {
       "dt": "2026-07-24T08:00:00+02:00",
       "out_raw": 16.9,
-      "out_corr": 16.5,
+      "out_corr": 16.4,
       "is_future": true
     },
     {
@@ -1382,7 +1383,7 @@
     {
       "dt": "2026-07-24T10:00:00+02:00",
       "out_raw": 17.8,
-      "out_corr": 17.5,
+      "out_corr": 17.4,
       "is_future": true
     },
     {
@@ -1394,7 +1395,7 @@
     {
       "dt": "2026-07-24T12:00:00+02:00",
       "out_raw": 19.3,
-      "out_corr": 19.1,
+      "out_corr": 19.0,
       "is_future": true
     },
     {
@@ -1406,7 +1407,7 @@
     {
       "dt": "2026-07-24T14:00:00+02:00",
       "out_raw": 21.3,
-      "out_corr": 21.2,
+      "out_corr": 21.1,
       "is_future": true
     },
     {
@@ -1418,7 +1419,7 @@
     {
       "dt": "2026-07-24T16:00:00+02:00",
       "out_raw": 23.8,
-      "out_corr": 23.8,
+      "out_corr": 23.7,
       "is_future": true
     },
     {
@@ -1615,7 +1616,7 @@
       "heating": false,
       "heating_power": 0,
       "vent_rh": 57,
-      "rh_offset": -0.41,
+      "rh_offset": -0.4,
       "rh_veto": false,
       "dryout": false,
       "open_reason": "cool",
@@ -1625,22 +1626,17 @@
       "trend": 0.0,
       "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "04:30",
+      "predicted_open": "04:45",
       "open_intervals": [
         {
-          "start": "04:30",
+          "start": "04:45",
           "end": "14:15",
           "start_h": -0.25,
-          "end_h": 9.5
+          "end_h": 9.25
         }
       ],
       "status_text": "Nu open tot ~14:15",
       "history": [
-        {
-          "t": "2026-07-21T17:45:00.714254+02:00",
-          "temp": 22.9,
-          "hum": 51
-        },
         {
           "t": "2026-07-21T18:00:00.210864+02:00",
           "temp": 22.8,
@@ -2595,6 +2591,11 @@
           "t": "2026-07-24T04:45:00.323510+02:00",
           "temp": 21.9,
           "hum": 59
+        },
+        {
+          "t": "2026-07-24T05:00:01.063883+02:00",
+          "temp": 21.9,
+          "hum": 59
         }
       ],
       "proj": [
@@ -2607,7 +2608,7 @@
         21.9,
         21.9,
         21.9,
-        null,
+        21.9,
         null,
         null,
         null,
@@ -2662,24 +2663,19 @@
       "comfort_low": 17.0,
       "comfort_high": 18.0,
       "trend": -0.0,
-      "hum_trend": 0.0,
+      "hum_trend": -0.0,
       "open_now": true,
-      "predicted_open": "04:30",
+      "predicted_open": "04:45",
       "open_intervals": [
         {
-          "start": "04:30",
+          "start": "04:45",
           "end": "13:45",
           "start_h": -0.25,
-          "end_h": 9.0
+          "end_h": 8.75
         }
       ],
       "status_text": "Nu open tot ~13:45",
       "history": [
-        {
-          "t": "2026-07-21T17:45:00.714254+02:00",
-          "temp": 21.4,
-          "hum": 51
-        },
         {
           "t": "2026-07-21T18:00:00.210864+02:00",
           "temp": 21.4,
@@ -3634,6 +3630,11 @@
           "t": "2026-07-24T04:45:00.323510+02:00",
           "temp": 21.0,
           "hum": 61
+        },
+        {
+          "t": "2026-07-24T05:00:01.063883+02:00",
+          "temp": 21.0,
+          "hum": 61
         }
       ],
       "proj": [
@@ -3646,7 +3647,7 @@
         21.0,
         21.0,
         21.0,
-        null,
+        21.0,
         null,
         null,
         null,
@@ -3700,25 +3701,20 @@
       "advice": "open",
       "comfort_low": 16.0,
       "comfort_high": 18.0,
-      "trend": -0.2,
-      "hum_trend": 2.03,
+      "trend": -0.16,
+      "hum_trend": 1.61,
       "open_now": true,
-      "predicted_open": "04:30",
+      "predicted_open": "04:45",
       "open_intervals": [
         {
-          "start": "04:30",
-          "end": "11:30",
+          "start": "04:45",
+          "end": "11:45",
           "start_h": -0.25,
           "end_h": 6.75
         }
       ],
-      "status_text": "Nu open tot ~11:30",
+      "status_text": "Nu open tot ~11:45",
       "history": [
-        {
-          "t": "2026-07-21T17:45:00.714254+02:00",
-          "temp": 21.5,
-          "hum": 55
-        },
         {
           "t": "2026-07-21T18:00:00.210864+02:00",
           "temp": 21.3,
@@ -4673,6 +4669,11 @@
           "t": "2026-07-24T04:45:00.323510+02:00",
           "temp": 19.9,
           "hum": 66
+        },
+        {
+          "t": "2026-07-24T05:00:01.063883+02:00",
+          "temp": 19.9,
+          "hum": 66
         }
       ],
       "proj": [
@@ -4682,10 +4683,10 @@
         null,
         null,
         19.9,
-        19.7,
+        19.8,
+        19.6,
         19.5,
         19.3,
-        null,
         null,
         null,
         null,
@@ -4739,25 +4740,20 @@
       "advice": "open",
       "comfort_low": 20.0,
       "comfort_high": 22.0,
-      "trend": -0.2,
-      "hum_trend": 2.02,
+      "trend": -0.16,
+      "hum_trend": 1.2,
       "open_now": true,
-      "predicted_open": "04:30",
+      "predicted_open": "04:45",
       "open_intervals": [
         {
-          "start": "04:30",
+          "start": "04:45",
           "end": "14:15",
           "start_h": -0.25,
-          "end_h": 9.5
+          "end_h": 9.25
         }
       ],
       "status_text": "Nu open tot ~14:15",
       "history": [
-        {
-          "t": "2026-07-21T17:45:00.714254+02:00",
-          "temp": 22.8,
-          "hum": 52
-        },
         {
           "t": "2026-07-21T18:00:00.210864+02:00",
           "temp": 22.8,
@@ -5712,6 +5708,11 @@
           "t": "2026-07-24T04:45:00.323510+02:00",
           "temp": 22.6,
           "hum": 56
+        },
+        {
+          "t": "2026-07-24T05:00:01.063883+02:00",
+          "temp": 22.6,
+          "hum": 56
         }
       ],
       "proj": [
@@ -5723,8 +5724,8 @@
         22.6,
         22.4,
         22.2,
+        22.1,
         21.9,
-        null,
         null,
         null,
         null,
@@ -5771,7 +5772,7 @@
       "heating": false,
       "heating_power": 0,
       "vent_rh": 62,
-      "rh_offset": 0.3,
+      "rh_offset": 0.31,
       "rh_veto": false,
       "dryout": false,
       "open_reason": null,
@@ -5779,17 +5780,12 @@
       "comfort_low": 23.5,
       "comfort_high": 23.5,
       "trend": 0.0,
-      "hum_trend": -0.0,
+      "hum_trend": 0.0,
       "open_now": false,
       "predicted_open": null,
       "open_intervals": [],
       "status_text": "Vandaag dicht houden",
       "history": [
-        {
-          "t": "2026-07-21T17:45:00.714254+02:00",
-          "temp": 20.5,
-          "hum": 64
-        },
         {
           "t": "2026-07-21T18:00:00.210864+02:00",
           "temp": 20.4,
@@ -6744,6 +6740,11 @@
           "t": "2026-07-24T04:45:00.323510+02:00",
           "temp": 20.6,
           "hum": 69
+        },
+        {
+          "t": "2026-07-24T05:00:01.063883+02:00",
+          "temp": 20.6,
+          "hum": 69
         }
       ],
       "proj": [
@@ -6756,7 +6757,7 @@
         20.6,
         20.6,
         20.6,
-        null,
+        20.6,
         null,
         null,
         null,

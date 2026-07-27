@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-27T18:45:51.495937+02:00",
+  "updated_at": "2026-07-27T19:00:57.433125+02:00",
   "model_version": "31b2829",
   "physics2_rev": 1,
   "params": {
@@ -93,15 +93,15 @@
       "w_buf": 1.4219321742509814
     }
   },
-  "rmse": 0.354,
-  "rmse_rh": 5.21,
-  "rmse_raw": 0.627,
+  "rmse": 0.352,
+  "rmse_rh": 5.15,
+  "rmse_raw": 0.614,
   "bias_state": {
-    "living": -0.955,
-    "ted": -0.589,
-    "hotties": -0.005,
-    "office": -0.149,
-    "bath": 0.247
+    "living": -0.932,
+    "ted": -0.563,
+    "hotties": 0.023,
+    "office": -0.117,
+    "bath": 0.268
   },
   "railed": [
     "living.c_deep@floor",
@@ -126,23 +126,6 @@
   "anchor_at": "2026-07-26T06:31:58.865838+02:00",
   "anchor_src": "a6d872f",
   "rmse_history": [
-    {
-      "t": "2026-07-17T18:45:54.851969+02:00",
-      "rmse": 0.591,
-      "held": false,
-      "paused": false,
-      "version": "087f28f",
-      "rmse_rh": 9.01,
-      "rmse_raw": 1.232,
-      "skill": 0.731,
-      "rmse_naive": 2.195,
-      "wx": {
-        "tmax": 28.7,
-        "solar_peak": 836,
-        "solar_mean": 246
-      },
-      "pinned": true
-    },
     {
       "t": "2026-07-17T19:45:56.947555+02:00",
       "rmse": 0.573,
@@ -5853,6 +5836,23 @@
         "tmax": 24.3,
         "solar_peak": 778,
         "solar_mean": 154
+      },
+      "pinned": true
+    },
+    {
+      "t": "2026-07-27T19:00:57.433125+02:00",
+      "rmse": 0.352,
+      "held": false,
+      "paused": false,
+      "version": "31b2829",
+      "rmse_rh": 5.15,
+      "rmse_raw": 0.614,
+      "skill": 0.515,
+      "rmse_naive": 0.725,
+      "wx": {
+        "tmax": 24.3,
+        "solar_peak": 778,
+        "solar_mean": 153
       },
       "pinned": true
     }

@@ -49,7 +49,7 @@ function render() {
     <div class="grid grid-2">${ROOMS_ORDER(d).map(r => roomCardHTML(r, d.rooms[r])).join("")}</div>
     <div class="grid">
       <div class="specimen-card">
-        <div class="corner-mark">Buiten: weerstation vs. Open-Meteo · gemeten → geijkte voorspelling</div>
+        <div class="corner-mark">Buiten: weerstation vs. Open-Meteo · gemeten → geijkte voorspelling · vocht (RH@20°) op de rechteras</div>
         <div class="chart-box"><canvas id="temp-chart"></canvas></div>
         ${legendHTML(d)}
       </div>
@@ -295,6 +295,8 @@ function legendHTML(d) {
     `<span style="color:${COLORS.rain}">━ weerstation (gemeten)</span>`,
     `<span style="color:${COLORS.moss}">┄ gebruikt (geijkt)</span>`,
     `<span style="color:${COLORS.sand}">┄ Open-Meteo (ruw model)</span>`,
+    `<span style="color:${COLORS.wet}">━ vocht gemeten (RH@20°, rechteras)</span>`,
+    `<span style="color:${COLORS.wet}">┄ vocht geijkt (RH@20°, voorspelling)</span>`,
   ].concat(rooms.map((r,i) => `<span style="color:${ROOM_COLORS[i % ROOM_COLORS.length]}">┄ ${r} (binnen)</span>`));
   return `<div style="display:flex;gap:16px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:8px;color:var(--ink-soft);">${items.join("")}</div>`;
 }
@@ -353,6 +355,14 @@ function drawChart() {
   const model    = [...hist.map((p, i) => ({ x: histT[i], y: p.om != null ? p.om : null })),
                     ...fut.map((f, i) => ({ x: futT[i], y: f.out_raw }))];
 
+  // Vocht op de tweede as: buiten-RH omgerekend naar 20° (RH@20°) zodat de lijn de échte
+  // vochtverandering toont, niet de temperatuur-gedreven RH-schommeling. Twee lijnen als bij
+  // de temperatuur: gemeten (station, verleden) + geijkt (verleden + de stationsgecorrigeerde
+  // voorspelling vooruit). rh20 ontbreekt op oudere samples → spanGaps laat een gat.
+  const measRH = hist.map((p, i) => ({ x: histT[i], y: p.rh20 != null ? p.rh20 : null }));
+  const usedRH = [...hist.map((p, i) => ({ x: histT[i], y: p.rh20 != null ? p.rh20 : null })),
+                  ...fut.map((f, i) => ({ x: futT[i], y: f.rh20_corr != null ? f.rh20_corr : null }))];
+
   const roomData = rooms.map((name, ri) => {
     const r = d.rooms[name];
     return {
@@ -384,6 +394,10 @@ function drawChart() {
         borderWidth: 1.8, borderDash: [6,4], pointRadius: 0, tension: 0.3, spanGaps: true },
       { label: "Open-Meteo (ruw model)", data: model, borderColor: COLORS.sand,
         borderWidth: 1.2, borderDash: [2,3], pointRadius: 0, tension: 0.3, spanGaps: true },
+      { label: "vocht gemeten (RH@20°)", data: measRH, yAxisID: "yRH", borderColor: COLORS.wet,
+        borderWidth: 1.8, pointRadius: 0, tension: 0.3, spanGaps: false },
+      { label: "vocht geijkt (RH@20°)", data: usedRH, yAxisID: "yRH", borderColor: COLORS.wet,
+        borderWidth: 1.4, borderDash: [5,4], pointRadius: 0, tension: 0.3, spanGaps: true },
       ...roomData,
     ]},
     options: {
@@ -398,7 +412,10 @@ function drawChart() {
           bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
           callbacks: {
             title: items => items.length ? fullFmt.format(new Date(items[0].parsed.x)) : "",
-            label: c => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°`,
+            label: c => c.parsed.y == null ? null
+              : (c.dataset.yAxisID === "yRH"
+                  ? `${c.dataset.label}: ${Math.round(c.parsed.y)}%`
+                  : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°`),
           },
         },
         annotation: { annotations: {
@@ -408,6 +425,11 @@ function drawChart() {
             label: { content: `warme dag ${P.WARM_DAY_MAX}°`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.sun, backgroundColor: "transparent" } },
           now: { type: "line", xMin: nowMs, xMax: nowMs, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2,4],
             label: { content: "nu →", display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink, backgroundColor: "transparent" } },
+          // Vocht-drempels op de RH-as (rechts): streef (RH_COMFORT) en hard veto (RH_HARD_CAP).
+          rhComfort: { type: "line", yScaleID: "yRH", yMin: P.RH_COMFORT, yMax: P.RH_COMFORT, borderColor: COLORS.wet, borderWidth: 1, borderDash: [4,4],
+            label: { content: `RH streef ${P.RH_COMFORT}%`, display: true, position: "start", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.wet, backgroundColor: "transparent" } },
+          rhVeto: { type: "line", yScaleID: "yRH", yMin: P.RH_HARD_CAP, yMax: P.RH_HARD_CAP, borderColor: COLORS.wet, borderWidth: 1, borderDash: [2,4],
+            label: { content: `RH veto ${P.RH_HARD_CAP}%`, display: true, position: "end", font: { family: "JetBrains Mono", size: 9 }, color: COLORS.wet, backgroundColor: "transparent" } },
         }},
       },
       scales: {
@@ -426,8 +448,14 @@ function drawChart() {
             callback: (value) => isMidnight(value) ? dayFmt.format(new Date(value)) : hourFmt(value),
           },
         },
-        y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
+        y: { position: "left", grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft },
              title: { display: true, text: "°C", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft } },
+        // Tweede as (rechts) voor de genormaliseerde vocht-lijnen — eigen schaal in %,
+        // geen eigen rasterlijnen (drawOnChartArea:false) zodat de temp-grid leidend blijft.
+        yRH: { position: "right", suggestedMin: 30, suggestedMax: 85,
+             grid: { drawOnChartArea: false },
+             ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.wet, callback: (v) => `${v}%` },
+             title: { display: true, text: "RH bij 20° (%)", font: { family: "JetBrains Mono", size: 10 }, color: COLORS.wet } },
       },
     },
   });

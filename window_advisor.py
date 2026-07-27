@@ -127,6 +127,11 @@ def convert_rh(rh_out: float | None, t_out: float | None,
 
 # ── Dashboard-voorspelling (heuristiek, geen thermisch huismodel) ──────────────
 BIAS_DECAY_H    = 12    # uur — stationscorrectie dooft lineair uit over dit venster
+RH_REF_T        = 20.0  # °C — referentietemp voor de genormaliseerde vocht-lijn op het
+                        # dashboard ("RH bij 20°"): buiten-RH via convert_rh() omgerekend naar
+                        # één vaste kamertemp, zodat de lijn de échte vochtverandering toont en
+                        # niet de temperatuur-gedreven RH-schommeling. Wordt op dezelfde manier
+                        # als de temperatuur geijkt op het station (bias + BIAS_DECAY_H-uitdoving).
 TREND_WINDOW_H  = 2.0   # uur — historie-venster voor de binnentemp-trend (kort → volgt "nu")
 GAP_BREAK_MIN   = 40    # min — een gat groter dan dit breekt het trend-venster: de fit gebruikt
                         # alleen de meest recente aaneengesloten reeks, zodat een gepauzeerde of
@@ -448,7 +453,7 @@ def fetch_open_meteo() -> dict:
         "latitude":     LATITUDE,
         "longitude":    LONGITUDE,
         "current":      "temperature_2m,shortwave_radiation,relative_humidity_2m",
-        "hourly":       "temperature_2m",
+        "hourly":       "temperature_2m,relative_humidity_2m",
         "timezone":     "Europe/Amsterdam",
         "forecast_days": 2,
     }
@@ -457,9 +462,13 @@ def fetch_open_meteo() -> dict:
     cur = data.get("current") or {}
     current = cur.get("temperature_2m")
     h = data.get("hourly", {})
+    # `rh` (uurlijkse model-RH) voedt de genormaliseerde vocht-voorspelling op het dashboard.
+    # Los indexeren i.p.v. mee-zippen: ontbreekt het RH-veld, dan blijven de temp-rijen intact.
+    hums = h.get("relative_humidity_2m", [])
     rows = [
-        {"dt": _parse_local(t), "temp": temp}
-        for t, temp in zip(h.get("time", []), h.get("temperature_2m", []))
+        {"dt": _parse_local(t), "temp": temp,
+         "rh": hums[i] if i < len(hums) else None}
+        for i, (t, temp) in enumerate(zip(h.get("time", []), h.get("temperature_2m", [])))
     ]
     # `current_solar` = fallback-driver voor de biascorrectie als de WU-pyranometer ontbreekt.
     # `current_humidity` = fallback voor de RH-omrekening als het WU-station geen RH geeft.
@@ -1030,14 +1039,31 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     if outside_source == "wu" and outside is not None and om_now is not None:
         bias = round(outside - om_now, 2)
 
+    # Genormaliseerde vocht ("RH bij 20°"): meet-nu en model-nu naar RH_REF_T omgerekend,
+    # het verschil is de stationsbias in RH@20-ruimte — zelfde ijk-mechaniek als de temp.
+    meas_rh20  = convert_rh(outside_rh, outside_rh_temp, RH_REF_T)
+    model_rh20 = convert_rh(om.get("current_humidity"), om_now, RH_REF_T)
+    rh_bias = 0.0
+    if outside_source == "wu" and meas_rh20 is not None and model_rh20 is not None:
+        rh_bias = round(meas_rh20 - model_rh20, 2)
+
     fc = correct_forecast(om["hourly"], bias, now)
-    forecast = [
-        {"dt": r["dt"].isoformat(),
-         "out_raw":  round(r["out_raw"], 1)  if r["out_raw"]  is not None else None,
-         "out_corr": round(r["out_corr"], 1) if r["out_corr"] is not None else None,
-         "is_future": r["dt"] >= now}
-        for r in fc
-    ]
+    forecast = []
+    for r, f in zip(om["hourly"], fc):
+        # RH@20 per forecast-uur uit het consistente model-paar (temp + RH van datzelfde uur),
+        # daarna dezelfde lineair uitdovende stationscorrectie als de temperatuur.
+        rh20_raw = convert_rh(r.get("rh"), r["temp"], RH_REF_T)
+        decay = max(0.0, 1.0 - max(0.0, (r["dt"] - now).total_seconds() / 3600.0) / BIAS_DECAY_H)
+        forecast.append({
+            "dt": r["dt"].isoformat(),
+            "out_raw":  round(f["out_raw"], 1)  if f["out_raw"]  is not None else None,
+            "out_corr": round(f["out_corr"], 1) if f["out_corr"] is not None else None,
+            "rh20_raw":  round(rh20_raw, 1) if rh20_raw is not None else None,
+            # Bias mag de al-geklemde ruwe waarde niet boven 100% / onder 0% duwen.
+            "rh20_corr": (round(max(0.0, min(100.0, rh20_raw + rh_bias * decay)), 1)
+                          if rh20_raw is not None else None),
+            "is_future": r["dt"] >= now,
+        })
 
     out_hist = prev.get("outside_history", [])
     if outside is not None:
@@ -1050,6 +1076,10 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             sample["om"] = round(om_now, 1)
         if outside_rh is not None:
             sample["hum"] = round(outside_rh)  # gemeten buiten-RH → vochttrend op het scatterplot
+        if meas_rh20 is not None:
+            # Gemeten buiten-RH omgerekend naar RH_REF_T — de "gemeten"-vochtlijn op de
+            # temperatuurgrafiek (additief; oudere samples zonder rh20 laten simpelweg een gat).
+            sample["rh20"] = round(meas_rh20, 1)
         if wu_solar is not None:
             # Rauwe WU-pyranometerstand (vóór de biascorrectie) — additief, voedt de
             # lokale mediaan-fallback (smoothed_solar) voor als history/all faalt.
@@ -1078,6 +1108,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "outside_smoothed": round(od, 1) if od is not None else None,
         "outside_source": outside_source,
         "outside_humidity": round(outside_rh) if outside_rh is not None else None,
+        "outside_rh20":   round(meas_rh20, 1) if meas_rh20 is not None else None,
         "om_now":         round(om_now, 1) if om_now is not None else None,
         "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
         "outside_hum_trend": round(outside_hum_slope, 2) if outside_hum_slope is not None else None,
@@ -1089,7 +1120,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             "COMFORT_HIGH": COMFORT_HIGH, "OPEN_MARGIN": OPEN_MARGIN,
             "CLOSE_MARGIN": CLOSE_MARGIN, "WARM_DAY_MAX": WARM_DAY_MAX,
             "LOOKAHEAD_H": LOOKAHEAD_H,
-            "RH_COMFORT": RH_COMFORT, "RH_HARD_CAP": RH_HARD_CAP,
+            "RH_COMFORT": RH_COMFORT, "RH_HARD_CAP": RH_HARD_CAP, "RH_REF_T": RH_REF_T,
             "ROOM_COMFORT": {r: {"low": lo, "high": hi}
                              for r, (lo, hi) in ROOM_COMFORT.items()},
         },

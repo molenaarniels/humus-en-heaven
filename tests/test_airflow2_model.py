@@ -458,6 +458,54 @@ def test_load_dataset_roundtrip(tmp_path, monkeypatch):
     assert ds["weather_rows"] == []                  # weer komt pas van de batch/backfill
 
 
+def _wx_rows(t0: datetime, n: int) -> list[dict]:
+    return [{"dt": t0 + timedelta(hours=i), "T_out": 20.0 + i, "rh": 50.0, "precip": 0.0,
+             "wind_speed": 1.0, "wind_dir": 200.0, "gust": 2.0,
+             "shortwave": 100.0, "direct": 60.0, "diffuse": 40.0} for i in range(n)]
+
+
+def test_refresh_shard_weather_merges_never_replaces(tmp_path, monkeypatch):
+    """Het juli-2026-gat: een tweede fetch met een smaller bereik wíste de rest van de
+    maand, waardoor het shard-weer op 07-16 bleef staan terwijl de kamerdata doorliep."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    assert a2.refresh_shard_weather(_wx_rows(t0, 24)) == 24
+    # Smaller venster (bv. een half-mislukte staart-fallback) mag niets weggooien.
+    assert a2.refresh_shard_weather(_wx_rows(t0 + timedelta(hours=20), 8)) == 4
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert len(shard["weather"]) == 28
+    assert [r["dt"] for r in shard["weather"]] == sorted(r["dt"] for r in shard["weather"])
+
+
+def test_refresh_shard_weather_overwrite_flag(tmp_path, monkeypatch):
+    """overwrite=True → archief wint; overwrite=False → alleen gaten vullen, zodat de
+    kwartierrun een ERA5-rij nooit terugzet naar zijn forecast-waarde."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    a2.refresh_shard_weather(_wx_rows(t0, 3))
+    warmer = [{**r, "T_out": 99.0} for r in _wx_rows(t0, 3)]
+    a2.refresh_shard_weather(warmer, overwrite=False)
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert [r["T_out"] for r in shard["weather"]] == [20.0, 21.0, 22.0]
+    a2.refresh_shard_weather(warmer, overwrite=True)
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert [r["T_out"] for r in shard["weather"]] == [99.0, 99.0, 99.0]
+
+
+def test_append_shard_weather_drops_the_forecast_tail(tmp_path, monkeypatch):
+    """De kwartierrun vult het weer bij uit zijn eigen fetch, maar alléén verstreken
+    uren — de forecast-staart is gemodelleerde toekomst, geen grondwaarheid."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    now = t0 + timedelta(hours=5)
+    weather = {"hourly": _wx_rows(t0, 12)}
+    assert a2.append_shard_weather(weather, now) == 6          # t0..t0+5u
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert len(shard["weather"]) == 6
+    assert shard["weather"][-1]["dt"] == now.isoformat()
+    assert a2.append_shard_weather(weather, now) == 0          # idempotent
+
+
 def test_batch_windows_geometry():
     t0 = datetime(2026, 5, 20, 0, 0, tzinfo=am.TZ)
     t1 = t0 + timedelta(days=20)

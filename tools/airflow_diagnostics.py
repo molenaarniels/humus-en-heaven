@@ -6,7 +6,9 @@ checkpoint) en `docs/airflow_data.json` (huidige per-kamer-toestand) — en prin
 markdown-rapport dat de assessment onderbouwt:
 
   1. Regime-curve   — RMSE & skill vs. dag-max/zon, uit `rmse_history` (wanneer faalt het?).
-  2. Saturatie      — elke geleerde param vs. zijn BOUNDS; floor/ceiling-rails gemarkeerd.
+  2. Saturatie      — elke geleerde param vs. zijn BOUNDS; floor/ceiling-rails gemarkeerd,
+                      mét de rail-DRUK (duwt de data er actief tegenaan, of staat hij er
+                      toevallig? — alleen het eerste is een probleem).
   3. Residu-ontleding — voorspeld−werkelijk per kamer, per uur-van-de-dag, naast de
                         gepubliceerde energie-termen (solar/env/vent/party/internal_w) →
                         scheidt zon-gedreven bias (middag) van envelope (volgt buiten) van
@@ -31,7 +33,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from airflow_model import (  # noqa: E402
-    BOUNDS, GLOBAL_PARAMS, PER_ROOM_PARAMS, PRIORS,
+    BOUNDS, GLOBAL_PARAMS, PER_ROOM_PARAMS, PRIORS, reg_weight,
 )
 
 LEARNED_PATH = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
@@ -182,6 +184,16 @@ def _corr_line(yname: str, xname: str, pairs: list[tuple]) -> str:
 
 
 # ── 2. Saturatie (bound-railing) ───────────────────────────────────────────────────────
+# Drempel waarboven de rail-druk (zie `_rail_pressure`) "de optimizer duwt hier actief
+# tegenaan" betekent i.p.v. "staat toevallig in de buurt van de grens". Geijkt op de
+# juli-2026-toestand: een normaal meebewogen param (living.c_air 0.10, office.c_mass 0.17)
+# blijft onder 0.2, terwijl de vastgelopen kanalen erboven zitten — ua_party uitgezet 0.50,
+# office.ua_roof uitgezet 0.68, vent_eff 0.72, cp_shelter 0.92, solar_gain op zijn vloer
+# 1.27, f_air tegen zijn plafond 1.69. 0.4 scheidt die twee groepen met marge aan beide
+# kanten; precies op 0.5 lag ua_party op het scheermes (0.49999969 → net niet gemarkeerd).
+PRESSURE_HIGH = 0.4
+
+
 def _rail_flag(value: float, bounds: tuple) -> str:
     lo, hi = bounds
     rng = hi - lo
@@ -194,20 +206,62 @@ def _rail_flag(value: float, bounds: tuple) -> str:
     return ""
 
 
-def saturation_report(learned: dict) -> str:
+def _rail_pressure(name: str, value: float, bounds: tuple,
+                   solar_mean: float | None = None) -> float | None:
+    """Hoe hard duwt de DATA deze parameter weg van zijn prior? (dimensieloos, ≥0)
+
+    De echte maat is de kostengradiënt, maar die vergt een `simulate()` met verse drivers
+    (weer + openingen-log) — deze tool is bewust artefact-only. Er is een gratis
+    equivalent: de fit minimaliseert `kosten_data + reg·(x − prior)²`, dus in een INWENDIG
+    optimum geldt `|∂kosten_data/∂x| = 2·reg·|x − prior|`, en op een GEKLEMDE grens is de
+    datagradiënt minstens zo groot. Een parameter waar de data niets over zegt (nul
+    gradiënt, bv. `ua_roof` in een kamer zónder dak) wordt door de ridge exact op zijn
+    prior geparkeerd. Afstand-tot-prior × ridge-gewicht ís dus het bewijs van datadruk.
+
+    Genormaliseerd op de bandbreedte zodat params met verschillende schalen (en
+    verschillende ridge-gewichten — `solar_gain` heeft 6.0 i.p.v. 3.0) vergelijkbaar zijn.
+    Een ondergrens op de werkelijke gradiënt, geen exacte waarde — vandaar "druk"."""
+    prior = PRIORS.get(name)
+    if prior is None or not bounds:
+        return None
+    rng = bounds[1] - bounds[0]
+    if rng <= 0:
+        return None
+    return reg_weight(name, solar_mean) * abs(value - prior) / rng
+
+
+def _pressure_cell(p: float | None) -> str:
+    if p is None:
+        return "—"
+    return f"{p:.2f}" + (" 🔨" if p >= PRESSURE_HIGH else "")
+
+
+def saturation_report(learned: dict, solar_mean: float | None = None) -> str:
     params = learned.get("params", {})
     lines = ["### 2. Saturatie — geleerde params vs. grenzen\n",
-             "| scope | param | waarde | prior | bounds | rail |",
-             "|---|---|---|---|---|---|"]
+             "`druk` = ridge-gewicht × |waarde − prior| / bandbreedte: een ondergrens op hoe "
+             "hard de data deze parameter van zijn prior wegduwt (zie `_rail_pressure`). "
+             "Druk ≈ 0 op een grens = de grens valt samen met de prior of de data zegt niets — "
+             "onschuldig. Hoge druk 🔨 óp een grens = de optimizer beukt tegen de muur en de "
+             "fysica kan niet uitdrukken wat de data vraagt; méér tunen helpt dan niet.\n",
+             "| scope | param | waarde | prior | bounds | druk | rail |",
+             "|---|---|---|---|---|---|---|"]
     rails = 0
+    pinned = []          # gerailde params waar de data ook echt tegenaan duwt
+    top_press = []       # (druk, scope, naam) over álle params, ook niet-gerailde
     for name in GLOBAL_PARAMS:
         if name not in params:
             continue
         b = BOUNDS.get(name)
         flag = _rail_flag(params[name], b) if b else ""
+        press = _rail_pressure(name, params[name], b, solar_mean) if b else None
         rails += bool(flag)
+        if press is not None:
+            top_press.append((press, "global", name))
+            if flag and press >= PRESSURE_HIGH:
+                pinned.append(f"global.{name}")
         lines.append(f"| global | `{name}` | {_fmt(params[name], 3)} | "
-                     f"{_fmt(PRIORS.get(name), 2)} | {b} | {flag} |")
+                     f"{_fmt(PRIORS.get(name), 2)} | {b} | {_pressure_cell(press)} | {flag} |")
     for rid, rp in params.items():
         if not isinstance(rp, dict):
             continue
@@ -216,14 +270,30 @@ def saturation_report(learned: dict) -> str:
                 continue
             b = BOUNDS.get(name)
             flag = _rail_flag(rp[name], b) if b else ""
+            press = _rail_pressure(name, rp[name], b, solar_mean) if b else None
+            if press is not None:
+                top_press.append((press, rid, name))
             if not flag:
                 continue   # toon alleen de gerailde per-kamer-params; rest is ruis
             rails += 1
+            if press is not None and press >= PRESSURE_HIGH:
+                pinned.append(f"{rid}.{name}")
             lines.append(f"| {rid} | `{name}` | {_fmt(rp[name], 3)} | "
-                         f"{_fmt(PRIORS.get(name), 2)} | {b} | {flag} |")
-    lines.append(f"\n**{rails} gerailde parameter(s).** Veel floor-rails op de warmte-in-kanalen "
-                 "(solar_gain/ua_env/q_int/f_air/cp_shelter) = de optimizer duwt élk warmte-kanaal "
-                 "naar minimum en komt nóg niet koel genoeg → structureel tekort of te-warme prior.")
+                         f"{_fmt(PRIORS.get(name), 2)} | {b} | {_pressure_cell(press)} | {flag} |")
+    lines.append(f"\n**{rails} gerailde parameter(s), waarvan {len(pinned)} onder hoge druk"
+                 + (f": {', '.join(pinned)}" if pinned else "") + ".** "
+                 "Floor-rails ónder druk op de warmte-in-kanalen (solar_gain/ua_env/q_int/"
+                 "f_air/cp_shelter) = de optimizer duwt élk warmte-kanaal naar minimum en komt "
+                 "nóg niet koel genoeg → er ontbreekt een koude-put in de fysica, of de prior "
+                 "is te warm. Gerailde params zónder druk zijn onschuldig.")
+    # Ook de niet-gerailde koplopers: een param op 90% van zijn band met hoge druk staat op
+    # het punt te railen — dat wil je zién vóór hij vastloopt, niet erna.
+    top_press.sort(reverse=True)
+    if top_press:
+        lines += ["\n**Hoogste druk (ongeacht railing):**\n",
+                  "| scope | param | druk |", "|---|---|---|"]
+        for press, scope, name in top_press[:8]:
+            lines.append(f"| {scope} | `{name}` | {_pressure_cell(press)} |")
     return "\n".join(lines) + "\n"
 
 
@@ -370,9 +440,15 @@ def build_report(learned: dict, data: dict, since: datetime | None = None,
             f"- huidige RMSE: {_fmt(learned.get('rmse'), 3)} °C; "
             f"checkpoint: skill {learned.get('checkpoint', {}).get('skill')}, "
             f"RMSE {learned.get('checkpoint', {}).get('rmse')}\n"]
+    # Zon-gemiddelde van het nieuwste leercurve-punt: `solar_gain`'s ridge is regime-bewust
+    # (sterk anker op bewolkte vensters, zwak op zonnige), dus de rail-druk moet met hetzelfde
+    # gewicht rekenen als de fit die de waarde produceerde.
+    hist = learned.get("rmse_history") or []
+    solar_mean = next((h["wx"]["solar_mean"] for h in reversed(hist)
+                       if (h.get("wx") or {}).get("solar_mean") is not None), None)
     sections = [
         regime_report(learned, since=since),
-        saturation_report(learned),
+        saturation_report(learned, solar_mean=solar_mean),
         residual_report(data),
         ac_report(data),
     ]

@@ -1090,9 +1090,12 @@ def collect_actual_rh(house: dict, wd: dict, since: datetime) -> dict:
 
 # ── Historie-shards (data/twin2_history/<YYYY-MM>.json) ──────────────────────────────
 # Kolom-vorm per kamer (ts epoch-s, temp ×10 int, hum %, heat 0/1) + de weer-rijen
-# (fetch_weather-vorm, door de batch/backfill ververst) + de openingen-snapshots.
-# De kwartierrun appende alléén verse kamer-samples + log-snapshots (bytes per run);
-# het weer wordt bewust NIET per run geappend — de batch haalt het uit het archief.
+# (fetch_weather-vorm) + de openingen-snapshots. De kwartierrun appendt verse
+# kamer-samples, log-snapshots én de verstreken uren van het weer dat hij tóch al
+# ophaalt (bytes per run); de batch/backfill overschrijft die staart daarna met het
+# nauwkeuriger ERA5-archief. Twee schrijvers met verschillende cadans is opzet: met
+# alléén de wekelijkse batch werd één gemist venster een blijvend gat (zie
+# `refresh_shard_weather`). Alle shard-schrijvers mergen op tijdstip, nooit vervangen.
 
 def _shard_path(month: str) -> str:
     return os.path.join(HISTORY_DIR, f"{month}.json")
@@ -1259,16 +1262,55 @@ def fetch_weather_archive(start: date, end: date) -> list[dict]:
     return rows
 
 
-def refresh_shard_weather(rows: list[dict]) -> None:
-    """Schrijf de (archief-)weer-rijen terug in hun maand-shards — de batch/backfill
-    is de enige schrijver van het shard-weer (de kwartierrun appendt bewust geen weer)."""
+def refresh_shard_weather(rows: list[dict], overwrite: bool = True) -> int:
+    """Merge weer-rijen in hun maand-shards, gesleuteld op `dt`. Geeft #nieuwe uur-rijen.
+
+    **Mergen, niet vervangen** — dit was een echte gat-bron: de oude versie zette
+    `shard["weather"]` gelijk aan précies de aangeleverde rijen, dus een fetch met een
+    smaller bereik (of een half-mislukte staart-fallback) wíste de rest van die maand.
+    Gecombineerd met "alleen de wekelijkse batch schrijft weer" leverde dat een shard op
+    waarvan het weer op 2026-07-16 stopte terwijl de kamerdata tot 07-28 liep — de hele
+    hete twee weken viel buiten elke fit (gediagnosticeerd juli 2026). Mergen maakt het
+    shard-weer monotoon groeiend en immuun voor een smaller venster of een door de
+    `-X theirs`-merge van de kwartierloop geklobberde batch-commit.
+
+    `overwrite=True` (batch/backfill): het ERA5-archief wint van een eerder ingevulde
+    forecast-staart. `overwrite=False` (kwartierrun): alléén gaten vullen, zodat een
+    archief-rij nooit terug-degradeert naar een forecast-waarde."""
     by_month: dict[str, list[dict]] = {}
     for r in rows:
         by_month.setdefault(r["dt"].strftime("%Y-%m"), []).append(r)
+    added = 0
     for month, mrows in by_month.items():
         shard = _load_shard(month)
-        shard["weather"] = [{**r, "dt": r["dt"].isoformat()} for r in mrows]
+        merged = {r["dt"]: r for r in shard.get("weather") or [] if r.get("dt")}
+        for r in mrows:
+            iso = r["dt"].isoformat()
+            if iso in merged and not overwrite:
+                continue
+            added += iso not in merged
+            merged[iso] = {**r, "dt": iso}
+        shard["weather"] = [merged[k] for k in sorted(merged)]
         _write_shard(shard)
+    return added
+
+
+def append_shard_weather(weather: dict, now: datetime) -> int:
+    """Vul het shard-weer bij uit de drivers die de kwartierrun tóch al ophaalt
+    (`am.fetch_weather` levert `past_days=4` aan verleden). Geeft #nieuwe uur-rijen.
+
+    Alléén verstreken uren: de forecast-staart is gemodelleerde toekomst en hoort niet
+    als grondwaarheid in de trainingsset. Alléén gaten vullen (`overwrite=False`), dus
+    waar de batch het ERA5-archief al heeft neergezet blijft dat leidend.
+
+    Waarom de kwartierrun dit óók doet terwijl het weer "van de batch" is: met één
+    wekelijkse schrijver is elk gemist of geklobberd batch-venster een blijvend gat in
+    de trainingsset. Met een rollende 4-daagse overlap elke 15 minuten kan zo'n gat niet
+    meer ontstaan, en het kost bytes per run — hetzelfde argument als voor de
+    kamer-samples in `append_history_shard`."""
+    rows = [r for r in (weather.get("hourly") or [])
+            if r.get("dt") is not None and r["dt"] <= now and r.get("T_out") is not None]
+    return refresh_shard_weather(rows, overwrite=False) if rows else 0
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1546,8 +1588,19 @@ def batch_main():
     rows = fetch_weather_archive((t_min - timedelta(hours=BATCH_WARMUP_H + 24)).date(),
                                  t_max.date())
     refresh_shard_weather(rows)
-    dataset["weather_rows"] = rows
-    print(f"[batch] weer ververst: {len(rows)} uur-rijen.")
+    # Samenvoegen met wat al in de shards stond i.p.v. vervangen: een half-mislukte
+    # staart-fallback mag de fit niet stilzwijgend op een afgekapte driver-reeks zetten.
+    merged_wx = {r["dt"]: r for r in dataset["weather_rows"]}
+    merged_wx.update({r["dt"]: r for r in rows})
+    dataset["weather_rows"] = [merged_wx[k] for k in sorted(merged_wx)]
+    print(f"[batch] weer ververst: {len(rows)} opgehaald, "
+          f"{len(dataset['weather_rows'])} uur-rijen totaal.")
+    wx_last = dataset["weather_rows"][-1]["dt"] if dataset["weather_rows"] else None
+    if wx_last is not None and (t_max - wx_last) > timedelta(hours=24):
+        # Luid falen i.p.v. stil krimpen: hier zat het juli-2026-gat (weer tot 07-16,
+        # kamerdata tot 07-28) dat de hele hete periode buiten elke fit hield.
+        print(f"[batch][WAARSCHUWING] weer loopt tot {wx_last.isoformat()} maar er is "
+              f"kamerdata tot {t_max.isoformat()} — die staart valt buiten de fit.")
 
     # Warm-start vanaf het vorige batch-anker (rev-passend): één epoch over alle
     # vensters kost ~15–20 min, dus het budget laat maar enkele gedempte stappen per
@@ -1955,12 +2008,15 @@ def main():
     else:
         bias_state = bias_prev
 
-    # Trainingsset laten meegroeien: verse tado-samples + nieuwe log-snapshots naar de
-    # maand-shard (bytes per run; het weer ververst de batch uit het archief).
+    # Trainingsset laten meegroeien: verse tado-samples + nieuwe log-snapshots + de
+    # verstreken uren van het al opgehaalde weer naar de maand-shard (bytes per run).
     try:
         n_added = append_history_shard(wd, log, now)
         if n_added:
             print(f"[historie] {n_added} samples geappend aan {HISTORY_DIR}.")
+        n_wx = append_shard_weather(weather, now)
+        if n_wx:
+            print(f"[historie] {n_wx} weer-uren bijgevuld in {HISTORY_DIR}.")
     except OSError as e:
         print(f"[historie] append overgeslagen: {e}")
 

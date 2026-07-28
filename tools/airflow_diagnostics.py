@@ -10,7 +10,7 @@ markdown-rapport dat de assessment onderbouwt:
                       mét de rail-DRUK (duwt de data er actief tegenaan, of staat hij er
                       toevallig? — alleen het eerste is een probleem).
   3. Residu-ontleding — voorspeld−werkelijk per kamer, per uur-van-de-dag, naast de
-                        gepubliceerde energie-termen (solar/env/vent/party/internal_w) →
+                        gepubliceerde energie-termen (solar/env/vent/party/ground/internal_w) →
                         scheidt zon-gedreven bias (middag) van envelope (volgt buiten) van
                         ventilatie (vroege ochtend → niet-gemelde nachtventilatie).
   4. Airco          — gerapporteerde AC-kamer + uit-de-fit-gelaten samples.
@@ -40,7 +40,7 @@ LEARNED_PATH = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
 DATA_PATH = os.getenv("AIRFLOW_DATA_PATH", "docs/airflow_data.json")
 
 RAIL_TOL = 0.02   # binnen deze fractie van de band-breedte → 'geraild' op die grens
-ENERGY_KEYS = ["solar_w", "env_w", "vent_w", "party_w", "internal_w"]
+ENERGY_KEYS = ["solar_w", "env_w", "vent_w", "party_w", "ground_w", "internal_w"]
 
 
 def load_json(path: str) -> dict:
@@ -302,8 +302,9 @@ def residual_report(data: dict) -> str:
     rooms = data.get("rooms", {})
     lines = ["### 3. Residu-ontleding per kamer (voorspeld − werkelijk)\n",
              "Positief = model te warm. Energie-termen zijn de gepubliceerde momentwaarden (W).\n",
-             "| kamer | nu err | bias (gem) | RMSE | solar_w | env_w | vent_w | party_w | int_w |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             "| kamer | nu err | bias (gem) | RMSE | solar_w | env_w | vent_w | party_w "
+             "| ground_w | int_w |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     hourly_all: dict[int, list[float]] = {}
     hourly_room: dict[str, dict[int, list[float]]] = {}
     for rid, r in rooms.items():
@@ -317,7 +318,7 @@ def residual_report(data: dict) -> str:
             f"| {rid} | {_fmt(r.get('error'))} | {_fmt(bias)} | {_fmt(rmse_v)} "
             f"| {_fmt(r.get('solar_w'), 0)} | {_fmt(r.get('env_w'), 0)} "
             f"| {_fmt(r.get('vent_w'), 0)} | {_fmt(r.get('party_w'), 0)} "
-            f"| {_fmt(r.get('internal_w'), 0)} |")
+            f"| {_fmt(r.get('ground_w'), 0)} | {_fmt(r.get('internal_w'), 0)} |")
     # Bias per uur-van-de-dag, over alle kamers samen → discrimineert de oorzaak.
     if hourly_all:
         lines += ["\n**Gemiddelde bias per uur-van-de-dag (alle kamers):**\n",

@@ -52,6 +52,7 @@ diens artefacten.
 """
 
 import argparse
+import contextlib
 import glob
 import json
 import math
@@ -1125,6 +1126,26 @@ def anchor_from_batch(house: dict, batch: dict) -> tuple[dict | None, dict]:
                     "anchor_src": batch.get("model_version")}
 
 
+@contextlib.contextmanager
+def window_anchors(w: dict):
+    """Zet het buur- én bodem-anker van dít venster op de module-globalen die `simulate2`
+    leest, en herstel ze daarna.
+
+    Beide ankers horen bij het VENSTER, niet bij de run: een trainingsspan van weken tot
+    maanden schuift door het seizoen, en één vast anker zou een koel meivenster en een
+    hittegolfvenster op dezelfde randvoorwaarde fitten. Het buur-anker deed dit al; het
+    bodem-anker is nieuw (fysica-rev 2) en zou anders stilzwijgend op de module-default
+    blijven staan tijdens de hele batch — een subtiel verschil tussen wat de batch fit en
+    wat de kwartierrun draait."""
+    old_nb, old_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
+    am._NEIGHBOR_TEMP = w["neighbor"]
+    am._GROUND_TEMP = w.get("ground", old_gr)
+    try:
+        yield
+    finally:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = old_nb, old_gr
+
+
 # Context voor de Jacobiaan-workers. Module-niveau omdat de procespool via `fork` de
 # ouderstaat erft: de zware timelines hoeven dan niet per taak gepickled te worden.
 _JAC_CTX: dict = {}
@@ -1149,15 +1170,11 @@ def _jac_column_worker(task):
     j, xj = task
     ctx = _JAC_CTX
     w = ctx["w"]
-    old_nb = am._NEIGHBOR_TEMP
-    am._NEIGHBOR_TEMP = w["neighbor"]
-    try:
+    with window_anchors(w):
         p = vec_to_params2(xj, ctx["keys"], ctx["params"])
         return j, _residuals2(ctx["house"], p, w["timeline"], w["seed"], w["actual"],
                               w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
                               w.get("tm_seed"))
-    finally:
-        am._NEIGHBOR_TEMP = old_nb
 
 
 def _jac_columns_parallel(house, keys, params, w, tasks, jobs: int) -> dict:
@@ -1521,7 +1538,11 @@ def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None
         nb_when = w_end if neighbor_mode == "end" else w_start + (w_end - w_start) / 2
         win = {"start": w_start, "end": w_end, "timeline": timeline, "actual": act,
                "rh": rh, "seed": seed, "seed_w": seed_w,
-               "neighbor": neighbor_anchor(rows, nb_when)}
+               "neighbor": neighbor_anchor(rows, nb_when),
+               # Bodem-anker per venster (net als het buur-anker): het is een ~30-daags
+               # gedempt gemiddelde, dus over een trainingsspan van maanden schuift het
+               # met het seizoen mee. Zie window_anchors.
+               "ground": am.ground_temp_estimate(rows, nb_when)}
         if TD_SEED_MODE == "own":
             win["tm_seed"] = dict(seed)
         wins.append(win)
@@ -1555,14 +1576,10 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
     nk = len(keys)
 
     def _win_res(w, p):
-        old_nb = am._NEIGHBOR_TEMP
-        am._NEIGHBOR_TEMP = w["neighbor"]
-        try:
+        with window_anchors(w):
             return _residuals2(house, p, w["timeline"], w["seed"], w["actual"],
                                w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
                                w.get("tm_seed"))
-        finally:
-            am._NEIGHBOR_TEMP = old_nb
 
     def _jac_columns(w, xv) -> dict:
         """{kolom-index: residuen bij die geperturbeerde parameter} voor één venster.
@@ -1674,14 +1691,10 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
     # Eind-RMSE over alle vensters met de definitieve params.
     rt_all, rr_all = [], []
     for w in wins:
-        old_nb = am._NEIGHBOR_TEMP
-        am._NEIGHBOR_TEMP = w["neighbor"]
-        try:
+        with window_anchors(w):
             sim = simulate2(house, params, w["timeline"], w["seed"],
                             calib_only_rooms=set(w["actual"]) | set(w["rh"]),
                             seed_w=w["seed_w"], tm_seed=w.get("tm_seed"))
-        finally:
-            am._NEIGHBOR_TEMP = old_nb
         for rid, samples in w["actual"].items():
             pred = sim["series"].get(rid, [])
             if not pred:
@@ -1758,6 +1771,11 @@ def batch_main():
     # convergeren. Doorstarten op het vorige optimum maakt de batches cumulatief
     # (mirror van het online leren dat over runs convergeert). De ridge blijft naar
     # de kale priors trekken, dus een fossiel kan niet wegdriften.
+    # Module-globaal bodem-anker als redelijke default; per venster overschrijft
+    # window_anchors 'm alsnog met de seizoenswaarde van dát venster.
+    am._GROUND_TEMP = am.ground_temp_estimate(rows, t_max)
+    print(f"[bodem] kruipruimte-anker (dataset-eind) = {am._GROUND_TEMP:.1f} °C")
+
     prev = load_batch()
     start_params = batch_start_params(house, prev)
     if start_params is not None:

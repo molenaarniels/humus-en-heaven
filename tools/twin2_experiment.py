@@ -157,9 +157,9 @@ def evaluate(house: dict, wins_held: list[dict], params: dict) -> dict:
     rt_sunny, rt_midday = [], []
     per_window, per_room = {}, {}
     for w in wins_held:
-        old_nb = am._NEIGHBOR_TEMP
-        am._NEIGHBOR_TEMP = w["neighbor"]
-        try:
+        # Zelfde venster-ankers (buur + bodem) als de fit gebruikte — anders zou de
+        # evaluatie op een andere randvoorwaarde draaien dan de training.
+        with a2.window_anchors(w):
             solar = _solar_series(w["timeline"])
             act = {rid: s for rid, s in w["actual"].items()
                    if _room_ok(s, (w["end"] - w["start"]).total_seconds() / 86400.0)}
@@ -216,8 +216,6 @@ def evaluate(house: dict, wins_held: list[dict], params: dict) -> dict:
                     pred = am._to_sensor_series(house, tl_seg, rid, pred)
                     rt_48 += [am._interp(pred, ts) - val for ts, val in samples
                               if seg_start <= ts <= seg_end]
-        finally:
-            am._NEIGHBOR_TEMP = old_nb
     return {
         "rmse_5d": round(am.rmse(rt_all), 4) if rt_all else None,
         "rmse_rh_5d": round(am.rmse(rr_all), 2) if rr_all else None,

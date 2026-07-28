@@ -820,6 +820,37 @@ def test_batch_fit_epoch_budget():
     assert stats["rmse_batch"] is not None
 
 
+def test_window_anchors_sets_and_restores_both():
+    """Buur- én bodem-anker horen bij het VENSTER: over een trainingsspan van maanden
+    schuift het seizoen, en één vast anker zou een koel meivenster en een hittegolfvenster
+    op dezelfde randvoorwaarde fitten."""
+    saved_nb, saved_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
+    try:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = 20.0, 15.0
+        with a2.window_anchors({"neighbor": 22.5, "ground": 17.5}):
+            assert am._NEIGHBOR_TEMP == 22.5
+            assert am._GROUND_TEMP == 17.5
+        assert (am._NEIGHBOR_TEMP, am._GROUND_TEMP) == (20.0, 15.0)
+        # Ouder venster zonder `ground`-sleutel → bodem-anker blijft staan (additief).
+        with a2.window_anchors({"neighbor": 21.0}):
+            assert am._GROUND_TEMP == 15.0
+        # Ook bij een exceptie worden beide netjes hersteld.
+        with pytest.raises(RuntimeError), a2.window_anchors({"neighbor": 9.0, "ground": 9.0}):
+            raise RuntimeError("boem")
+        assert (am._NEIGHBOR_TEMP, am._GROUND_TEMP) == (20.0, 15.0)
+    finally:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = saved_nb, saved_gr
+
+
+def test_prepare_windows_carries_a_ground_anchor():
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    assert wins
+    for w in wins:
+        assert am.GROUND_TEMP_MIN <= w["ground"] <= am.GROUND_TEMP_MAX
+
+
 def test_batch_jobs_env_override(monkeypatch):
     monkeypatch.setenv("BATCH_JOBS", "1")
     assert a2.batch_jobs() == 1

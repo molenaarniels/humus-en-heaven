@@ -295,16 +295,19 @@ def test_effective_open_area_casement():
     assert area["a_win"] == pytest.approx(0.6 * 0.8)
 
 
-def test_physics_rev_migration_resets_globals():
-    # Geleerde staat van een oudere fysica-revisie: alléén de globalen (die de oude
-    # zelfde-gevel-lus compenseerden) terug naar hun prior; kamer-params blijven staan.
+def test_physics_rev_migration_resets_everything():
+    # Geleerde staat van een oudere fysica-revisie → ÁLLES terug naar de priors, globalen
+    # én kamer-params. Vanaf rev 3 volstaat de oude "alleen globalen"-reset niet meer: de
+    # kamer-params van rev 2 waren geen neutrale schattingen maar compensaties voor precies
+    # de termen die rev 3 toevoegt (geen koude put → solar_gain/ua_env naar hun vloer,
+    # c_mass verkleind), en de massabasis zélf is verschoven.
     house = {"rooms": {"a": {}}}
     old = {"params": {"cp_shelter": 0.1, "vent_eff": 0.43, "a": {"c_air": 1.2}}}
     assert am.physics_rev_migration_needed(old) is True
     p = am.merged_params(house, old)
     assert p["cp_shelter"] == am.PRIORS["cp_shelter"]
     assert p["vent_eff"] == am.PRIORS["vent_eff"]
-    assert p["a"]["c_air"] == 1.2                      # kamer-params onaangeroerd
+    assert p["a"]["c_air"] == am.PRIORS["c_air"]       # kamer-params óók gereset
     cur = {"params": {"cp_shelter": 0.9, "a": {"c_air": 1.2}}, "physics_rev": am.PHYSICS_REV}
     assert am.physics_rev_migration_needed(cur) is False
     assert am.merged_params(house, cur)["cp_shelter"] == 0.9
@@ -670,6 +673,115 @@ def test_build_openings_uses_fixed_cd():
     assert ops and all(op["Cd"] == am.CD for op in ops)
 
 
+# ── 8b. Interne geleiding + bodemkoppeling (fysica-rev 3) ────────────────────────────
+
+def test_room_base_capacitances_extra_mass_is_additive():
+    """De nieuwe massavlakken tellen mee, maar een huismodel zónder die velden houdt
+    exact zijn oude capaciteit — anders zou elke bestaande simulate-test stil verschuiven."""
+    plain = {"volume_m3": 32, "exterior_wall_m2": 12, "roof_m2": 14}
+    _, c_mass_plain, _ = am.room_base_capacitances(plain)
+    assert c_mass_plain == pytest.approx((12 + 14) * 90000.0)
+    rich = {**plain, "party_wall_m2": 10, "mass_floor_m2": 24}
+    _, c_mass_rich, _ = am.room_base_capacitances(rich)
+    assert c_mass_rich == pytest.approx((12 + 14 + 10 + 24) * 90000.0)
+    # De UA blijft puur gevel: de nieuwe vlakken zijn massa, geen extra schilverlies.
+    assert am.room_base_capacitances(rich)[2] == am.room_base_capacitances(plain)[2]
+
+
+def test_ground_temp_estimate_blends_soil_and_damped_outside():
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=am.TZ)
+    hot = [{"dt": now - timedelta(hours=h), "T_out": 21.0} for h in range(720)]
+    # Bodemanker 11.0 + 0.5·(21 − 11) = 16.0 — duidelijk kóéler dan buiten, wat het punt is.
+    assert am.ground_temp_estimate(hot, now) == pytest.approx(16.0)
+    cold = [{"dt": now - timedelta(hours=h), "T_out": 3.0} for h in range(720)]
+    assert am.ground_temp_estimate(cold, now) == pytest.approx(11.0 + 0.5 * (3.0 - 11.0))
+    # Klemmen + terugval zonder historie.
+    absurd = [{"dt": now - timedelta(hours=h), "T_out": 60.0} for h in range(720)]
+    assert am.ground_temp_estimate(absurd, now) == pytest.approx(am.GROUND_TEMP_MAX)
+    assert am.ground_temp_estimate([], now) == pytest.approx(am.GROUND_TEMP)
+
+
+def test_ground_term_is_inert_without_ground_m2():
+    """Opt-in via de huismodel-geometrie: geen `ground_m2` → UA_ground 0 → nul-gradiënt,
+    dus de ridge parkeert `ua_ground` op zijn prior en de sim is bit-identiek."""
+    house = _toy_house()
+    params = am.default_params(house)
+    zp = am._zone_thermal_params(house, params)
+    assert all(z.get("UA_ground", 0.0) == 0.0 for z in zp.values())
+    tl = _const_timeline(16.0, hours=48, irr=0.0)
+    seed = {z: 22.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    base = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    params_hi = am.default_params(house)
+    for rid in house["rooms"]:
+        params_hi[rid]["ua_ground"] = 4.0        # maximaal, maar zonder oppervlak: geen effect
+    same = am.simulate(house, params_hi, tl, seed, calib_only_rooms=set(house["rooms"]))
+    for rid in house["rooms"]:
+        assert same["Ta"][rid] == pytest.approx(base["Ta"][rid])
+
+
+def test_ground_coupling_pulls_a_hot_room_below_outside():
+    """De kern van fysica-rev 3: mét een kruipruimte kan een kamer op een hete dag ónder de
+    buitentemp uitkomen. Zonder die koude put kon het model dat niet — élke weg naar buiten
+    was een warmtebron — en moest de fit élk warmte-in-kanaal naar zijn ondergrens duwen."""
+    house = _toy_house()
+    house["rooms"]["a"]["ground_m2"] = 20        # kruipruimte onder kamer a
+    tl = _const_timeline(28.0, hours=240, irr=0.0)
+    seed = {z: 28.0 for z in list(house["rooms"]) + list(house.get("junctions", {}))}
+    params = am.default_params(house)
+    for rid in house["rooms"]:
+        params[rid]["q_int"] = 0.0               # isoleer de bodem-term van de interne last
+    saved_nb, saved_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
+    try:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = 28.0, 15.0
+        sim = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = saved_nb, saved_gr
+    assert sim["Ta"]["a"] < 28.0 - 1.0           # kamer mét kruipruimte zakt onder buiten
+    assert sim["Ta"]["b"] > sim["Ta"]["a"]       # kamer zónder blijft warmer
+
+
+def test_interzone_conductances_geometry_and_scale():
+    house = {"interzone": [{"a": "office", "b": "hotties", "area_m2": 12, "u": 0.7},
+                           {"a": "hotties", "b": "ted", "area_m2": 10, "u": 0.5}]}
+    g = am.interzone_conductances(house, {"ua_inter": 1.0})
+    assert g[("hotties", "office")] == pytest.approx(12 * 0.7)   # sleutel alfabetisch geordend
+    assert g[("hotties", "ted")] == pytest.approx(10 * 0.5)
+    # De globale schaal werkt op álle vlakken tegelijk.
+    g2 = am.interzone_conductances(house, {"ua_inter": 2.0})
+    assert g2[("hotties", "office")] == pytest.approx(2 * 12 * 0.7)
+    # Geen lijst → geen koppeling (het model gedraagt zich exact als vóór rev 3).
+    assert am.interzone_conductances({}, {}) == {}
+    # Onzin-vlakken worden stilzwijgend genegeerd i.p.v. de sim te laten crashen.
+    junk = {"interzone": [{"a": "x"}, {"a": "x", "b": "x", "area_m2": 5},
+                          {"a": "x", "b": "y", "area_m2": 0}]}
+    assert am.interzone_conductances(junk, {}) == {}
+
+
+def test_interzone_conduction_drains_heat_between_stacked_rooms():
+    """Het gestapelde-kamers-patroon: zonder vloergeleiding heeft de bovenste kamer geen
+    afvoer en loopt hij weg van zijn koelere buur; mét geleiding trekken ze naar elkaar toe.
+    Dit is de term die de met-de-hoogte-oplopende fout (ted +0.71 → office +2.19) verklaart."""
+    house = _toy_house()
+    del house["doors"]["b_hall"]                 # sluit de advectieve omweg af: puur geleiding
+    tl = _const_timeline(20.0, hours=120, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 20.0 for z in zones}
+    params = am.default_params(house)
+    params["b"]["q_int"] = 6.0                   # kamer b loopt warm (proxy voor de zonlast)
+    saved = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = 20.0
+        loose = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+        house["interzone"] = [{"a": "a", "b": "b", "area_m2": 12, "u": 0.7}]
+        tight = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am._NEIGHBOR_TEMP = saved
+    # De warme kamer koelt af doordat hij nu in zijn buur kan lozen...
+    assert tight["Ta"]["b"] < loose["Ta"]["b"]
+    # ...en die buur warmt navenant op: energie verdwijnt niet, hij verplaatst.
+    assert tight["Ta"]["a"] > loose["Ta"]["a"]
+
+
 # ── 9. Dynamisch buur-anker (party-muren) ────────────────────────────────────────────
 
 def test_neighbor_temp_estimate_winter_floor_and_summer_track():
@@ -682,6 +794,57 @@ def test_neighbor_temp_estimate_winter_floor_and_summer_track():
     assert am.neighbor_temp_estimate(summer, now) == pytest.approx(24.0)
     # Geen bruikbare historie → terugval op de module-default.
     assert am.neighbor_temp_estimate([], now) == pytest.approx(am.NEIGHBOR_TEMP)
+
+
+def test_neighbor_night_cap_profile():
+    """Dagplafond overdag, lager 's nachts, met gladde 1-uurs overgangen — een harde sprong
+    zou een knik in de voorspelde temp injecteren die als residu terugkomt."""
+    def cap(h, m=0):
+        return am.neighbor_night_cap(datetime(2026, 7, 15, h, m, tzinfo=am.TZ))
+    assert cap(14) == pytest.approx(am.NEIGHBOR_SUMMER_CAP)
+    assert cap(3) == pytest.approx(am.NEIGHBOR_NIGHT_CAP)
+    assert cap(2) == pytest.approx(am.NEIGHBOR_NIGHT_CAP)
+    mid = 0.5 * (am.NEIGHBOR_SUMMER_CAP + am.NEIGHBOR_NIGHT_CAP)
+    assert cap(22, 30) == pytest.approx(mid)      # halverwege de avondovergang
+    assert cap(7, 30) == pytest.approx(mid)       # halverwege de ochtendovergang
+    assert cap(21) > cap(23) and cap(8) == pytest.approx(am.NEIGHBOR_SUMMER_CAP)
+    # Robuust tegen een `when` zonder klok (mirror van internal_gain_profile).
+    assert am.neighbor_night_cap(object()) == pytest.approx(am.NEIGHBOR_SUMMER_CAP)
+
+
+def test_neighbor_at_only_ever_caps():
+    """Het anker mag door de cap alleen omláág — een koud winteranker blijft ongemoeid."""
+    night = datetime(2026, 7, 15, 3, 0, tzinfo=am.TZ)
+    assert am.neighbor_at(26.0, night) == pytest.approx(am.NEIGHBOR_NIGHT_CAP)
+    assert am.neighbor_at(19.5, night) == pytest.approx(19.5)
+    day = datetime(2026, 7, 15, 14, 0, tzinfo=am.TZ)
+    assert am.neighbor_at(26.0, day) == pytest.approx(am.NEIGHBOR_SUMMER_CAP)
+
+
+def test_simulate_applies_the_night_cap_to_the_party_anchor():
+    """Overgenomen uit tweeling 2 (held-out getoetst): met een hoog anker moet de kamer
+    's nachts kóéler uitkomen dan met een anker dat de klok niet kent. Zonder cap bleef het
+    3-daags-gemiddelde-anker in een hittegolf de hele nacht doorstoken."""
+    house = _toy_house()
+    params = am.default_params(house)
+    for rid in house["rooms"]:
+        params[rid]["q_int"] = 0.0               # isoleer de party-term
+    tl = _const_timeline(18.0, hours=120, irr=0.0)
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    seed = {z: 18.0 for z in zones}
+    saved_cap = am.NEIGHBOR_NIGHT_CAP
+    saved_nb = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = am.NEIGHBOR_SUMMER_CAP        # hittegolf-anker, al op het dagplafond
+        am.NEIGHBOR_NIGHT_CAP = am.NEIGHBOR_SUMMER_CAP    # cap uitgeschakeld (oud gedrag)
+        no_cap = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+        am.NEIGHBOR_NIGHT_CAP = saved_cap                 # cap aan
+        capped = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am.NEIGHBOR_NIGHT_CAP, am._NEIGHBOR_TEMP = saved_cap, saved_nb
+    # De sim eindigt om 00:00 — midden in de nachtcap, dus daar hoort het verschil te staan.
+    for rid in house["rooms"]:
+        assert capped["Ta"][rid] < no_cap["Ta"][rid]
 
 
 def test_simulate_honours_neighbor_temp_global():

@@ -241,10 +241,12 @@ def main() -> None:
     am._LON = loc.get("lon", am._LON)
 
     weather = am.fetch_weather()
-    # Buur-anker rebinden — simulate() leest de module-global (main()-patroon);
-    # zonder deze regel blijft het party-muur-anker op de statische default staan.
+    # Buur- én bodem-anker rebinden — simulate() leest beide als module-global (main()-patroon);
+    # zonder deze regels blijven ze op hun statische default staan.
     am._NEIGHBOR_TEMP = am.neighbor_temp_estimate(weather.get("hourly", []), now)
-    print(f"[buren] party-muur-anker = {am._NEIGHBOR_TEMP:.1f} °C")
+    am._GROUND_TEMP = am.ground_temp_estimate(weather.get("hourly", []), now)
+    print(f"[buren] party-muur-anker = {am._NEIGHBOR_TEMP:.1f} °C · "
+          f"bodem-anker = {am._GROUND_TEMP:.1f} °C")
 
     log = am.load_openings_log()
     params = am.merged_params(house, am.load_learned())

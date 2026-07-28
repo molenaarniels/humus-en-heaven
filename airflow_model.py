@@ -184,14 +184,23 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
 
 # ── Fysica-revisie ───────────────────────────────────────────────────────────────────
 # Bumpen wanneer een fysica-wijziging de betekenis van GELEERDE parameters verschuift, zodat
-# oude geleerde waarden niet stilzwijgend op de nieuwe fysica worden losgelaten. Rev 2 =
-# de wind-referentiehoogte-fix + effectief-openingsoppervlak (WIND_REF_Z/EFF_OPEN_AREA, juli
-# 2026): cp_shelter (0.10, gevloerd) en vent_eff (0.43) stonden op waarden die louter de oude
-# zelfde-gevel-lus compenseerden — onder de nieuwe fysica zijn dat fossielen. Bij een
-# rev-mismatch reset merged_params alléén die twee globalen naar hun prior (kamer-params
-# blijven staan: hun betekenis is niet verschoven) en laat main() het checkpoint + de
-# anomalie-poort van die ene run vallen (beide zijn op de oude fysica geijkt).
-PHYSICS_REV = 2
+# oude geleerde waarden niet stilzwijgend op de nieuwe fysica worden losgelaten. Bij een
+# rev-mismatch reset merged_params ALLE params naar hun prior en laat main() het checkpoint +
+# de anomalie-poort van die ene run vallen (beide zijn op de oude fysica geijkt).
+#
+# Rev 2 = wind-referentiehoogte + effectief-openingsoppervlak (WIND_REF_Z/EFF_OPEN_AREA, juli
+#   2026): cp_shelter (0.10, gevloerd) en vent_eff (0.43) compenseerden louter de oude
+#   zelfde-gevel-lus. Toen volstond een reset van alléén die twee globalen.
+# Rev 3 = de interne geleiding + bodemkoppeling + de bredere massabasis (juli 2026). Hier
+#   moeten óók de KAMER-params terug naar hun prior, anders dan bij rev 2: de oude waarden
+#   waren geen neutrale schattingen maar compensaties vóór precies de termen die nu bestaan.
+#   Het huis had geen enkele koude put (élke weg naar buiten was op een hete dag een
+#   warmtebron), dus de fit had `solar_gain` naar zijn vloer geduwd, `ua_env` naar zijn vloer,
+#   en `c_mass` verkleind omdat méér massa aan `T_out` alleen maar méér opwarming betekende.
+#   Die waarden overnemen zou het leren starten in precies de vervorming die deze revisie
+#   opheft. Bovendien verschuift de massabasis zélf (party-muren + vloeren tellen nu mee), dus
+#   dezelfde `c_mass` betekent een andere capaciteit — de definitie van een rev-bump.
+PHYSICS_REV = 3
 
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
 # Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
@@ -333,6 +342,49 @@ def window_weather_summary(weather: dict, now: datetime, window_h: float) -> dic
 NEIGHBOR_TEMP = 20.0
 NEIGHBOR_WINTER_FLOOR = 19.5   # °C — buren stoken 's winters minstens tot ~deze temp
 _NEIGHBOR_TEMP = NEIGHBOR_TEMP  # run-gebonden buur-anker; herbonden in main()
+# Zomerplafond op het buur-anker, plus een lagere nachtcap. Zonder cap volgt het anker het
+# 3-daags buitengemiddelde onbegrensd omhoog en wordt het in een hittegolf een 24–26°C
+# WARMTEBRON tegen de party-muren — terwijl een binnenkant van een onbewoonde/niet-gekoelde
+# buurwoning in de praktijk rond 23°C blijft steken, en 's nachts meekoelt. Overgenomen uit
+# tweeling 2, waar beide varianten held-out zijn getoetst (juli 2026, 3-voudige 0-epoch-toets
+# over 9 gepaarde vensters): `cap23` won −0.29°C op het hittegolf-venster en was inert op de
+# 8 andere; `cap23_night` won of was exact gelijk op álle 9 (grootste winst 0.919 → 0.820).
+# Tweeling 1 draaide tot nu toe zónder beide.
+NEIGHBOR_SUMMER_CAP = 23.0     # °C — dagplafond op het anker
+NEIGHBOR_NIGHT_CAP = 21.0      # °C — nachtplafond (23–07u), met gladde 1-uurs overgangen
+
+# ── Bodemkoppeling (kruipruimte onder de begane grond) ───────────────────────────────
+# Zonder deze term kan een kamer zijn warmte alléén kwijt aan buitenlucht (UA_env/UA_mass)
+# of aan het buur-anker. Op een hete dag zijn dat allebei WARMTEBRONNEN — buiten 27.5°C,
+# buur-anker 20°C, tegen kamers die in werkelijkheid op 21–23°C staan, dus 5–6°C ónder de
+# buitentemp. Het model kon dat niveau simpelweg niet halen, en de optimizer had geen andere
+# uitweg dan élk warmte-in-kanaal naar zijn ondergrens te duwen (solar_gain op zijn vloer,
+# ua_env op zijn vloer) en werd het nóg steeds niet koel genoeg: de klassieke saturatie-tell
+# van een ontbrekende term, niet van verkeerde afstelling (gediagnosticeerd juli 2026).
+# De kruipruimte onder living/ted is die koude put. Hij is geventileerd — dus deels gekoppeld
+# aan de buitenlucht — én aan de bodem, die op 1–2 m diepte rond het jaargemiddelde van de
+# luchttemperatuur blijft. Vandaar een blend van beide i.p.v. één van de twee: een puur
+# buiten-gedempt anker zou 's zomers te warm uitkomen (30-daags gemiddelde ~20°C in juli),
+# een pure bodemtemperatuur te koud en seizoensdoof.
+GROUND_U            = 0.6    # W/(m²K) — matig geïsoleerde houten vloer boven de kruipruimte
+GROUND_LOOKBACK_H   = 720.0  # uur (~30 dagen) — dempingsvenster van het buitengemiddelde
+GROUND_SOIL_ANCHOR  = 11.0   # °C — NL jaargemiddelde luchttemp ≈ diepe bodemtemp
+GROUND_AIR_COUPLING = 0.5    # aandeel waarmee de kruipruimte het gedempte buiten volgt
+GROUND_TEMP_MIN     = 6.0    # °C — klem, tegen een absurd anker bij korte/rare historie
+GROUND_TEMP_MAX     = 20.0
+GROUND_TEMP         = 15.0   # module-default (back-compat voor directe simulate-tests)
+_GROUND_TEMP        = GROUND_TEMP  # run-gebonden bodem-anker; herbonden in main()
+
+# ── Interne geleiding tussen zones (vloeren/plafonds + binnenwanden) ─────────────────
+# Het huis had géén geleidende koppeling tussen kamers: de enige kamer↔kamer-weg was
+# luchtadvectie door open deuren. In werkelijkheid zijn ted → hotties → office op elkaar
+# gestapeld en zakt hun warmte door de vloeren omlaag (en uiteindelijk in de kruipruimte).
+# Zonder die afvoer heeft de bovenste kamer geen uitweg en stapelt de fout zich op mét de
+# hoogte — precies het gemeten patroon (ted +0.71, hotties +1.32, office +2.19 °C op een
+# zonnige 27.5°C-middag). Een U-waarde is per definitie lucht-tot-lucht (de
+# oppervlakte-overgangsweerstanden zitten erin), dus koppelen we LUCHT↔LUCHT, parallel aan
+# de deur-advectie; de massa van de vloer zelf zit in `c_mass` van beide kamers.
+INTERZONE_U = 0.7   # W/(m²K) — houten balklaag met stro ertussen (~R 1.3–1.4 incl. films)
 
 # Interne warmtelast (mensen, koken, apparaten, verlichting): nominale dichtheid (W/m³
 # kamervolume) × de geleerde per-kamer `q_int` × een dag/nacht-profiel. Overdag (wakker)
@@ -356,6 +408,77 @@ def neighbor_temp_estimate(rows: list[dict], now: datetime, lookback_h: float = 
     if not temps:
         return NEIGHBOR_TEMP
     return max(NEIGHBOR_WINTER_FLOOR, sum(temps) / len(temps))
+
+
+def neighbor_night_cap(when) -> float:
+    """Tijdsafhankelijk plafond op het buur-anker: NEIGHBOR_SUMMER_CAP overdag,
+    NEIGHBOR_NIGHT_CAP 's nachts (23–07u), lineair overvloeiend in 22–23u en 07–08u —
+    een harde sprong zou een knik in de voorspelde temp injecteren die als residu
+    terugkomt (zelfde argument als bij `internal_gain_profile`)."""
+    try:
+        h = when.hour + when.minute / 60.0
+    except AttributeError:
+        return NEIGHBOR_SUMMER_CAP
+    if h >= 23.0 or h < 7.0:
+        return NEIGHBOR_NIGHT_CAP
+    if 22.0 <= h < 23.0:
+        return NEIGHBOR_SUMMER_CAP + (h - 22.0) * (NEIGHBOR_NIGHT_CAP - NEIGHBOR_SUMMER_CAP)
+    if 7.0 <= h < 8.0:
+        return NEIGHBOR_NIGHT_CAP + (h - 7.0) * (NEIGHBOR_SUMMER_CAP - NEIGHBOR_NIGHT_CAP)
+    return NEIGHBOR_SUMMER_CAP
+
+
+def neighbor_at(nb_base: float, when) -> float:
+    """Het buur-anker op tijdstap `when`: de run-basiswaarde, geklemd op de nachtcap.
+    Het anker is daarmee géén run-constante meer maar een trage dagcurve."""
+    return min(nb_base, neighbor_night_cap(when))
+
+
+def ground_temp_estimate(rows: list[dict], now: datetime,
+                         lookback_h: float = GROUND_LOOKBACK_H) -> float:
+    """Traag bodem-/kruipruimte-anker: de diepe bodemtemperatuur (≈ het jaargemiddelde van
+    de luchttemp), voor `GROUND_AIR_COUPLING` opgetrokken naar het gemiddelde buiten over de
+    laatste `lookback_h` (~30 dagen). Een geventileerde kruipruimte hangt tussen die twee in:
+    puur bodem zou seizoensdoof zijn, puur (gedempt) buiten zou 's zomers te warm uitkomen.
+    In een hete juli (30-daags gemiddelde ~20°C) geeft dit ~15.5°C, 's winters (~4°C) ~7.5°C.
+    Geklemd op [GROUND_TEMP_MIN, GROUND_TEMP_MAX]; valt terug op GROUND_TEMP zonder historie.
+
+    Alleen de temperatuur wordt hier geschat — hóé sterk de vloer eraan koppelt is de
+    geleerde `ua_ground` per kamer, dus een matige schatting hier wordt door de fit
+    opgevangen zolang de orde klopt."""
+    since = now - timedelta(hours=lookback_h)
+    temps = [r["T_out"] for r in rows
+             if r.get("T_out") is not None and since <= r["dt"] <= now]
+    if not temps:
+        return GROUND_TEMP
+    mean_out = sum(temps) / len(temps)
+    t = GROUND_SOIL_ANCHOR + GROUND_AIR_COUPLING * (mean_out - GROUND_SOIL_ANCHOR)
+    return max(GROUND_TEMP_MIN, min(GROUND_TEMP_MAX, t))
+
+
+def interzone_conductances(house: dict, params: dict) -> dict:
+    """(zone_a, zone_b) → geleiding W/K door de scheidende constructie (vloer/plafond tussen
+    gestapelde kamers, binnenwand tussen buren op dezelfde verdieping).
+
+    Lucht↔lucht: een U-waarde ís lucht-tot-lucht (de oppervlakte-overgangsweerstanden zitten
+    erin), dus dit loopt parallel aan de deur-advectie en NIET via de massaknopen — die zouden
+    de filmweerstanden dubbel tellen en een kunstmatige vertraging toevoegen. De massa van de
+    vloer zelf zit al in `c_mass` van beide aangrenzende kamers.
+
+    Eén globale geleerde schaal `ua_inter` i.p.v. een parameter per vlak: per-vlak-waarden zijn
+    onderling degenereerbaar en tweeling 2 zit al op 65 parameters. Lege/afwezige lijst → geen
+    koppeling → het model gedraagt zich exact als voorheen."""
+    scale = params.get("ua_inter", 1.0)
+    out: dict[tuple, float] = {}
+    for e in house.get("interzone", []) or []:
+        a, b = e.get("a"), e.get("b")
+        if not a or not b or a == b:
+            continue
+        ua = e.get("area_m2", 0.0) * e.get("u", INTERZONE_U) * scale
+        if ua > 0.0:
+            key = (a, b) if a < b else (b, a)
+            out[key] = out.get(key, 0.0) + ua
+    return out
 
 
 def _ramp(x: float, center: float, width: float) -> float:
@@ -564,6 +687,8 @@ PRIORS = {
     "ua_party":    1.0,   # geleiding naar de buur (woningscheidende muren → NEIGHBOR_TEMP)
     "q_int":       1.0,   # interne warmtelast (mensen/koken/apparaten), dag/nacht-profiel
     "ua_roof":     1.0,   # dak-sol-air-koppeling (alleen actief bij roof_m2 > 0)
+    "ua_ground":   1.0,   # vloer → kruipruimte/bodem (alleen actief bij ground_m2 > 0)
+    "ua_inter":    1.0,   # globale schaal op de interne vloer-/wandgeleiding tussen zones
     # f_air is géén dimensieloze schaal maar een absolute fractie (0..1): het deel van de
     # zonwinst dat direct op de snelle luchtknoop landt i.p.v. op de trage massaknoop. Leerbaar
     # zodat het model de midday-piek-timing kan vinden (te hoog → spikes die de fit dan met een
@@ -580,6 +705,7 @@ BOUNDS = {
     "c_air": (0.3, 8.0), "c_mass": (0.2, 10.0), "h_am": (0.2, 5.0),
     "ua_env": (0.2, 5.0), "ua_mass": (0.2, 5.0), "solar_gain": (0.25, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
+    "ua_ground": (0.0, 4.0), "ua_inter": (0.0, 4.0),
     "f_air": (0.1, 0.9),   # absolute fractie zonwinst → luchtknoop (fysiek 0..1, marge gehouden)
 }
 # Welke parameters per kamer leren. `h_am` (lucht↔massa-koppeling) leert mee zodat `c_air`
@@ -589,12 +715,15 @@ BOUNDS = {
 # kamers zónder `roof_m2`. `f_air` (zon-split lucht/massa) leert mee zodat het model de midday-piek-
 # timing kan vinden i.p.v. die met een te lage `solar_gain` weg te drukken. `ua_mass` blijft op
 # zijn prior (minder vrijheid, stabieler).
-PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int", "ua_roof", "f_air"]
+# `ua_ground` leert mee met dezelfde nul-basis-logica als `ua_roof`: kamers zónder `ground_m2`
+# hebben basis 0 → geen effect, nul-gradiënt, de ridge parkeert 'm op zijn prior.
+PER_ROOM_PARAMS = ["c_air", "c_mass", "h_am", "ua_env", "solar_gain", "ua_party", "q_int",
+                   "ua_roof", "ua_ground", "f_air"]
 # `cd` is geen leerbare globale parameter meer: het is een fysische orifice-constante (~0.62) die
 # óók de volumetrische ACH/flows (dashboard + suggest) zet. De thermische fit railde 'm naar zijn
 # vloer (degenereert met `vent_eff` in de meng-koppeling ∝ cd·vent_eff), wat de getoonde airflow
 # corrumpeert. Nu vast op CD; `vent_eff` draagt de meng-koppeling alleen.
-GLOBAL_PARAMS   = ["cp_shelter", "vent_eff"]
+GLOBAL_PARAMS   = ["cp_shelter", "vent_eff", "ua_inter"]
 CD = PRIORS["cd"]   # vaste ontladingscoëfficiënt (niet geleerd)
 
 RAIL_TOL = 0.02   # binnen deze fractie van de band-breedte → de param zit 'op zijn grens'
@@ -1458,12 +1587,24 @@ def _stair_gamma(info: dict, temps: dict, open_others: set | None = None) -> flo
 def room_base_capacitances(room: dict) -> tuple[float, float, float]:
     """Fysische basis (C_air, C_mass, exterieur-UA) uit geometrie, vóór de leer-schalen.
     C_air ≈ luchtmassa×cp (× factor voor meubilair-lucht); C_mass ≈ wandmassa; UA uit
-    schiloppervlak."""
+    schiloppervlak.
+
+    De massabasis telt naast gevel + dak óók de woningscheidende muren en de vloer/plafond-
+    vlakken mee (`party_wall_m2`, `mass_floor_m2`; afwezig → 0 → exact het oude gedrag).
+    Die zijn in een jaren-'20 tussenwoning juist de dominante massa — ze weglaten maakte de
+    basis ~3× te klein, en omdat de massaknoop uitsluitend aan `T_out` hing betekende méér
+    massa 's zomers méér opwarming, dus de fit verkleinde 'm nóg verder (office leerde
+    c_mass 0.46). Het resultaat was een kamer die veel te snel op de zon reageert, terwijl
+    de metingen juist een gedempte piek 2,5 uur ná de buitenpiek laten zien. Nominale basis;
+    de geleerde `c_mass` zet de uiteindelijke grootte."""
     vol = room.get("volume_m3", 40.0)
     wall = room.get("exterior_wall_m2", 0.4 * vol)
     roof = room.get("roof_m2", 0.0)             # bovenste verdieping: dakvlak (anders 0)
+    mass_area = (wall + roof
+                 + room.get("party_wall_m2", 0.0)     # woningscheidende muren (baksteen)
+                 + room.get("mass_floor_m2", 0.0))    # vloer + plafond (balklaag/beton)
     c_air = vol * 1.2 * CP_AIR * 3.0          # ×3: effectieve binnenlucht + lichte inboedel
-    c_mass = (wall + roof) * 90000.0            # J/K per m² schil (baksteen/pleister + dak, ~slow)
+    c_mass = mass_area * 90000.0                # J/K per m² schil (baksteen/pleister, ~slow)
     ua = wall * 1.0                             # W/K (matig geïsoleerde gevel; dak via UA_roof)
     return c_air, c_mass, ua
 
@@ -1490,15 +1631,24 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
             # Interne warmtelast (W) bij profiel = 1.0; het dag/nacht-profiel schaalt 'm per stap.
             "Q_int_base": vol * INTERNAL_GAIN_WM3 * p.get("q_int", 1.0),
             # Dak-sol-air-koppeling (W/K) op de massaknoop. Basis 0 (→ inactief) tenzij de kamer
-            # een `roof_m2` heeft; de geleerde `ua_roof` schaalt de grootte.
-            "UA_roof": r.get("roof_m2", 0.0) * ROOF_U * p.get("ua_roof", 1.0),
+            # een `roof_m2` heeft; de per-kamer `roof_u` overschrijft de default ROOF_U (een
+            # geïsoleerd dak is een fáctor lager dan een kaal dak, geen schaal-nuance).
+            "UA_roof": (r.get("roof_m2", 0.0) * r.get("roof_u", ROOF_U)
+                        * p.get("ua_roof", 1.0)),
+            # Vloer → kruipruimte/bodem (W/K) op de massaknoop. Basis 0 (→ inactief) tenzij de
+            # kamer een `ground_m2` heeft; de geleerde `ua_ground` schaalt de grootte.
+            "UA_ground": (r.get("ground_m2", 0.0) * r.get("ground_u", GROUND_U)
+                          * p.get("ua_ground", 1.0)),
         }
     for jid, j in house.get("junctions", {}).items():
         vol = j.get("volume_m3", 15.0)
         c_air0 = vol * 1.2 * CP_AIR * 3.0
         par[jid] = {"C_a": c_air0, "C_m": c_air0 * 2.0, "H_am": 15.0,
                     "UA_env": 3.0, "UA_mass": 1.0, "solar": 0.0, "f_air": 1.0,
-                    "UA_party": 0.0, "Q_int_base": 0.0, "UA_roof": 0.0}
+                    "UA_party": 0.0, "Q_int_base": 0.0, "UA_roof": 0.0,
+                    # Junctie (gang/overloop) krijgt wél een bodemkoppeling als de
+                    # huismodel-geometrie er een geeft — de gang ligt op dezelfde vloer.
+                    "UA_ground": j.get("ground_m2", 0.0) * j.get("ground_u", GROUND_U)}
     return par
 
 
@@ -1529,6 +1679,9 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     veff = params.get("vent_eff", 1.0)
     rho_cp = 1.2 * CP_AIR
     strat = _stratify_zones(house)   # verticale-koker-zones (opt-in via "stratify"); leeg → geen effect
+    # Interne vloer-/wandgeleiding tussen zones (W/K). Constant over de tijdlijn — hangt
+    # alleen van geometrie + de geleerde globale schaal af, niet van de standen of het weer.
+    ginter = interzone_conductances(house, params)
 
     Ta = {z: seed.get(z, timeline[0]["T_out"]) for z in zones}
     # Massaknoop-startwaarde. `tm_seed` (per zone) is de voorkeur: main() geeft het venster-
@@ -1616,6 +1769,9 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         night = step.get("sun_el", 90.0) <= 0.0
         t_solair = {z: T_out + ROOF_SOLAR_GAIN * irr_roof.get(z, 0.0)
                     - (ROOF_SKY_COOLING if night else 0.0) for z in zones}
+        # Buur-anker op deze tijdstap: de run-basiswaarde met de nachtcap erop (zie
+        # neighbor_at) — 's nachts koelen de buren mee i.p.v. door te "stoken".
+        nb_now = neighbor_at(_NEIGHBOR_TEMP, step["t"])
         for _ in range(nsub):
             # Bouw het 2N-stelsel A·x = b, x = [Ta_z0, Tm_z0, Ta_z1, Tm_z1, ...].
             A = [[0.0] * (2 * n) for _ in range(2 * n)]
@@ -1634,15 +1790,24 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 A[ia][ia] += pa["C_a"] / h + gvent[z] + pa["UA_env"] + pa["H_am"] + ua_party
                 A[ia][im] += -pa["H_am"]
                 b[ia] += (pa["C_a"] / h * Ta[z] + gvent[z] * T_out + pa["UA_env"] * T_out
-                          + pa["f_air"] * q_solar + ua_party * _NEIGHBOR_TEMP + q_int)
-                # Massaknoop (+ dak-sol-air-koppeling naar de effectieve dak-buitentemp).
+                          + pa["f_air"] * q_solar + ua_party * nb_now + q_int)
+                # Massaknoop (+ dak-sol-air-koppeling naar de effectieve dak-buitentemp,
+                # + de vloerkoppeling naar de kruipruimte/bodem — de koude put die 's zomers
+                # de enige echte warmte-afvoer is; zie GROUND_U).
                 ua_roof = pa.get("UA_roof", 0.0)
-                A[im][im] += pa["C_m"] / h + pa["H_am"] + pa["UA_mass"] + ua_roof
+                ua_ground = pa.get("UA_ground", 0.0)
+                A[im][im] += (pa["C_m"] / h + pa["H_am"] + pa["UA_mass"]
+                              + ua_roof + ua_ground)
                 A[im][ia] += -pa["H_am"]
                 b[im] += (pa["C_m"] / h * Tm[z] + pa["UA_mass"] * T_out
-                          + (1.0 - pa["f_air"]) * q_solar + ua_roof * t_solair[z])
-            # Deur-koppeling (advectief, impliciet).
-            for (za, zb), g in gdoor.items():
+                          + (1.0 - pa["f_air"]) * q_solar + ua_roof * t_solair[z]
+                          + ua_ground * _GROUND_TEMP)
+            # Deur-koppeling (advectief, impliciet) + de interne vloer-/wandgeleiding. Beide
+            # koppelen LUCHT↔LUCHT en gaan dus in hetzelfde blok; ze blijven wél gescheiden
+            # dicts, want de stratificatie-term hierboven mag alléén de deur-advectie zien.
+            for (za, zb), g in list(gdoor.items()) + list(ginter.items()):
+                if za not in zi or zb not in zi:
+                    continue
                 ka, kb = zi[za], zi[zb]
                 A[2 * ka][2 * ka] += g
                 A[2 * ka][2 * kb] += -g
@@ -2303,12 +2468,11 @@ def merged_params(house: dict, learned: dict) -> dict:
     # niets leest params["cd"] — strip 'm hier zodat hij niet eeuwig in de artefacten meerijdt.
     params.pop("cd", None)
     base = default_params(house)
-    # Fysica-revisie-migratie (zie PHYSICS_REV): geleerde staat van een oudere revisie →
-    # alleen de globalen terug naar hun prior. Hier (en niet alleen in main) zodat óók
-    # night_forecast.py nooit oude-fysica-globalen op de nieuwe fysica loslaat.
+    # Fysica-revisie-migratie (zie PHYSICS_REV): geleerde staat van een oudere revisie → álles
+    # terug naar de priors. Hier (en niet alleen in main) zodat óók night_forecast.py nooit
+    # oude-fysica-params op de nieuwe fysica loslaat.
     if physics_rev_migration_needed(learned):
-        for g in GLOBAL_PARAMS:
-            params[g] = base[g]
+        params = base
     for g in GLOBAL_PARAMS:
         params.setdefault(g, base[g])
     for rid in house.get("rooms", {}):
@@ -2586,9 +2750,18 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         # Richting van de temperatuurverandering (°C/uur): + opwarmend, − afkoelend.
         "trend_c_per_h": round(trend, 2) if trend is not None else None,
         # Buur-warmtestroom (W, + = nettowinst uit de buren) en interne last (W) — de
-        # twee tussenwoning-termen, voor inzicht op het dashboard.
-        "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (NEIGHBOR_TEMP - ta_now), 0)
+        # twee tussenwoning-termen, voor inzicht op het dashboard. Rekent met het
+        # RUN-GEBONDEN anker `_NEIGHBOR_TEMP`, niet met de module-default NEIGHBOR_TEMP:
+        # de fysica in simulate() gebruikt het run-anker, dus met de default erin stond er
+        # op een hittegolf (anker ~24°C tegen default 20°C) een verkeerd-getekende flux op
+        # het dashboard — het weergegeven getal sprak de gesimuleerde fysica tegen.
+        "party_w": (round(zpar.get(rid, {}).get("UA_party", 0.0) * (_NEIGHBOR_TEMP - ta_now), 0)
                     if ta_now is not None else None),
+        # Bodem-/kruipruimte-warmtestroom (W, − = de kamer verliest warmte naar de grond).
+        # Rekent tegen de massaknoop, want dáár grijpt de term aan (zie simulate).
+        "ground_w": (round(zpar.get(rid, {}).get("UA_ground", 0.0)
+                           * (_GROUND_TEMP - tm_all[rid]), 0)
+                     if tm_all.get(rid) is not None else None),
         "internal_w": round(zpar.get(rid, {}).get("Q_int_base", 0.0) * ctx["int_profile_now"], 0),
         "comfort_low": ROOM_COMFORT.get(wd_key, (None, None))[0] if wd_key else None,
         "comfort_high": ROOM_COMFORT.get(wd_key, (None, None))[1] if wd_key else None,
@@ -2721,6 +2894,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
             "neighbor_temp": round(_NEIGHBOR_TEMP, 1),
+            "ground_temp": round(_GROUND_TEMP, 1),
             # WU/OM glas-drive-herschaling die deze run op de recente stappen is toegepast (stap 1);
             # null = pure Open-Meteo (WU-zon ontbrak of te laag). Additief.
             "wu_solar_scale": (round(weather.get("wu_solar_scale"), 2)
@@ -2899,7 +3073,7 @@ _LON = shared_const.LONGITUDE
 
 
 def main():
-    global _LAT, _LON, _OPENINGS_CACHE, _NEIGHBOR_TEMP
+    global _LAT, _LON, _OPENINGS_CACHE, _NEIGHBOR_TEMP, _GROUND_TEMP
     now = datetime.now(TZ)
     print(f"[airflow_model] Start — {now.isoformat()}")
 
@@ -2949,9 +3123,15 @@ def main():
     log = load_openings_log()
     _OPENINGS_CACHE = log
 
-    # Buur-anker voor de party-muren: traag, gedempt (zie neighbor_temp_estimate).
-    _NEIGHBOR_TEMP = neighbor_temp_estimate(weather.get("hourly", []), now)
-    print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C")
+    # Buur-anker voor de party-muren: traag, gedempt (zie neighbor_temp_estimate), geklemd op
+    # het zomerplafond; simulate() legt daar per tijdstap de nachtcap overheen (neighbor_at).
+    _NEIGHBOR_TEMP = min(NEIGHBOR_SUMMER_CAP,
+                         neighbor_temp_estimate(weather.get("hourly", []), now))
+    print(f"[buren] party-muur-anker (NEIGHBOR_TEMP) = {_NEIGHBOR_TEMP:.1f} °C "
+          f"(dagplafond {NEIGHBOR_SUMMER_CAP}, nachtcap {NEIGHBOR_NIGHT_CAP})")
+    # Bodem-anker voor de kruipruimte-vloeren: nóg trager (~30 dagen, zie ground_temp_estimate).
+    _GROUND_TEMP = ground_temp_estimate(weather.get("hourly", []), now)
+    print(f"[bodem] kruipruimte-anker (GROUND_TEMP) = {_GROUND_TEMP:.1f} °C")
 
     learned = load_learned()
     # Fysica-revisie-migratie (zie PHYSICS_REV): merged_params reset de globalen; hier vervalt

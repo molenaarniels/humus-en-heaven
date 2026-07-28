@@ -78,8 +78,14 @@ HISTORY_DIR     = os.getenv("TWIN2_HISTORY_DIR", "data/twin2_history")
 
 # Eigen fysica-revisie (mirror van am.PHYSICS_REV): bumpen wanneer een wijziging de
 # betekenis van geléérde parameters verschuift. Bij een mismatch reset merged_params2
-# de globalen naar hun prior en wordt een ouder batch-anker genegeerd.
-PHYSICS2_REV = 1
+# de params naar hun prior en wordt een ouder batch-anker genegeerd.
+# Rev 2 = de interne vloer-/wandgeleiding + bodemkoppeling + de bredere massabasis
+#   (juli 2026, mirror van am.PHYSICS_REV 3). Het anker van rev 1 is een fossiel: het
+#   werd gefit ín een huis zonder koude put, wat 17 gerailde params opleverde — o.a.
+#   `h_fd` op zijn vloer in 4 van de 5 kamers, waardoor de diepe massaknoop losgekoppeld
+#   raakte en het 3-knoops-model feitelijk tot 2 knopen inzakte. Precies de trage opslag
+#   die de metingen eisen (office swingt 5–6°C/dag met een piek 2,5u ná de buitenpiek).
+PHYSICS2_REV = 2
 
 # ── Kalibratie ─────────────────────────────────────────────────────────────────────
 CALIB_WINDOW_H = am.CALIB_WINDOW_H   # zelfde venster/cadans als tweeling 1 → curves vergelijkbaar
@@ -163,7 +169,11 @@ BEDROOM_NIGHT_ROOMS: set = set()
 # Zelfde redenering als cap23: geen PHYSICS2_REV-bump — de toets draaide op de
 # huidige anker-params, die onder de nieuwe transform aantoonbaar beter passen;
 # de eerstvolgende wekelijkse batch her-fit onder de nieuwe default.
-NEIGHBOR_NIGHT_CAP = 21.0
+#
+# De variant is inmiddels óók de default van tweeling 1 (juli 2026): de curve zelf staat
+# in `am.neighbor_night_cap`, deze constante is er nog als alias zodat de twee niet uit
+# elkaar kunnen lopen.
+NEIGHBOR_NIGHT_CAP = am.NEIGHBOR_NIGHT_CAP
 
 
 def neighbor_anchor(rows: list[dict], when) -> float:
@@ -181,16 +191,10 @@ def neighbor_anchor(rows: list[dict], when) -> float:
 
 
 def _night_cap(when) -> float:
-    """Het tijdsafhankelijke plafond voor het cap23_night-anker: 23.0 overdag,
-    NEIGHBOR_NIGHT_CAP 's nachts (23–07u), lineair overvloeiend in 22–23u en 07–08u."""
-    h = when.hour + when.minute / 60.0
-    if h >= 23.0 or h < 7.0:
-        return NEIGHBOR_NIGHT_CAP
-    if 22.0 <= h < 23.0:
-        return 23.0 + (h - 22.0) * (NEIGHBOR_NIGHT_CAP - 23.0)
-    if 7.0 <= h < 8.0:
-        return NEIGHBOR_NIGHT_CAP + (h - 7.0) * (23.0 - NEIGHBOR_NIGHT_CAP)
-    return 23.0
+    """Het tijdsafhankelijke plafond voor het cap23_night-anker. Sinds de variant ook in
+    tweeling 1 is overgenomen staat de curve in `am.neighbor_night_cap` — hier alleen nog
+    doorgegeven, zodat de twee tweelingen niet uit elkaar kunnen lopen."""
+    return am.neighbor_night_cap(when)
 
 
 def neighbor_at(nb_base: float, when) -> float:
@@ -285,6 +289,8 @@ PRIORS2 = {
     "h_af": 1.0, "h_fd": 1.0,
     "ua_env": 1.0, "solar_gain": 1.0, "ua_party": 1.0,
     "q_int": 1.0, "ua_roof": 1.0,
+    "ua_ground": 1.0,     # vloer → kruipruimte/bodem (alleen actief bij ground_m2 > 0)
+    "ua_inter": 1.0,      # globale schaal op de interne vloer-/wandgeleiding tussen zones
     "f_air": 0.4,         # absolute fractie zonwinst → luchtknoop (rest → snelle massa)
     "w_buf": 1.0,         # vochtbuffer-capaciteit-schaal per kamer
 }
@@ -305,11 +311,14 @@ BOUNDS2 = {
     "h_af": (0.05, 5.0), "h_fd": (0.05, 5.0),
     "ua_env": (0.05, 5.0), "solar_gain": (0.05, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
+    "ua_ground": (0.0, 4.0), "ua_inter": (0.0, 4.0),
     "f_air": (0.02, 0.95), "w_buf": (0.2, 5.0),
 }
-GLOBAL_PARAMS2   = ["cp_shelter_front", "cp_shelter_back", "vent_eff", "q_moist", "stair_exch"]
+GLOBAL_PARAMS2   = ["cp_shelter_front", "cp_shelter_back", "vent_eff", "q_moist",
+                    "stair_exch", "ua_inter"]
 PER_ROOM_PARAMS2 = ["c_air", "c_fast", "c_deep", "h_af", "h_fd", "ua_env",
-                    "solar_gain", "ua_party", "q_int", "ua_roof", "f_air", "w_buf"]
+                    "solar_gain", "ua_party", "q_int", "ua_roof", "ua_ground",
+                    "f_air", "w_buf"]
 
 
 def reg_weight2(name: str) -> float:
@@ -537,7 +546,12 @@ def _zone_thermal_params2(house: dict, params: dict) -> dict:
             "solar": p.get("solar_gain", 1.0), "f_air": p.get("f_air", 0.4),
             "UA_party": ua0 * p.get("ua_party", 1.0),
             "Q_int_base": vol * am.INTERNAL_GAIN_WM3 * p.get("q_int", 1.0),
-            "UA_roof": r.get("roof_m2", 0.0) * am.ROOF_U * p.get("ua_roof", 1.0),
+            "UA_roof": (r.get("roof_m2", 0.0) * r.get("roof_u", am.ROOF_U)
+                        * p.get("ua_roof", 1.0)),
+            # Vloer → kruipruimte/bodem, op de diepe massaknoop (waar ook het dak landt):
+            # het is een trage, seizoensgebonden rand, geen snelle luchtuitwisseling.
+            "UA_ground": (r.get("ground_m2", 0.0) * r.get("ground_u", am.GROUND_U)
+                          * p.get("ua_ground", 1.0)),
             "vol": vol, "w_buf": p.get("w_buf", 1.0),
         }
     for jid, j in house.get("junctions", {}).items():
@@ -546,8 +560,19 @@ def _zone_thermal_params2(house: dict, params: dict) -> dict:
         par[jid] = {"C_a": c_air0, "C_f": c_air0, "C_d": c_air0 * 2.0,
                     "H_af": 15.0, "H_fd": 5.0, "UA_env": 3.0, "UA_deep_out": 1.0,
                     "solar": 0.0, "f_air": 1.0, "UA_party": 0.0, "Q_int_base": 0.0,
-                    "UA_roof": 0.0, "vol": vol, "w_buf": 1.0}
+                    "UA_roof": 0.0, "vol": vol, "w_buf": 1.0,
+                    "UA_ground": j.get("ground_m2", 0.0) * j.get("ground_u", am.GROUND_U)}
     return par
+
+
+def _air_shares(z: str, air_idx: dict, subm: dict) -> list[tuple]:
+    """(luchtknoop-index, volume-aandeel) voor zone `z` — één knoop met aandeel 1.0, of de
+    sub-knopen van een koker naar hun volume_frac. Laat een zone-niveau-geleiding correct
+    over sub-knopen verdelen zonder de rest van de code sub-zones te laten kennen."""
+    idxs = air_idx[z]
+    if z not in subm or len(idxs) == 1:
+        return [(idxs[0], 1.0)]
+    return [(idxs[i], sub["frac"]) for i, sub in enumerate(subm[z]["subs"])]
 
 
 def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
@@ -575,6 +600,9 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
     rho_cp = 1.2 * am.CP_AIR
     rho_a = 1.2                       # kg/m³ voor de vocht-massabalans
     subm = subzone_meta(house)
+    # Interne vloer-/wandgeleiding (W/K), constant over de tijdlijn — zelfde helper als
+    # tweeling 1, zodat beide tweelingen dezelfde huisgeometrie identiek interpreteren.
+    ginter = am.interzone_conductances(house, params)
 
     # Indexering: per zone n_sub luchtknopen + 1 snelle + 1 diepe massaknoop.
     air_idx: dict[str, list[int]] = {}
@@ -672,6 +700,18 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                 key = (air_idx[z][i], air_idx[z][i + 1])
                 gpairs[key] = gpairs.get(key, 0.0) + rho_cp * q_v
 
+        # Interne vloer-/wandgeleiding tussen zones (lucht↔lucht, zie am.interzone_conductances).
+        # Bij een subzone-koker wordt de geleiding over zijn sub-knopen verdeeld naar volume-
+        # aandeel; in het huidige huismodel raakt geen enkel interzone-vlak de koker, maar de
+        # verdeling houdt de term correct als er ooit één bijkomt.
+        for (za, zb), g in ginter.items():
+            if za not in air_idx or zb not in air_idx:
+                continue
+            for ia_, fa in _air_shares(za, air_idx, subm):
+                for ib_, fb in _air_shares(zb, air_idx, subm):
+                    key = (ia_, ib_) if ia_ < ib_ else (ib_, ia_)
+                    gpairs[key] = gpairs.get(key, 0.0) + g * fa * fb
+
         nsub_steps = max(1, int(math.ceil(step["dt"] / am.SUBSTEP_S)))
         h = step["dt"] / nsub_steps
         irr_roof = step.get("irr_roof", {})
@@ -711,13 +751,16 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                     A[fi][air_idx[z][si]] += -pa["H_af"] * sub["frac"]
                 A[fi][di] += -pa["H_fd"]
                 bvec[fi] += pa["C_f"] / h * Tf[z] + (1.0 - pa["f_air"]) * q_solar
-                # Diepe massaknoop: snel↔diep + muur-naar-buiten + dak-sol-air.
+                # Diepe massaknoop: snel↔diep + muur-naar-buiten + dak-sol-air + de
+                # vloerkoppeling naar de kruipruimte/bodem (de koude put; zie am.GROUND_U).
                 t_solair = T_out + am.ROOF_SOLAR_GAIN * irr_roof.get(z, 0.0) \
                     - (am.ROOF_SKY_COOLING if night else 0.0)
-                A[di][di] += pa["C_d"] / h + pa["H_fd"] + pa["UA_deep_out"] + pa["UA_roof"]
+                ua_ground = pa.get("UA_ground", 0.0)
+                A[di][di] += (pa["C_d"] / h + pa["H_fd"] + pa["UA_deep_out"]
+                              + pa["UA_roof"] + ua_ground)
                 A[di][fi] += -pa["H_fd"]
                 bvec[di] += (pa["C_d"] / h * Td[z] + pa["UA_deep_out"] * T_out
-                             + pa["UA_roof"] * t_solair)
+                             + pa["UA_roof"] * t_solair + ua_ground * am._GROUND_TEMP)
             for (i, j), g in gpairs.items():
                 A[i][i] += g
                 A[i][j] += -g
@@ -1034,12 +1077,13 @@ def default_params2(house: dict) -> dict:
 
 def merged_params2(house: dict, learned: dict) -> dict:
     """Geleerde params + priors voor nieuwe kamers/keys; bij een PHYSICS2_REV-mismatch
-    gaan alleen de globalen terug naar hun prior (mirror van am.merged_params)."""
+    gaat ÁLLES terug naar de priors (mirror van am.merged_params — zie am.PHYSICS_REV
+    rev 3 voor waarom ook de kamer-params moeten vallen: ze waren compensaties voor
+    precies de termen die de nieuwe revisie toevoegt)."""
     params = learned.get("params") or default_params2(house)
     base = default_params2(house)
     if bool(learned.get("params")) and learned.get("physics2_rev") != PHYSICS2_REV:
-        for g in GLOBAL_PARAMS2:
-            params[g] = base[g]
+        params = base
     for g in GLOBAL_PARAMS2:
         params.setdefault(g, base[g])
     for rid in house.get("rooms", {}):
@@ -1809,6 +1853,7 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
             "neighbor_temp": round(am._NEIGHBOR_TEMP, 1),
+            "ground_temp": round(am._GROUND_TEMP, 1),
             "wu_solar_scale": (round(weather.get("wu_solar_scale"), 2)
                                if weather.get("wu_solar_scale") is not None else None),
         },
@@ -1881,6 +1926,7 @@ def main():
     log = am.load_openings_log()
     am._OPENINGS_CACHE = log
     am._NEIGHBOR_TEMP = neighbor_anchor(weather.get("hourly", []), now)
+    am._GROUND_TEMP = am.ground_temp_estimate(weather.get("hourly", []), now)
 
     learned = load_learned2()
     batch = load_batch()

@@ -389,14 +389,17 @@ def test_anchor_from_batch_rev_gate_and_absent():
     assert params is None and stamps["anchor_at"] is None
 
 
-def test_merged_params2_rev_migration_resets_globals():
+def test_merged_params2_rev_migration_resets_everything():
+    """Mirror van tweeling 1: bij een fysica-rev-mismatch vallen óók de kamer-params terug
+    op hun prior. Het rev-1-anker was gefit in een huis zónder koude put — die waarden zijn
+    compensaties voor precies de termen die rev 2 toevoegt, geen neutrale schattingen."""
     house = {"rooms": {"a": {}}}
     old = {"params": {"cp_shelter_front": 0.11, "vent_eff": 0.3, "a": {"c_air": 1.7}},
            "physics2_rev": a2.PHYSICS2_REV - 1}
     p = a2.merged_params2(house, old)
     assert p["cp_shelter_front"] == a2.PRIORS2["cp_shelter_front"]
     assert p["vent_eff"] == a2.PRIORS2["vent_eff"]
-    assert p["a"]["c_air"] == 1.7                     # kamer-params blijven
+    assert p["a"]["c_air"] == a2.PRIORS2["c_air"]     # kamer-params óók gereset
     assert p["a"]["c_fast"] == a2.PRIORS2["c_fast"]   # nieuwe keys → prior
 
 
@@ -702,6 +705,68 @@ def test_neighbor_at_transform(monkeypatch):
     monkeypatch.setattr(a2, "NEIGHBOR_TRANSFORM", "cap23_night")
     rows = [{"dt": datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ), "T_out": 28.0}]
     assert a2.neighbor_anchor(rows, t_day) == 23.0
+
+
+def test_sim2_ground_and_interzone_terms_are_inert_without_geometry():
+    """Fysica-rev 2 is opt-in via het huismodel: zonder `ground_m2`/`interzone` moet
+    tweeling 2 zich exact gedragen als daarvoor, hoe extreem de nieuwe schalen ook staan."""
+    house = _toy_house()
+    params = _no_house_terms(a2.default_params2(house), house)
+    tl = _tl(16.0, 24.0)
+    seed = {z: 22.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    base = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    extreme = json.loads(json.dumps(params))
+    extreme["ua_inter"] = 4.0
+    for rid in house["rooms"]:
+        extreme[rid]["ua_ground"] = 4.0
+    same = a2.simulate2(house, extreme, tl, seed, calib_only_rooms=set(house["rooms"]))
+    for rid in house["rooms"]:
+        assert same["Ta"][rid] == pytest.approx(base["Ta"][rid])
+        assert same["Td"][rid] == pytest.approx(base["Td"][rid])
+
+
+def test_sim2_ground_coupling_cools_the_deep_node():
+    """De bodemkoppeling landt op de DIEPE massaknoop (mirror van het dak): een warme kamer
+    boven een koele kruipruimte moet daar zijn warmte in kwijtraken."""
+    house = _toy_house()
+    house["rooms"]["a"]["ground_m2"] = 20
+    params = _no_house_terms(a2.default_params2(house), house)
+    tl = _tl(26.0, 240.0)
+    seed = {z: 26.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    saved = am._GROUND_TEMP
+    try:
+        am._GROUND_TEMP = 15.0
+        sim = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am._GROUND_TEMP = saved
+    assert sim["Td"]["a"] < 26.0 - 1.0        # diepe knoop van de kamer mét kruipruimte zakt
+    assert sim["Ta"]["a"] < sim["Ta"]["b"]    # en trekt de lucht mee, anders dan de kamer zónder
+
+
+def test_sim2_interzone_conduction_couples_two_rooms():
+    house = _toy_house()
+    del house["doors"]["b_hall"]                  # advectieve omweg dicht: puur geleiding
+    params = _no_house_terms(a2.default_params2(house), house)
+    params["b"]["q_int"] = 6.0                    # kamer b loopt warm
+    tl = _tl(20.0, 120.0)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    loose = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    house["interzone"] = [{"a": "a", "b": "b", "area_m2": 12, "u": 0.7}]
+    tight = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert tight["Ta"]["b"] < loose["Ta"]["b"]
+    assert tight["Ta"]["a"] > loose["Ta"]["a"]
+
+
+def test_air_shares_splits_a_subzone_shaft_by_volume():
+    """Een zone-niveau-geleiding op een koker moet over zijn sub-knopen verdeeld worden naar
+    volume-aandeel; een gewone kamer is één knoop met aandeel 1.0."""
+    house = _stair_house()
+    subm = a2.subzone_meta(house)
+    air_idx = {"a": [0], "s": [1, 2, 3]}
+    assert a2._air_shares("a", air_idx, subm) == [(0, 1.0)]
+    shares = a2._air_shares("s", air_idx, subm)
+    assert [i for i, _ in shares] == [1, 2, 3]
+    assert sum(f for _, f in shares) == pytest.approx(1.0)
 
 
 def test_sim2_cap23_night_cools_nights(monkeypatch):

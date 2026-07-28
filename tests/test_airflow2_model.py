@@ -366,7 +366,7 @@ def test_anchor_from_batch_pins_params():
     house = _toy_house()
     batch = {"params": {"vent_eff": 1.2, "a": {"c_air": 2.1}},
              "physics2_rev": a2.PHYSICS2_REV, "fitted_at": "2026-07-14T03:00:00+02:00",
-             "model_version": "abc1234"}
+             "model_version": "abc1234", "converged": True}
     params, stamps = a2.anchor_from_batch(house, batch)
     assert params["vent_eff"] == 1.2
     assert params["a"]["c_air"] == 2.1
@@ -389,14 +389,43 @@ def test_anchor_from_batch_rev_gate_and_absent():
     assert params is None and stamps["anchor_at"] is None
 
 
-def test_merged_params2_rev_migration_resets_globals():
+def test_batch_anchor_trustworthy_rejects_a_stalled_fit():
+    """De juli-2026-toestand: `converged: false`, 4 epochs, 1 geaccepteerde stap, 17 gerailde
+    params, rmse_batch 0.90 — slechter dan wat de tweeling live publiceerde — en tóch stond
+    hij er 56 uur bit-voor-bit op vastgepind. Een vastgelopen fit mag niet gezaghebbend zijn."""
+    stalled = {"converged": False, "epochs": 4, "accepted": 1}
+    assert a2.batch_anchor_trustworthy(stalled) is False
+    assert a2.batch_anchor_trustworthy({"converged": True, "accepted": 1}) is True
+    # Het budget kan een goede fit afkappen vóór de convergentietoets; genoeg geaccepteerde
+    # stappen telt daarom óók als betrouwbaar.
+    assert a2.batch_anchor_trustworthy(
+        {"converged": False, "accepted": a2.MIN_ACCEPTED_STEPS}) is True
+    assert a2.batch_anchor_trustworthy({}) is False
+
+
+def test_anchor_from_batch_falls_back_to_bootstrap_on_a_stalled_fit():
+    """Geen anker → de kwartierrun bootstrap-leert (tweeling 1's regime) i.p.v. zich op een
+    fit vast te pinnen die niets bereikte."""
+    house = _toy_house()
+    batch = {"params": {"vent_eff": 1.2}, "physics2_rev": a2.PHYSICS2_REV,
+             "fitted_at": "2026-07-26T06:31:58+02:00", "converged": False,
+             "epochs": 4, "accepted": 1, "railed": ["x"] * 17}
+    params, stamps = a2.anchor_from_batch(house, batch)
+    assert params is None
+    assert stamps["anchor_at"] is None and stamps["anchor_src"] is None
+
+
+def test_merged_params2_rev_migration_resets_everything():
+    """Mirror van tweeling 1: bij een fysica-rev-mismatch vallen óók de kamer-params terug
+    op hun prior. Het rev-1-anker was gefit in een huis zónder koude put — die waarden zijn
+    compensaties voor precies de termen die rev 2 toevoegt, geen neutrale schattingen."""
     house = {"rooms": {"a": {}}}
     old = {"params": {"cp_shelter_front": 0.11, "vent_eff": 0.3, "a": {"c_air": 1.7}},
            "physics2_rev": a2.PHYSICS2_REV - 1}
     p = a2.merged_params2(house, old)
     assert p["cp_shelter_front"] == a2.PRIORS2["cp_shelter_front"]
     assert p["vent_eff"] == a2.PRIORS2["vent_eff"]
-    assert p["a"]["c_air"] == 1.7                     # kamer-params blijven
+    assert p["a"]["c_air"] == a2.PRIORS2["c_air"]     # kamer-params óók gereset
     assert p["a"]["c_fast"] == a2.PRIORS2["c_fast"]   # nieuwe keys → prior
 
 
@@ -456,6 +485,54 @@ def test_load_dataset_roundtrip(tmp_path, monkeypatch):
     assert len(ds["heat_on"]["a"]) == 1              # de ene heat-vlag
     assert ds["log"][0]["states"] == {"x": 1}
     assert ds["weather_rows"] == []                  # weer komt pas van de batch/backfill
+
+
+def _wx_rows(t0: datetime, n: int) -> list[dict]:
+    return [{"dt": t0 + timedelta(hours=i), "T_out": 20.0 + i, "rh": 50.0, "precip": 0.0,
+             "wind_speed": 1.0, "wind_dir": 200.0, "gust": 2.0,
+             "shortwave": 100.0, "direct": 60.0, "diffuse": 40.0} for i in range(n)]
+
+
+def test_refresh_shard_weather_merges_never_replaces(tmp_path, monkeypatch):
+    """Het juli-2026-gat: een tweede fetch met een smaller bereik wíste de rest van de
+    maand, waardoor het shard-weer op 07-16 bleef staan terwijl de kamerdata doorliep."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    assert a2.refresh_shard_weather(_wx_rows(t0, 24)) == 24
+    # Smaller venster (bv. een half-mislukte staart-fallback) mag niets weggooien.
+    assert a2.refresh_shard_weather(_wx_rows(t0 + timedelta(hours=20), 8)) == 4
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert len(shard["weather"]) == 28
+    assert [r["dt"] for r in shard["weather"]] == sorted(r["dt"] for r in shard["weather"])
+
+
+def test_refresh_shard_weather_overwrite_flag(tmp_path, monkeypatch):
+    """overwrite=True → archief wint; overwrite=False → alleen gaten vullen, zodat de
+    kwartierrun een ERA5-rij nooit terugzet naar zijn forecast-waarde."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    a2.refresh_shard_weather(_wx_rows(t0, 3))
+    warmer = [{**r, "T_out": 99.0} for r in _wx_rows(t0, 3)]
+    a2.refresh_shard_weather(warmer, overwrite=False)
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert [r["T_out"] for r in shard["weather"]] == [20.0, 21.0, 22.0]
+    a2.refresh_shard_weather(warmer, overwrite=True)
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert [r["T_out"] for r in shard["weather"]] == [99.0, 99.0, 99.0]
+
+
+def test_append_shard_weather_drops_the_forecast_tail(tmp_path, monkeypatch):
+    """De kwartierrun vult het weer bij uit zijn eigen fetch, maar alléén verstreken
+    uren — de forecast-staart is gemodelleerde toekomst, geen grondwaarheid."""
+    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    t0 = datetime(2026, 7, 10, 0, 0, tzinfo=am.TZ)
+    now = t0 + timedelta(hours=5)
+    weather = {"hourly": _wx_rows(t0, 12)}
+    assert a2.append_shard_weather(weather, now) == 6          # t0..t0+5u
+    shard = json.load(open(tmp_path / "2026-07.json"))
+    assert len(shard["weather"]) == 6
+    assert shard["weather"][-1]["dt"] == now.isoformat()
+    assert a2.append_shard_weather(weather, now) == 0          # idempotent
 
 
 def test_batch_windows_geometry():
@@ -656,6 +733,68 @@ def test_neighbor_at_transform(monkeypatch):
     assert a2.neighbor_anchor(rows, t_day) == 23.0
 
 
+def test_sim2_ground_and_interzone_terms_are_inert_without_geometry():
+    """Fysica-rev 2 is opt-in via het huismodel: zonder `ground_m2`/`interzone` moet
+    tweeling 2 zich exact gedragen als daarvoor, hoe extreem de nieuwe schalen ook staan."""
+    house = _toy_house()
+    params = _no_house_terms(a2.default_params2(house), house)
+    tl = _tl(16.0, 24.0)
+    seed = {z: 22.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    base = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    extreme = json.loads(json.dumps(params))
+    extreme["ua_inter"] = 4.0
+    for rid in house["rooms"]:
+        extreme[rid]["ua_ground"] = 4.0
+    same = a2.simulate2(house, extreme, tl, seed, calib_only_rooms=set(house["rooms"]))
+    for rid in house["rooms"]:
+        assert same["Ta"][rid] == pytest.approx(base["Ta"][rid])
+        assert same["Td"][rid] == pytest.approx(base["Td"][rid])
+
+
+def test_sim2_ground_coupling_cools_the_deep_node():
+    """De bodemkoppeling landt op de DIEPE massaknoop (mirror van het dak): een warme kamer
+    boven een koele kruipruimte moet daar zijn warmte in kwijtraken."""
+    house = _toy_house()
+    house["rooms"]["a"]["ground_m2"] = 20
+    params = _no_house_terms(a2.default_params2(house), house)
+    tl = _tl(26.0, 240.0)
+    seed = {z: 26.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    saved = am._GROUND_TEMP
+    try:
+        am._GROUND_TEMP = 15.0
+        sim = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    finally:
+        am._GROUND_TEMP = saved
+    assert sim["Td"]["a"] < 26.0 - 1.0        # diepe knoop van de kamer mét kruipruimte zakt
+    assert sim["Ta"]["a"] < sim["Ta"]["b"]    # en trekt de lucht mee, anders dan de kamer zónder
+
+
+def test_sim2_interzone_conduction_couples_two_rooms():
+    house = _toy_house()
+    del house["doors"]["b_hall"]                  # advectieve omweg dicht: puur geleiding
+    params = _no_house_terms(a2.default_params2(house), house)
+    params["b"]["q_int"] = 6.0                    # kamer b loopt warm
+    tl = _tl(20.0, 120.0)
+    seed = {z: 20.0 for z in list(house["rooms"]) + list(house["junctions"])}
+    loose = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    house["interzone"] = [{"a": "a", "b": "b", "area_m2": 12, "u": 0.7}]
+    tight = a2.simulate2(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+    assert tight["Ta"]["b"] < loose["Ta"]["b"]
+    assert tight["Ta"]["a"] > loose["Ta"]["a"]
+
+
+def test_air_shares_splits_a_subzone_shaft_by_volume():
+    """Een zone-niveau-geleiding op een koker moet over zijn sub-knopen verdeeld worden naar
+    volume-aandeel; een gewone kamer is één knoop met aandeel 1.0."""
+    house = _stair_house()
+    subm = a2.subzone_meta(house)
+    air_idx = {"a": [0], "s": [1, 2, 3]}
+    assert a2._air_shares("a", air_idx, subm) == [(0, 1.0)]
+    shares = a2._air_shares("s", air_idx, subm)
+    assert [i for i, _ in shares] == [1, 2, 3]
+    assert sum(f for _, f in shares) == pytest.approx(1.0)
+
+
 def test_sim2_cap23_night_cools_nights(monkeypatch):
     house = _toy_house()
     tl = _tl(18.0, hours=10.0)                           # start 00:00 → dekt de nachturen
@@ -679,3 +818,80 @@ def test_batch_fit_epoch_budget():
     assert stats["epochs"] <= 1
     assert stats["windows"] == 2
     assert stats["rmse_batch"] is not None
+
+
+def test_window_anchors_sets_and_restores_both():
+    """Buur- én bodem-anker horen bij het VENSTER: over een trainingsspan van maanden
+    schuift het seizoen, en één vast anker zou een koel meivenster en een hittegolfvenster
+    op dezelfde randvoorwaarde fitten."""
+    saved_nb, saved_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
+    try:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = 20.0, 15.0
+        with a2.window_anchors({"neighbor": 22.5, "ground": 17.5}):
+            assert am._NEIGHBOR_TEMP == 22.5
+            assert am._GROUND_TEMP == 17.5
+        assert (am._NEIGHBOR_TEMP, am._GROUND_TEMP) == (20.0, 15.0)
+        # Ouder venster zonder `ground`-sleutel → bodem-anker blijft staan (additief).
+        with a2.window_anchors({"neighbor": 21.0}):
+            assert am._GROUND_TEMP == 15.0
+        # Ook bij een exceptie worden beide netjes hersteld.
+        with pytest.raises(RuntimeError), a2.window_anchors({"neighbor": 9.0, "ground": 9.0}):
+            raise RuntimeError("boem")
+        assert (am._NEIGHBOR_TEMP, am._GROUND_TEMP) == (20.0, 15.0)
+    finally:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = saved_nb, saved_gr
+
+
+def test_prepare_windows_carries_a_ground_anchor():
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    assert wins
+    for w in wins:
+        assert am.GROUND_TEMP_MIN <= w["ground"] <= am.GROUND_TEMP_MAX
+
+
+def test_batch_jobs_env_override(monkeypatch):
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    assert a2.batch_jobs() == 1
+    monkeypatch.setenv("BATCH_JOBS", "6")
+    assert a2.batch_jobs() == 6
+    monkeypatch.setenv("BATCH_JOBS", "onzin")     # onleesbaar → terug naar auto
+    assert a2.batch_jobs() >= 1
+    monkeypatch.delenv("BATCH_JOBS")
+    assert a2.batch_jobs() >= 1
+
+
+def test_batch_fit_parallel_jacobian_matches_serial(monkeypatch):
+    """De procespool mag alléén sneller zijn, niet anders. Zelfde vensters, zelfde
+    start — de geleerde params en de RMSE moeten identiek uitkomen."""
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    serial, stats_s = a2.batch_fit(house, wins, max_epochs=1)
+    monkeypatch.setenv("BATCH_JOBS", "2")
+    par, stats_p = a2.batch_fit(house, wins, max_epochs=1)
+    assert stats_p["rmse_batch"] == pytest.approx(stats_s["rmse_batch"])
+    assert stats_p["epochs"] == stats_s["epochs"]
+    assert stats_p["accepted"] == stats_s["accepted"]
+    assert json.dumps(par, sort_keys=True) == json.dumps(serial, sort_keys=True)
+
+
+def test_batch_fit_falls_back_to_serial_when_forking_fails(monkeypatch):
+    """Een procespool die niet te maken is (geen fork, geheugen, sandbox) mag de wekelijkse
+    fit nooit laten crashen — dan draait hij gewoon serieel verder."""
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    serial, stats_s = a2.batch_fit(house, wins, max_epochs=1)
+
+    def _boom(*a, **k):
+        raise OSError("kan niet forken")
+
+    monkeypatch.setenv("BATCH_JOBS", "2")
+    monkeypatch.setattr(a2, "_jac_columns_parallel", _boom)
+    fallback, stats_f = a2.batch_fit(house, wins, max_epochs=1)
+    assert stats_f["rmse_batch"] == pytest.approx(stats_s["rmse_batch"])
+    assert json.dumps(fallback, sort_keys=True) == json.dumps(serial, sort_keys=True)

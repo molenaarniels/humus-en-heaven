@@ -177,17 +177,22 @@ def build_long_rows(house: dict, ds: dict, *, join_tol_min: float,
     tol_s = join_tol_min * 60.0
     rows = []
     seen_t = set()
-    old_nb = am._NEIGHBOR_TEMP
+    old_nb, old_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
     try:
         for w in wins:
             tl, seed, w_start, w_end = w["timeline"], w["seed"], w["start"], w["end"]
             pred1, pred2 = {}, {}
             if baseline:
-                am._NEIGHBOR_TEMP = am.neighbor_temp_estimate(rows_wx, w_end)
+                am._NEIGHBOR_TEMP = min(am.NEIGHBOR_SUMMER_CAP,
+                                        am.neighbor_temp_estimate(rows_wx, w_end))
+                # Bodem-anker per venster, net als in de fit (zie a2.window_anchors) —
+                # zonder deze rebind zou de export op de module-default simuleren.
+                am._GROUND_TEMP = w.get("ground", am.ground_temp_estimate(rows_wx, w_end))
                 sim1 = am.simulate(house, p1, tl, seed, tm_seed=w.get("tm_seed"))
                 pred1 = {rid: _sensor_series(house, tl, rid, ser)
                          for rid, ser in sim1["series"].items()}
                 am._NEIGHBOR_TEMP = w["neighbor"]
+                am._GROUND_TEMP = w.get("ground", am._GROUND_TEMP)
                 sim2 = a2.simulate2(house, p2, tl, seed, seed_w=w.get("seed_w"),
                                     tm_seed=w.get("tm_seed"))
                 pred2 = {rid: _sensor_series(house, tl, rid, ser)
@@ -249,7 +254,7 @@ def build_long_rows(house: dict, ds: dict, *, join_tol_min: float,
                         row["pred_twin2_c"] = pred2.get(rid, {}).get(iso)
                     rows.append(row)
     finally:
-        am._NEIGHBOR_TEMP = old_nb
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = old_nb, old_gr
     rows.sort(key=lambda r: (r["t"], r["room"]))
     return rows, room_ids, element_ids
 

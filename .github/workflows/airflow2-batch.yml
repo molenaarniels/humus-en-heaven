@@ -16,7 +16,11 @@ on:
   workflow_dispatch:
     inputs:
       budget_min:
-        description: "Fit-budget in minuten (leeg = default ~70)"
+        description: "Fit-budget in minuten (leeg = default ~270)"
+        type: string
+        default: ""
+      jobs:
+        description: "Processen voor de Jacobiaan-kolommen (leeg = auto, 1 = serieel)"
         type: string
         default: ""
 
@@ -30,7 +34,9 @@ concurrency:
 jobs:
   batch:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Ruim boven het fit-budget (~270 min) zodat het budget de fit afkapt, niet de runner:
+    # een door de runner gekapte job schrijft géén anker weg en verspilt de hele run.
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v5
 
@@ -47,11 +53,15 @@ jobs:
           # Crash-alert via run_guarded (bestaande secrets, geen nieuwe).
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Optionele budget-override (minuten → seconden), via env (securityregel).
+          # Optionele overrides via env (securityregel: nooit ${{ }} in run: interpoleren).
           BUDGET_MIN: ${{ inputs.budget_min }}
+          JOBS_IN: ${{ inputs.jobs }}
         run: |
           if [ -n "${BUDGET_MIN}" ]; then
             export BATCH_TIME_BUDGET_S=$(( BUDGET_MIN * 60 ))
+          fi
+          if [ -n "${JOBS_IN}" ]; then
+            export BATCH_JOBS="${JOBS_IN}"
           fi
           python airflow2_model.py --batch
 

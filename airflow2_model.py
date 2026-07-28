@@ -52,9 +52,11 @@ diens artefacten.
 """
 
 import argparse
+import contextlib
 import glob
 import json
 import math
+import multiprocessing
 import os
 import sys
 import time
@@ -63,7 +65,7 @@ from datetime import date, datetime, timedelta, timezone
 import airflow_model as am
 import shared_const
 from http_util import get_json
-from notify import run_guarded
+from notify import run_guarded, sanitize_error
 from shared_const import utc_now_iso
 from window_advisor import ROOM_COMFORT, fetch_wu_current_temp
 from wu_bias import correct_temp
@@ -78,8 +80,14 @@ HISTORY_DIR     = os.getenv("TWIN2_HISTORY_DIR", "data/twin2_history")
 
 # Eigen fysica-revisie (mirror van am.PHYSICS_REV): bumpen wanneer een wijziging de
 # betekenis van geléérde parameters verschuift. Bij een mismatch reset merged_params2
-# de globalen naar hun prior en wordt een ouder batch-anker genegeerd.
-PHYSICS2_REV = 1
+# de params naar hun prior en wordt een ouder batch-anker genegeerd.
+# Rev 2 = de interne vloer-/wandgeleiding + bodemkoppeling + de bredere massabasis
+#   (juli 2026, mirror van am.PHYSICS_REV 3). Het anker van rev 1 is een fossiel: het
+#   werd gefit ín een huis zonder koude put, wat 17 gerailde params opleverde — o.a.
+#   `h_fd` op zijn vloer in 4 van de 5 kamers, waardoor de diepe massaknoop losgekoppeld
+#   raakte en het 3-knoops-model feitelijk tot 2 knopen inzakte. Precies de trage opslag
+#   die de metingen eisen (office swingt 5–6°C/dag met een piek 2,5u ná de buitenpiek).
+PHYSICS2_REV = 2
 
 # ── Kalibratie ─────────────────────────────────────────────────────────────────────
 CALIB_WINDOW_H = am.CALIB_WINDOW_H   # zelfde venster/cadans als tweeling 1 → curves vergelijkbaar
@@ -104,11 +112,20 @@ BATCH_STRIDE_D  = 4.0    # dagen stap tussen window-starts (lichte overlap; 3d g
                          # vensters → ~17 min/epoch — minder overlap koopt ~25% meer
                          # epochs per budget, en epochs zijn nu de schaarse grondstof)
 BATCH_WARMUP_H  = 24.0   # sim-only aanloop per window (massaknoop-equilibratie)
-BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "4200"))
+# Fit-budget. Opgetrokken van 70 min naar ~4,5u (juli 2026): met 70 min haalde de batch
+# 4 epochs met 1 geaccepteerde stap en `converged: false` — epochs zijn simpelweg de
+# schaarse grondstof, en dit is een wekelijkse job met ruim 6u aan Actions-plafond. Samen
+# met de parallelle Jacobiaan (zie batch_jobs) en de warm-start scheelt dat een orde van
+# grootte in stappen per run.
+BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "16200"))
 BATCH_MAX_EPOCHS = 40
 # Convergentie-stop: een geaccepteerde stap die de kosten relatief minder dan dit
 # verbetert telt als "uitgeconvergeerd" — de resterende budget-tijd is dan verspild.
 BATCH_CONVERGED_RTOL = 1e-3
+# Minimum aantal geaccepteerde stappen om een níet-geconvergeerd anker toch te vertrouwen
+# (zie batch_anchor_trustworthy) — het budget kan een goede fit afkappen vóór de
+# convergentietoets, maar een fit die nauwelijks een stap zette mag niet gezaghebbend zijn.
+MIN_ACCEPTED_STEPS = 3
 
 # ── Vocht (tracer + EMPD-lite buffer) ──────────────────────────────────────────────
 P_ATM_KPA        = 101.325
@@ -163,7 +180,11 @@ BEDROOM_NIGHT_ROOMS: set = set()
 # Zelfde redenering als cap23: geen PHYSICS2_REV-bump — de toets draaide op de
 # huidige anker-params, die onder de nieuwe transform aantoonbaar beter passen;
 # de eerstvolgende wekelijkse batch her-fit onder de nieuwe default.
-NEIGHBOR_NIGHT_CAP = 21.0
+#
+# De variant is inmiddels óók de default van tweeling 1 (juli 2026): de curve zelf staat
+# in `am.neighbor_night_cap`, deze constante is er nog als alias zodat de twee niet uit
+# elkaar kunnen lopen.
+NEIGHBOR_NIGHT_CAP = am.NEIGHBOR_NIGHT_CAP
 
 
 def neighbor_anchor(rows: list[dict], when) -> float:
@@ -181,16 +202,10 @@ def neighbor_anchor(rows: list[dict], when) -> float:
 
 
 def _night_cap(when) -> float:
-    """Het tijdsafhankelijke plafond voor het cap23_night-anker: 23.0 overdag,
-    NEIGHBOR_NIGHT_CAP 's nachts (23–07u), lineair overvloeiend in 22–23u en 07–08u."""
-    h = when.hour + when.minute / 60.0
-    if h >= 23.0 or h < 7.0:
-        return NEIGHBOR_NIGHT_CAP
-    if 22.0 <= h < 23.0:
-        return 23.0 + (h - 22.0) * (NEIGHBOR_NIGHT_CAP - 23.0)
-    if 7.0 <= h < 8.0:
-        return NEIGHBOR_NIGHT_CAP + (h - 7.0) * (23.0 - NEIGHBOR_NIGHT_CAP)
-    return 23.0
+    """Het tijdsafhankelijke plafond voor het cap23_night-anker. Sinds de variant ook in
+    tweeling 1 is overgenomen staat de curve in `am.neighbor_night_cap` — hier alleen nog
+    doorgegeven, zodat de twee tweelingen niet uit elkaar kunnen lopen."""
+    return am.neighbor_night_cap(when)
 
 
 def neighbor_at(nb_base: float, when) -> float:
@@ -285,6 +300,8 @@ PRIORS2 = {
     "h_af": 1.0, "h_fd": 1.0,
     "ua_env": 1.0, "solar_gain": 1.0, "ua_party": 1.0,
     "q_int": 1.0, "ua_roof": 1.0,
+    "ua_ground": 1.0,     # vloer → kruipruimte/bodem (alleen actief bij ground_m2 > 0)
+    "ua_inter": 1.0,      # globale schaal op de interne vloer-/wandgeleiding tussen zones
     "f_air": 0.4,         # absolute fractie zonwinst → luchtknoop (rest → snelle massa)
     "w_buf": 1.0,         # vochtbuffer-capaciteit-schaal per kamer
 }
@@ -305,11 +322,14 @@ BOUNDS2 = {
     "h_af": (0.05, 5.0), "h_fd": (0.05, 5.0),
     "ua_env": (0.05, 5.0), "solar_gain": (0.05, 3.0),
     "ua_party": (0.0, 6.0), "q_int": (0.0, 4.0), "ua_roof": (0.0, 4.0),
+    "ua_ground": (0.0, 4.0), "ua_inter": (0.0, 4.0),
     "f_air": (0.02, 0.95), "w_buf": (0.2, 5.0),
 }
-GLOBAL_PARAMS2   = ["cp_shelter_front", "cp_shelter_back", "vent_eff", "q_moist", "stair_exch"]
+GLOBAL_PARAMS2   = ["cp_shelter_front", "cp_shelter_back", "vent_eff", "q_moist",
+                    "stair_exch", "ua_inter"]
 PER_ROOM_PARAMS2 = ["c_air", "c_fast", "c_deep", "h_af", "h_fd", "ua_env",
-                    "solar_gain", "ua_party", "q_int", "ua_roof", "f_air", "w_buf"]
+                    "solar_gain", "ua_party", "q_int", "ua_roof", "ua_ground",
+                    "f_air", "w_buf"]
 
 
 def reg_weight2(name: str) -> float:
@@ -537,7 +557,12 @@ def _zone_thermal_params2(house: dict, params: dict) -> dict:
             "solar": p.get("solar_gain", 1.0), "f_air": p.get("f_air", 0.4),
             "UA_party": ua0 * p.get("ua_party", 1.0),
             "Q_int_base": vol * am.INTERNAL_GAIN_WM3 * p.get("q_int", 1.0),
-            "UA_roof": r.get("roof_m2", 0.0) * am.ROOF_U * p.get("ua_roof", 1.0),
+            "UA_roof": (r.get("roof_m2", 0.0) * r.get("roof_u", am.ROOF_U)
+                        * p.get("ua_roof", 1.0)),
+            # Vloer → kruipruimte/bodem, op de diepe massaknoop (waar ook het dak landt):
+            # het is een trage, seizoensgebonden rand, geen snelle luchtuitwisseling.
+            "UA_ground": (r.get("ground_m2", 0.0) * r.get("ground_u", am.GROUND_U)
+                          * p.get("ua_ground", 1.0)),
             "vol": vol, "w_buf": p.get("w_buf", 1.0),
         }
     for jid, j in house.get("junctions", {}).items():
@@ -546,8 +571,19 @@ def _zone_thermal_params2(house: dict, params: dict) -> dict:
         par[jid] = {"C_a": c_air0, "C_f": c_air0, "C_d": c_air0 * 2.0,
                     "H_af": 15.0, "H_fd": 5.0, "UA_env": 3.0, "UA_deep_out": 1.0,
                     "solar": 0.0, "f_air": 1.0, "UA_party": 0.0, "Q_int_base": 0.0,
-                    "UA_roof": 0.0, "vol": vol, "w_buf": 1.0}
+                    "UA_roof": 0.0, "vol": vol, "w_buf": 1.0,
+                    "UA_ground": j.get("ground_m2", 0.0) * j.get("ground_u", am.GROUND_U)}
     return par
+
+
+def _air_shares(z: str, air_idx: dict, subm: dict) -> list[tuple]:
+    """(luchtknoop-index, volume-aandeel) voor zone `z` — één knoop met aandeel 1.0, of de
+    sub-knopen van een koker naar hun volume_frac. Laat een zone-niveau-geleiding correct
+    over sub-knopen verdelen zonder de rest van de code sub-zones te laten kennen."""
+    idxs = air_idx[z]
+    if z not in subm or len(idxs) == 1:
+        return [(idxs[0], 1.0)]
+    return [(idxs[i], sub["frac"]) for i, sub in enumerate(subm[z]["subs"])]
 
 
 def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
@@ -575,6 +611,9 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
     rho_cp = 1.2 * am.CP_AIR
     rho_a = 1.2                       # kg/m³ voor de vocht-massabalans
     subm = subzone_meta(house)
+    # Interne vloer-/wandgeleiding (W/K), constant over de tijdlijn — zelfde helper als
+    # tweeling 1, zodat beide tweelingen dezelfde huisgeometrie identiek interpreteren.
+    ginter = am.interzone_conductances(house, params)
 
     # Indexering: per zone n_sub luchtknopen + 1 snelle + 1 diepe massaknoop.
     air_idx: dict[str, list[int]] = {}
@@ -672,6 +711,18 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                 key = (air_idx[z][i], air_idx[z][i + 1])
                 gpairs[key] = gpairs.get(key, 0.0) + rho_cp * q_v
 
+        # Interne vloer-/wandgeleiding tussen zones (lucht↔lucht, zie am.interzone_conductances).
+        # Bij een subzone-koker wordt de geleiding over zijn sub-knopen verdeeld naar volume-
+        # aandeel; in het huidige huismodel raakt geen enkel interzone-vlak de koker, maar de
+        # verdeling houdt de term correct als er ooit één bijkomt.
+        for (za, zb), g in ginter.items():
+            if za not in air_idx or zb not in air_idx:
+                continue
+            for ia_, fa in _air_shares(za, air_idx, subm):
+                for ib_, fb in _air_shares(zb, air_idx, subm):
+                    key = (ia_, ib_) if ia_ < ib_ else (ib_, ia_)
+                    gpairs[key] = gpairs.get(key, 0.0) + g * fa * fb
+
         nsub_steps = max(1, int(math.ceil(step["dt"] / am.SUBSTEP_S)))
         h = step["dt"] / nsub_steps
         irr_roof = step.get("irr_roof", {})
@@ -711,13 +762,16 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                     A[fi][air_idx[z][si]] += -pa["H_af"] * sub["frac"]
                 A[fi][di] += -pa["H_fd"]
                 bvec[fi] += pa["C_f"] / h * Tf[z] + (1.0 - pa["f_air"]) * q_solar
-                # Diepe massaknoop: snel↔diep + muur-naar-buiten + dak-sol-air.
+                # Diepe massaknoop: snel↔diep + muur-naar-buiten + dak-sol-air + de
+                # vloerkoppeling naar de kruipruimte/bodem (de koude put; zie am.GROUND_U).
                 t_solair = T_out + am.ROOF_SOLAR_GAIN * irr_roof.get(z, 0.0) \
                     - (am.ROOF_SKY_COOLING if night else 0.0)
-                A[di][di] += pa["C_d"] / h + pa["H_fd"] + pa["UA_deep_out"] + pa["UA_roof"]
+                ua_ground = pa.get("UA_ground", 0.0)
+                A[di][di] += (pa["C_d"] / h + pa["H_fd"] + pa["UA_deep_out"]
+                              + pa["UA_roof"] + ua_ground)
                 A[di][fi] += -pa["H_fd"]
                 bvec[di] += (pa["C_d"] / h * Td[z] + pa["UA_deep_out"] * T_out
-                             + pa["UA_roof"] * t_solair)
+                             + pa["UA_roof"] * t_solair + ua_ground * am._GROUND_TEMP)
             for (i, j), g in gpairs.items():
                 A[i][i] += g
                 A[i][j] += -g
@@ -1034,12 +1088,13 @@ def default_params2(house: dict) -> dict:
 
 def merged_params2(house: dict, learned: dict) -> dict:
     """Geleerde params + priors voor nieuwe kamers/keys; bij een PHYSICS2_REV-mismatch
-    gaan alleen de globalen terug naar hun prior (mirror van am.merged_params)."""
+    gaat ÁLLES terug naar de priors (mirror van am.merged_params — zie am.PHYSICS_REV
+    rev 3 voor waarom ook de kamer-params moeten vallen: ze waren compensaties voor
+    precies de termen die de nieuwe revisie toevoegt)."""
     params = learned.get("params") or default_params2(house)
     base = default_params2(house)
     if bool(learned.get("params")) and learned.get("physics2_rev") != PHYSICS2_REV:
-        for g in GLOBAL_PARAMS2:
-            params[g] = base[g]
+        params = base
     for g in GLOBAL_PARAMS2:
         params.setdefault(g, base[g])
     for rid in house.get("rooms", {}):
@@ -1060,10 +1115,98 @@ def anchor_from_batch(house: dict, batch: dict) -> tuple[dict | None, dict]:
     wekelijkse, cumulatieve (warm-gestarte) batch-herfit over de volle historie."""
     if not batch.get("params") or batch.get("physics2_rev") != PHYSICS2_REV:
         return None, {"anchor_at": None, "anchor_src": None}
+    if not batch_anchor_trustworthy(batch):
+        print(f"[anker] batch-anker genegeerd: niet geconvergeerd "
+              f"({batch.get('epochs')} epochs, {batch.get('accepted')} geaccepteerd, "
+              f"{len(batch.get('railed') or [])} gerailde params) → bootstrap-leren.")
+        return None, {"anchor_at": None, "anchor_src": None}
     params = merged_params2(house, {"params": json.loads(json.dumps(batch["params"])),
                                     "physics2_rev": PHYSICS2_REV})
     return params, {"anchor_at": batch.get("fitted_at"),
                     "anchor_src": batch.get("model_version")}
+
+
+@contextlib.contextmanager
+def window_anchors(w: dict):
+    """Zet het buur- én bodem-anker van dít venster op de module-globalen die `simulate2`
+    leest, en herstel ze daarna.
+
+    Beide ankers horen bij het VENSTER, niet bij de run: een trainingsspan van weken tot
+    maanden schuift door het seizoen, en één vast anker zou een koel meivenster en een
+    hittegolfvenster op dezelfde randvoorwaarde fitten. Het buur-anker deed dit al; het
+    bodem-anker is nieuw (fysica-rev 2) en zou anders stilzwijgend op de module-default
+    blijven staan tijdens de hele batch — een subtiel verschil tussen wat de batch fit en
+    wat de kwartierrun draait."""
+    old_nb, old_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
+    am._NEIGHBOR_TEMP = w["neighbor"]
+    am._GROUND_TEMP = w.get("ground", old_gr)
+    try:
+        yield
+    finally:
+        am._NEIGHBOR_TEMP, am._GROUND_TEMP = old_nb, old_gr
+
+
+# Context voor de Jacobiaan-workers. Module-niveau omdat de procespool via `fork` de
+# ouderstaat erft: de zware timelines hoeven dan niet per taak gepickled te worden.
+_JAC_CTX: dict = {}
+
+
+def batch_jobs() -> int:
+    """Aantal processen voor de Jacobiaan-kolommen. `BATCH_JOBS=1` schakelt parallellisme
+    uit (en is de terugval als forken niet kan). Default conservatief: de kinderen erven de
+    tijdlijnen copy-on-write, dus te veel workers kost vooral geheugen op de CI-runner."""
+    env = os.getenv("BATCH_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return max(1, min(4, (os.cpu_count() or 2) - 1))
+
+
+def _jac_column_worker(task):
+    """Eén Jacobiaan-kolom in een forked kindproces: residuen bij de geperturbeerde
+    parametervector, voor het venster in `_JAC_CTX`."""
+    j, xj = task
+    ctx = _JAC_CTX
+    w = ctx["w"]
+    with window_anchors(w):
+        p = vec_to_params2(xj, ctx["keys"], ctx["params"])
+        return j, _residuals2(ctx["house"], p, w["timeline"], w["seed"], w["actual"],
+                              w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
+                              w.get("tm_seed"))
+
+
+def _jac_columns_parallel(house, keys, params, w, tasks, jobs: int) -> dict:
+    """De kolommen over een fork-pool. Alleen `fork` (Linux/CI): de context wordt vóór het
+    forken in een module-global gezet zodat de kinderen 'm erven — met `spawn` zou elk
+    kind de tijdlijnen opnieuw gepickled krijgen en dat kost meer dan het oplevert."""
+    global _JAC_CTX
+    ctx = multiprocessing.get_context("fork")            # KeyError/ValueError → caller valt terug
+    _JAC_CTX = {"house": house, "keys": keys, "params": params, "w": w}
+    try:
+        with ctx.Pool(jobs) as pool:
+            return dict(pool.imap_unordered(_jac_column_worker, tasks, chunksize=1))
+    finally:
+        _JAC_CTX = {}
+
+
+def batch_anchor_trustworthy(batch: dict) -> bool:
+    """Mag de kwartierrun zich op dit batch-anker vastpinnen?
+
+    Vastpinnen betekent: de params zijn dit anker, punt, tot de volgende wekelijkse batch.
+    Dat is alleen verdedigbaar als de batch daadwerkelijk een optimum heeft gevónden. Het
+    anker van 26 juli 2026 was dat niet — `converged: false`, 4 epochs, **1** geaccepteerde
+    stap, 17 gerailde params, `rmse_batch` 0.90 (slechter dan de 0.715 die de tweeling live
+    publiceerde) — en tóch stond de tweeling er 56 uur lang bit-voor-bit op vastgepind. Een
+    vastgelopen fit mag niet gezaghebbend zijn: dan is bootstrap-leren aantoonbaar beter.
+
+    Geconvergeerd, óf ten minste `MIN_ACCEPTED_STEPS` geaccepteerde stappen: die tweede weg
+    bestaat omdat de batch een hard tijdbudget heeft en een goede fit best afgekapt kan
+    worden vóór de convergentietoets. Wat we uitsluiten is de fit die niets bereikte."""
+    if batch.get("converged"):
+        return True
+    return int(batch.get("accepted") or 0) >= MIN_ACCEPTED_STEPS
 
 
 def collect_actual_rh(house: dict, wd: dict, since: datetime) -> dict:
@@ -1090,9 +1233,12 @@ def collect_actual_rh(house: dict, wd: dict, since: datetime) -> dict:
 
 # ── Historie-shards (data/twin2_history/<YYYY-MM>.json) ──────────────────────────────
 # Kolom-vorm per kamer (ts epoch-s, temp ×10 int, hum %, heat 0/1) + de weer-rijen
-# (fetch_weather-vorm, door de batch/backfill ververst) + de openingen-snapshots.
-# De kwartierrun appende alléén verse kamer-samples + log-snapshots (bytes per run);
-# het weer wordt bewust NIET per run geappend — de batch haalt het uit het archief.
+# (fetch_weather-vorm) + de openingen-snapshots. De kwartierrun appendt verse
+# kamer-samples, log-snapshots én de verstreken uren van het weer dat hij tóch al
+# ophaalt (bytes per run); de batch/backfill overschrijft die staart daarna met het
+# nauwkeuriger ERA5-archief. Twee schrijvers met verschillende cadans is opzet: met
+# alléén de wekelijkse batch werd één gemist venster een blijvend gat (zie
+# `refresh_shard_weather`). Alle shard-schrijvers mergen op tijdstip, nooit vervangen.
 
 def _shard_path(month: str) -> str:
     return os.path.join(HISTORY_DIR, f"{month}.json")
@@ -1259,16 +1405,55 @@ def fetch_weather_archive(start: date, end: date) -> list[dict]:
     return rows
 
 
-def refresh_shard_weather(rows: list[dict]) -> None:
-    """Schrijf de (archief-)weer-rijen terug in hun maand-shards — de batch/backfill
-    is de enige schrijver van het shard-weer (de kwartierrun appendt bewust geen weer)."""
+def refresh_shard_weather(rows: list[dict], overwrite: bool = True) -> int:
+    """Merge weer-rijen in hun maand-shards, gesleuteld op `dt`. Geeft #nieuwe uur-rijen.
+
+    **Mergen, niet vervangen** — dit was een echte gat-bron: de oude versie zette
+    `shard["weather"]` gelijk aan précies de aangeleverde rijen, dus een fetch met een
+    smaller bereik (of een half-mislukte staart-fallback) wíste de rest van die maand.
+    Gecombineerd met "alleen de wekelijkse batch schrijft weer" leverde dat een shard op
+    waarvan het weer op 2026-07-16 stopte terwijl de kamerdata tot 07-28 liep — de hele
+    hete twee weken viel buiten elke fit (gediagnosticeerd juli 2026). Mergen maakt het
+    shard-weer monotoon groeiend en immuun voor een smaller venster of een door de
+    `-X theirs`-merge van de kwartierloop geklobberde batch-commit.
+
+    `overwrite=True` (batch/backfill): het ERA5-archief wint van een eerder ingevulde
+    forecast-staart. `overwrite=False` (kwartierrun): alléén gaten vullen, zodat een
+    archief-rij nooit terug-degradeert naar een forecast-waarde."""
     by_month: dict[str, list[dict]] = {}
     for r in rows:
         by_month.setdefault(r["dt"].strftime("%Y-%m"), []).append(r)
+    added = 0
     for month, mrows in by_month.items():
         shard = _load_shard(month)
-        shard["weather"] = [{**r, "dt": r["dt"].isoformat()} for r in mrows]
+        merged = {r["dt"]: r for r in shard.get("weather") or [] if r.get("dt")}
+        for r in mrows:
+            iso = r["dt"].isoformat()
+            if iso in merged and not overwrite:
+                continue
+            added += iso not in merged
+            merged[iso] = {**r, "dt": iso}
+        shard["weather"] = [merged[k] for k in sorted(merged)]
         _write_shard(shard)
+    return added
+
+
+def append_shard_weather(weather: dict, now: datetime) -> int:
+    """Vul het shard-weer bij uit de drivers die de kwartierrun tóch al ophaalt
+    (`am.fetch_weather` levert `past_days=4` aan verleden). Geeft #nieuwe uur-rijen.
+
+    Alléén verstreken uren: de forecast-staart is gemodelleerde toekomst en hoort niet
+    als grondwaarheid in de trainingsset. Alléén gaten vullen (`overwrite=False`), dus
+    waar de batch het ERA5-archief al heeft neergezet blijft dat leidend.
+
+    Waarom de kwartierrun dit óók doet terwijl het weer "van de batch" is: met één
+    wekelijkse schrijver is elk gemist of geklobberd batch-venster een blijvend gat in
+    de trainingsset. Met een rollende 4-daagse overlap elke 15 minuten kan zo'n gat niet
+    meer ontstaan, en het kost bytes per run — hetzelfde argument als voor de
+    kamer-samples in `append_history_shard`."""
+    rows = [r for r in (weather.get("hourly") or [])
+            if r.get("dt") is not None and r["dt"] <= now and r.get("T_out") is not None]
+    return refresh_shard_weather(rows, overwrite=False) if rows else 0
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1353,7 +1538,11 @@ def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None
         nb_when = w_end if neighbor_mode == "end" else w_start + (w_end - w_start) / 2
         win = {"start": w_start, "end": w_end, "timeline": timeline, "actual": act,
                "rh": rh, "seed": seed, "seed_w": seed_w,
-               "neighbor": neighbor_anchor(rows, nb_when)}
+               "neighbor": neighbor_anchor(rows, nb_when),
+               # Bodem-anker per venster (net als het buur-anker): het is een ~30-daags
+               # gedempt gemiddelde, dus over een trainingsspan van maanden schuift het
+               # met het seizoen mee. Zie window_anchors.
+               "ground": am.ground_temp_estimate(rows, nb_when)}
         if TD_SEED_MODE == "own":
             win["tm_seed"] = dict(seed)
         wins.append(win)
@@ -1387,14 +1576,36 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
     nk = len(keys)
 
     def _win_res(w, p):
-        old_nb = am._NEIGHBOR_TEMP
-        am._NEIGHBOR_TEMP = w["neighbor"]
-        try:
+        with window_anchors(w):
             return _residuals2(house, p, w["timeline"], w["seed"], w["actual"],
                                w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
                                w.get("tm_seed"))
-        finally:
-            am._NEIGHBOR_TEMP = old_nb
+
+    def _jac_columns(w, xv) -> dict:
+        """{kolom-index: residuen bij die geperturbeerde parameter} voor één venster.
+
+        Dit ís de hete lus van de batch: `nk` (~70) simulaties per venster per epoch, en
+        precies de reden dat de fit van 26 juli maar 4 epochs met 1 geaccepteerde stap
+        haalde. De kolommen zijn onderling volledig onafhankelijk, dus ze gaan over een
+        procespool. Processen en geen threads: de hergebruikte am-helpers muteren
+        module-globalen (`am._NEIGHBOR_TEMP`) — hetzelfde argument als in
+        tools/twin2_experiment.py. Via `fork` erven de kinderen de zware timelines
+        copy-on-write, zodat er per taak alleen een parametervector heen en een
+        residu-lijst terug hoeft."""
+        tasks = []
+        for j in range(nk):
+            dxj = max(1e-3, abs(xv[j]) * 0.05)
+            xj = xv[:]
+            xj[j] += dxj
+            tasks.append((j, xj))
+        jobs = batch_jobs()
+        if jobs > 1:
+            try:
+                return _jac_columns_parallel(house, keys, params, w, tasks, jobs)
+            except Exception as e:                       # noqa: BLE001 — nooit de fit slopen
+                print(f"[batch] parallelle Jacobiaan niet beschikbaar ({sanitize_error(e)}) "
+                      "→ serieel.")
+        return {j: _win_res(w, vec_to_params2(xj, keys, params)) for j, xj in tasks}
 
     def _total_cost(xv):
         p = vec_to_params2(xv, keys, params)
@@ -1431,20 +1642,18 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
             m = len(r)
             hw = am._huber_weights(r)
             J = [[0.0] * nk for _ in range(m)]
+            # De Jacobiaan van dit venster in één keer (parallel waar mogelijk). De
+            # budget-bewaking zit op vensterniveau i.p.v. per kolom: een half berekende
+            # Jacobiaan werd tóch al weggegooid (aborted → de hele epoch vervalt), dus
+            # per-kolom afbreken kocht niets en verhinderde wel het parallelliseren.
+            cols = _jac_columns(w, x)
             for j in range(nk):
-                if time.time() - t_start > time_budget_s:
-                    aborted = True
-                    break
-                dx = max(1e-3, abs(x[j]) * 0.05)
-                xj = x[:]
-                xj[j] += dx
-                rj = _win_res(w, vec_to_params2(xj, keys, params))
+                rj = cols.get(j) or []
                 if len(rj) != m:
                     continue
+                dx = max(1e-3, abs(x[j]) * 0.05)
                 for i in range(m):
                     J[i][j] = (rj[i] - r[i]) / dx
-            if aborted:
-                break
             for a in range(nk):
                 for b in range(a, nk):
                     v = sum(hw[i] * J[i][a] * J[i][b] for i in range(m))
@@ -1482,14 +1691,10 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
     # Eind-RMSE over alle vensters met de definitieve params.
     rt_all, rr_all = [], []
     for w in wins:
-        old_nb = am._NEIGHBOR_TEMP
-        am._NEIGHBOR_TEMP = w["neighbor"]
-        try:
+        with window_anchors(w):
             sim = simulate2(house, params, w["timeline"], w["seed"],
                             calib_only_rooms=set(w["actual"]) | set(w["rh"]),
                             seed_w=w["seed_w"], tm_seed=w.get("tm_seed"))
-        finally:
-            am._NEIGHBOR_TEMP = old_nb
         for rid, samples in w["actual"].items():
             pred = sim["series"].get(rid, [])
             if not pred:
@@ -1546,8 +1751,19 @@ def batch_main():
     rows = fetch_weather_archive((t_min - timedelta(hours=BATCH_WARMUP_H + 24)).date(),
                                  t_max.date())
     refresh_shard_weather(rows)
-    dataset["weather_rows"] = rows
-    print(f"[batch] weer ververst: {len(rows)} uur-rijen.")
+    # Samenvoegen met wat al in de shards stond i.p.v. vervangen: een half-mislukte
+    # staart-fallback mag de fit niet stilzwijgend op een afgekapte driver-reeks zetten.
+    merged_wx = {r["dt"]: r for r in dataset["weather_rows"]}
+    merged_wx.update({r["dt"]: r for r in rows})
+    dataset["weather_rows"] = [merged_wx[k] for k in sorted(merged_wx)]
+    print(f"[batch] weer ververst: {len(rows)} opgehaald, "
+          f"{len(dataset['weather_rows'])} uur-rijen totaal.")
+    wx_last = dataset["weather_rows"][-1]["dt"] if dataset["weather_rows"] else None
+    if wx_last is not None and (t_max - wx_last) > timedelta(hours=24):
+        # Luid falen i.p.v. stil krimpen: hier zat het juli-2026-gat (weer tot 07-16,
+        # kamerdata tot 07-28) dat de hele hete periode buiten elke fit hield.
+        print(f"[batch][WAARSCHUWING] weer loopt tot {wx_last.isoformat()} maar er is "
+              f"kamerdata tot {t_max.isoformat()} — die staart valt buiten de fit.")
 
     # Warm-start vanaf het vorige batch-anker (rev-passend): één epoch over alle
     # vensters kost ~15–20 min, dus het budget laat maar enkele gedempte stappen per
@@ -1555,6 +1771,11 @@ def batch_main():
     # convergeren. Doorstarten op het vorige optimum maakt de batches cumulatief
     # (mirror van het online leren dat over runs convergeert). De ridge blijft naar
     # de kale priors trekken, dus een fossiel kan niet wegdriften.
+    # Module-globaal bodem-anker als redelijke default; per venster overschrijft
+    # window_anchors 'm alsnog met de seizoenswaarde van dát venster.
+    am._GROUND_TEMP = am.ground_temp_estimate(rows, t_max)
+    print(f"[bodem] kruipruimte-anker (dataset-eind) = {am._GROUND_TEMP:.1f} °C")
+
     prev = load_batch()
     start_params = batch_start_params(house, prev)
     if start_params is not None:
@@ -1756,6 +1977,7 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
             "gust": cur.get("wind_gusts_10m"), "shortwave": cur.get("shortwave_radiation"),
             "sun_az": round(sun_az, 1), "sun_el": round(sun_el, 1),
             "neighbor_temp": round(am._NEIGHBOR_TEMP, 1),
+            "ground_temp": round(am._GROUND_TEMP, 1),
             "wu_solar_scale": (round(weather.get("wu_solar_scale"), 2)
                                if weather.get("wu_solar_scale") is not None else None),
         },
@@ -1828,6 +2050,7 @@ def main():
     log = am.load_openings_log()
     am._OPENINGS_CACHE = log
     am._NEIGHBOR_TEMP = neighbor_anchor(weather.get("hourly", []), now)
+    am._GROUND_TEMP = am.ground_temp_estimate(weather.get("hourly", []), now)
 
     learned = load_learned2()
     batch = load_batch()
@@ -1955,12 +2178,15 @@ def main():
     else:
         bias_state = bias_prev
 
-    # Trainingsset laten meegroeien: verse tado-samples + nieuwe log-snapshots naar de
-    # maand-shard (bytes per run; het weer ververst de batch uit het archief).
+    # Trainingsset laten meegroeien: verse tado-samples + nieuwe log-snapshots + de
+    # verstreken uren van het al opgehaalde weer naar de maand-shard (bytes per run).
     try:
         n_added = append_history_shard(wd, log, now)
         if n_added:
             print(f"[historie] {n_added} samples geappend aan {HISTORY_DIR}.")
+        n_wx = append_shard_weather(weather, now)
+        if n_wx:
+            print(f"[historie] {n_wx} weer-uren bijgevuld in {HISTORY_DIR}.")
     except OSError as e:
         print(f"[historie] append overgeslagen: {e}")
 

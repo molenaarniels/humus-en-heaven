@@ -1570,6 +1570,38 @@ def _stratify_zones(house: dict) -> dict:
     return out
 
 
+def _measured_at(series: list[tuple], ts: datetime) -> float | None:
+    """Gemeten waarde op `ts`, of None buiten de gemeten reeks. Anders dan `_interp`, dat aan
+    de randen vlak extrapoleert — voor de koker-gradiënt is "geen meting" iets anders dan
+    "de laatste meting blijft eeuwig gelden", want dan zou het profiel bevriezen zodra de
+    tado-historie ophoudt (o.a. in het hele voorspel-venster)."""
+    if not series or ts < series[0][0] or ts > series[-1][0]:
+        return None
+    return _interp(series, ts)
+
+
+def _gamma_temps(measured: dict | None, Ta: dict, ts: datetime) -> dict:
+    """De temperaturen waarop de koker-gradiënt geregresseerd wordt: de GEMETEN kamertemps
+    waar die er zijn, anders de gesimuleerde luchtknoop.
+
+    Waarom niet gewoon `Ta`: de docstring van `stair_gradient` zegt dat de kamers "de
+    proxy-MÉTING van het koker-profiel" zijn, maar in de praktijk werd γ uit de gesimuleerde
+    temps berekend, ín de stap-lus. Dat maakte er een positieve terugkoppeling van — een te
+    warme voorspelling voor de bovenste kamer gaf een stéilere γ, en de bronterm
+    `g·γ·(z − z_mean)` duwde daardoor nóg meer warmte in juist die kamer (tot ~245 W bij de
+    klem γ=0.7). De lus verzadigde precies op zonnige middagen, wanneer de verticale spreiding
+    het grootst is. Met de meting als regressiebasis is γ weer een waarneming in plaats van
+    een versterker."""
+    if not measured:
+        return Ta
+    out = dict(Ta)
+    for rid, series in measured.items():
+        v = _measured_at(series, ts)
+        if v is not None:
+            out[rid] = v
+    return out
+
+
 def _stair_gamma(info: dict, temps: dict, open_others: set | None = None) -> float:
     """De verticale gradiënt γ (°C/m) voor één koker: de kleinste-kwadraten-helling van de
     gekoppelde kamertemps t.o.v. hun deurhoogte. `temps` = actuele zone-luchttemps. `open_others`
@@ -1655,7 +1687,8 @@ def _zone_thermal_params(house: dict, params: dict) -> dict:
 def simulate(house: dict, params: dict, timeline: list[dict],
              seed: dict, calib_only_rooms: set | None = None,
              snapshot_t: datetime | None = None,
-             tm_seed: dict | None = None) -> dict:
+             tm_seed: dict | None = None,
+             measured: dict | None = None) -> dict:
     """Integreer het 2-knoops thermische model over `timeline` (lijst stappen met drivers).
     Elke stap: {"t", "T_out", "irr": {room: W}, "states", "weather", "dt"}. `seed` =
     {zone: T_start °C}. Geeft per sensorkamer de voorspelde luchttemp-reeks terug.
@@ -1668,6 +1701,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
     caller die 'm al kent (bv. uit een eerdere simulate()-aanloop via `Tm_now`) i.p.v. de
     standaard warme blend hieronder — puur additief, `None`/ontbrekende zone → ongewijzigd
     gedrag.
+
+    `measured` (optioneel): {kamer: [(t, gemeten °C)]} — uitsluitend gebruikt als regressie-
+    basis voor de koker-gradiënt γ (zie `_gamma_temps`), NIET om de sim ergens naartoe te
+    sturen. Zonder deze reeksen valt γ terug op de gesimuleerde temps, wat het oude (en
+    zelfversterkende) gedrag is.
 
     De integratie is *impliciet* (backward Euler): per substap wordt het gekoppelde
     lineaire stelsel voor alle lucht- + massaknopen ineens opgelost (solve_linear). Dat
@@ -1725,10 +1763,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
                 if op.get("b") != "outside":
                     k = (op["a"], op["b"])
                     door_area[k] = door_area.get(k, 0.0) + op["area"]
+            gamma_temps = _gamma_temps(measured, Ta, step["t"])
             for sid, info in strat.items():
                 open_others = {o for o in info["doors"]
                                if (sid, o) in door_area or (o, sid) in door_area}
-                gamma = _stair_gamma(info, Ta, open_others)
+                gamma = _stair_gamma(info, gamma_temps, open_others)
                 strat_step[sid] = (gamma, open_others)
                 for other in open_others:
                     zh = info["doors"][other]
@@ -1844,9 +1883,43 @@ def simulate(house: dict, params: dict, timeline: list[dict],
 #  Kalibratie — gedempte Gauss-Newton op de leerbare schalen
 # ════════════════════════════════════════════════════════════════════════════════════
 
-def _param_keys(rooms: list[str]) -> list[tuple]:
+def coupled_sensorless_zones(house: dict, rooms: list[str]) -> list[str]:
+    """Zones zónder eigen meting die wél via een deur aan ≥1 gemeten kamer hangen.
+
+    De trap is zo'n zone: geen tado-sensor, dus hij viel buiten de parametervector en zijn
+    params bevroren voor altijd op de priors — inclusief een kaal-dak-`ROOF_U` op 10 m²,
+    goed voor een fantoom-verwarming van honderden watts pal boven de twee slechtst
+    voorspelde kamers. Onmeetbaar is niet hetzelfde als ononderscheidbaar: de schacht is
+    sterk gekoppeld aan office, hotties en ted, dus zijn parameters zijn wel degelijk
+    identificeerbaar dóór die kamers heen. Ze meeleren is beter dan ze op een gok vastzetten;
+    de zwaardere ridge (zie `reg_weight`) houdt de zwak-bepaalde richtingen bij hun prior."""
+    measured = set(rooms)
+    if not measured:
+        return []
+    out = []
+    # Alléén `rooms`: junctions (de gang) krijgen in `_zone_thermal_params` generieke vaste
+    # waarden en lezen hun params niet, dus die meeleren zou een nul-gradiënt-richting aan de
+    # vector toevoegen — kosten zonder informatie.
+    for zid in house.get("rooms", {}):
+        if zid in measured:
+            continue
+        for d in house.get("doors", {}).values():
+            pair = d.get("between") or []
+            if len(pair) == 2 and zid in pair and (set(pair) - {zid}) & measured:
+                out.append(zid)
+                break
+    return out
+
+
+# Zwaardere ridge voor de meeleerde sensorloze zones: hun params zijn alléén indirect (via de
+# gekoppelde kamers) bepaald, dus de zwak-geïnformeerde richtingen moeten steviger naar hun
+# prior getrokken worden dan bij een kamer met eigen meetreeks.
+REG_WEIGHT_SENSORLESS = 3.0 * REG_WEIGHT
+
+
+def _param_keys(rooms: list[str], sensorless: list[str] | None = None) -> list[tuple]:
     keys = [("global", g) for g in GLOBAL_PARAMS]
-    for rid in rooms:
+    for rid in list(rooms) + list(sensorless or []):
         for p in PER_ROOM_PARAMS:
             keys.append((rid, p))
     return keys
@@ -1923,13 +1996,16 @@ def _series_trend(series: list[tuple], since: datetime | None = None) -> float |
     return num / den
 
 
-def _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=None) -> list[tuple]:
+def _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=None,
+                     measured=None) -> list[tuple]:
     """(meetmoment, voorspeld−werkelijk) op elk sample — als `_residuals` maar mét de tijdstempel
     behouden zodat de fit een recency-weging kan toepassen. Voorspelling eerst naar sensor-ruimte
     (buitenmuur-bias) zodat tegen de werkelijk gemeten — gebiasde — tado-temp vergeleken wordt.
     `tm_seed` (optioneel): per-zone massaknoop-beginwaarde (bv. het venster-gemiddelde van de
-    gemeten luchttemp) i.p.v. de warme buur-blend — zie simulate()."""
-    sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set, tm_seed=tm_seed)
+    gemeten luchttemp) i.p.v. de warme buur-blend — zie simulate().
+    `measured` (optioneel): regressie-basis voor de koker-gradiënt, doorgegeven aan simulate()."""
+    sim = simulate(house, params, timeline, seed, calib_only_rooms=rooms_set, tm_seed=tm_seed,
+                   measured=measured)
     out = []
     for rid, samples in actual.items():
         pred = sim["series"].get(rid, [])
@@ -1941,13 +2017,14 @@ def _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=N
     return out
 
 
-def _residuals(house, params, timeline, seed, actual, rooms_set, tm_seed=None) -> list[float]:
+def _residuals(house, params, timeline, seed, actual, rooms_set, tm_seed=None,
+               measured=None) -> list[float]:
     """Voorspeld − werkelijk op elk meetmoment (lineair geïnterpoleerd op de
     voorspelde reeks). De voorspelling wordt eerst naar sensor-ruimte gemapt (buitenmuur-
     bias) zodat de fit tegen de werkelijk gemeten — gebiasde — tado-temp vergelijkt.
     `tm_seed` wordt doorgegeven aan simulate() (massaknoop-beginwaarde)."""
     return [r for _, r in _residuals_timed(house, params, timeline, seed, actual, rooms_set,
-                                           tm_seed=tm_seed)]
+                                           tm_seed=tm_seed, measured=measured)]
 
 
 def _recency_weights(times: list, half_life_h: float | None = None) -> list[float]:
@@ -2172,7 +2249,7 @@ def _wcost(res: list[float], extra_w: list[float] | None = None) -> float:
 
 def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
               time_budget_s: float = 40.0, solar_mean: float | None = None,
-              tm_seed=None) -> tuple[dict, float]:
+              tm_seed=None, measured=None) -> tuple[dict, float]:
     """Minimaliseer Σ(voorspeld−werkelijk)² + Tikhonov-ridge naar de priors over het venster
     met gedempte Gauss-Newton. Online: schuif maar LEARN_RATE naar het optimum (stabiel,
     convergeert over runs). `solar_mean` (venster-zon-gemiddelde, W/m²) maakt het solar_gain-anker
@@ -2183,11 +2260,16 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     if not rooms:
         return params, float("nan")
     rooms_set = set(rooms)
-    keys = _param_keys(rooms)
+    # Sensorloze maar wél gekoppelde zones (de trap) leren mee — zie coupled_sensorless_zones.
+    sensorless = coupled_sensorless_zones(house, rooms)
+    keys = _param_keys(rooms, sensorless)
     x = params_to_vec(params, keys)
     base = params
     prior_vec = [PRIORS[name] for _, name in keys]   # ridge-anker per parameter
-    reg_vec = [reg_weight(name, solar_mean) for _, name in keys]  # regime-bewust ridge-gewicht
+    # Regime-bewust ridge-gewicht; sensorloze zones krijgen de zwaardere variant.
+    sl = set(sensorless)
+    reg_vec = [REG_WEIGHT_SENSORLESS if scope in sl else reg_weight(name, solar_mean)
+               for scope, name in keys]
 
     def _total_cost(res: list[float], xv: list[float]) -> float:
         """Huber-datakosten (mét recency-weging) + Tikhonov-ridge naar de priors. Dezelfde schaal
@@ -2198,7 +2280,8 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
     # Eén timed-residu-call vooraf: levert zowel r0 als de sample-tijdstempels. De residu-volgorde
     # is identiek aan elke latere `_residuals`-call (zelfde actual/rooms_set), dus de recency-
     # gewichten `tw` blijven uitgelijnd door de hele fit.
-    r0_timed = _residuals_timed(house, params, timeline, seed, actual, rooms_set, tm_seed=tm_seed)
+    r0_timed = _residuals_timed(house, params, timeline, seed, actual, rooms_set,
+                                tm_seed=tm_seed, measured=measured)
     if not r0_timed:
         return params, float("nan")
     r0 = [v for _, v in r0_timed]
@@ -2211,7 +2294,8 @@ def calibrate(house, params, timeline, seed, actual, max_iter: int = 5,
         if time.time() - t_start > time_budget_s:
             break
         p_cur = vec_to_params(x, keys, base)
-        r = _residuals(house, p_cur, timeline, seed, actual, rooms_set, tm_seed=tm_seed)
+        r = _residuals(house, p_cur, timeline, seed, actual, rooms_set, tm_seed=tm_seed,
+                       measured=measured)
         if not r:
             break
         m = len(r)
@@ -2705,7 +2789,11 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         open_pairs = {(op["a"], op["b"]) for op in strat_ops if op.get("b") != "outside"}
         open_others = {o for o in strat_info["doors"]
                        if (rid, o) in open_pairs or (o, rid) in open_pairs}
-        gamma = _stair_gamma(strat_info, ta_all, open_others)
+        # Zelfde regressie-basis als de fysica: gemeten waar beschikbaar (zie _gamma_temps),
+        # anders de gesimuleerde luchtknoop. Anders zou het dashboard een andere γ tonen dan
+        # de sim gebruikte.
+        gamma_temps = _gamma_temps(ctx.get("gamma_measured"), ta_all, now_step["t"])
+        gamma = _stair_gamma(strat_info, gamma_temps, open_others)
         crown = stair_crown(now_step.get("irr_roof", {}).get(rid, 0.0))
         # Pin-fout per open deur: koker-lucht op deurhoogte minus de kamer-lucht (− = koker leest
         # kouder dan de kamer op die verdieping). Diagnostiek voor hoe strak de counterflow de
@@ -2713,9 +2801,30 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         pin_err = {o: round(ta_now + gamma * (strat_info["doors"][o] - strat_info["z_mean"])
                             - ta_all[o], 2)
                    for o in sorted(open_others) if ta_all.get(o) is not None}
+        # Vermogen dat de γ-hoogte-offset per open deur ín die kamer duwt (W, + = de kamer
+        # krijgt warmte uit de koker). Dit is de term die de bovenste kamers opblies zolang γ
+        # uit de gesimuleerde temps kwam en zichzelf kon versterken; hem publiceren maakt de
+        # grootte controleerbaar i.p.v. impliciet. Gerekend over de Brown–Solvason-counterflow,
+        # veruit het grootste deel van de deurgeleiding (en het deel dat bewust buiten
+        # `vent_eff` valt) — de netto-advectie komt er in de sim nog bovenop.
+        door_area_now = {}
+        for op in strat_ops:
+            if op.get("b") != "outside":
+                pair = (op["a"], op["b"])
+                door_area_now[pair] = door_area_now.get(pair, 0.0) + op["area"]
+        gamma_w = {}
+        for o in sorted(open_others):
+            if ta_all.get(o) is None:
+                continue
+            zh = strat_info["doors"][o]
+            area = door_area_now.get((rid, o), 0.0) + door_area_now.get((o, rid), 0.0)
+            q_ex = buoyant_door_exchange(area, ta_now + gamma * (zh - strat_info["z_mean"]),
+                                         ta_all[o])
+            gamma_w[o] = round(1.2 * CP_AIR * q_ex * gamma * (zh - strat_info["z_mean"]), 0)
         strat_extra = {
             "stair_gradient_c_per_m": round(gamma, 3),
             "stair_pin_error_c": pin_err,
+            "stair_gamma_w": gamma_w,
             # Zon-kroon: extra °C bovenop de γ-lijn voor de bovenste meters (boven de hoogste
             # deur), gedreven door de dak-/skylight-instraling nu; 's avonds 0. Additief veld.
             "stair_crown_c": round(crown, 2),
@@ -2794,7 +2903,8 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
                     skill=None, rmse_baseline=None, wx=None, checkpoint=None,
                     fell_back=False, ac_room=None, ac_excluded=None,
                     heat_now=None, heat_excluded=None,
-                    paused_now=False, paused_since=None, pause_excluded=None) -> dict:
+                    paused_now=False, paused_since=None, pause_excluded=None,
+                    gamma_measured=None) -> dict:
     """Stel docs/airflow_data.json samen (additief schema)."""
     cur = weather["current"]
     sun_az, sun_el = sun_position(_LAT, _LON, now.astimezone(timezone.utc))
@@ -2838,6 +2948,9 @@ def build_dashboard(house, params, weather, wd, timeline, sim, sugg, learned,
         "heat_now": heat_now or {}, "heat_excluded": heat_excluded or {},
         "paused_now": paused_now, "pause_excluded": pause_excluded or {},
         "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
+        # Regressie-basis voor γ: dezelfde metingen die de sim gebruikte, zodat de getoonde
+        # gradiënt niet van de gesimuleerde kan afwijken (zie _gamma_temps).
+        "gamma_measured": gamma_measured,
         "pw_now": pw_now,                  # per-raam zon-doorval nu → solar_by_window
     }
     rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
@@ -3161,6 +3274,11 @@ def main():
     # kamer houdt een op de eigen metingen geankerde massa-start. Kamers zónder samples ontbreken
     # → simulate() valt daar terug op de oude blend (additief, geen breuk).
     tm_seed_src = {rid: sum(t for _, t in s) / len(s) for rid, s in actual.items() if s}
+    # Regressie-basis voor de koker-gradiënt γ (zie _gamma_temps): bewust de ÓNGEFILTERDE
+    # metingen. De AC/verwarming/pauze-filters bestaan om vervuilde samples uit de FIT te
+    # houden, maar γ is geen fit-doel — het is een waarneming van het verticale profiel, en
+    # een gestookte of gekoelde kamer meet dat profiel even goed.
+    gamma_measured = {rid: list(s) for rid, s in actual.items() if s}
 
     # Mobiele airco: het model heeft géén actieve-koel-term, dus de kamer waar de airco staat leest
     # kouder dan de fysica kan verklaren. Fitten op die AC-koude zou de kamer-params + RMSE/leercurve
@@ -3231,7 +3349,7 @@ def main():
         # groter dan normaal, dan klopt de opening-log vermoedelijk niet met de
         # werkelijkheid → leren pauzeren zodat de fysica niet scheefgetrokken wordt.
         rmse_cur = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys()),
-                                   tm_seed=tm_seed_src))
+                                   tm_seed=tm_seed_src, measured=gamma_measured))
         if physics_migrated:
             # De anomalie-norm komt uit de oude-fysica-leercurve; met net gereset-globalen zou
             # een vals "anomaal" de éérste leer-run op de nieuwe fysica blokkeren.
@@ -3262,7 +3380,7 @@ def main():
         else:
             params, rmse_now = calibrate(house, params, timeline, seed, actual,
                                          solar_mean=wx_summary.get("solar_mean"),
-                                         tm_seed=tm_seed_src)
+                                         tm_seed=tm_seed_src, measured=gamma_measured)
             print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
             rails = railed_params(params)
             if rails:
@@ -3302,7 +3420,7 @@ def main():
                 for k in PER_ROOM_PARAMS:
                     params[rid].setdefault(k, PRIORS[k])
             rmse_fb = rmse(_residuals(house, params, timeline, seed, actual, set(actual.keys()),
-                                      tm_seed=tm_seed_src))
+                                      tm_seed=tm_seed_src, measured=gamma_measured))
             if rmse_fb == rmse_fb and rmse_fb <= rmse_now:
                 rmse_now = rmse_fb
                 skill = skill_score(rmse_now, rmse_baseline)
@@ -3328,7 +3446,7 @@ def main():
     # Voorspelling met de (geleerde) params over het volledige venster + vooruitblik.
     sim = simulate(house, params, timeline, seed,
                    calib_only_rooms=set(house.get("rooms", {}).keys()),
-                   snapshot_t=now, tm_seed=tm_seed_src)
+                   snapshot_t=now, tm_seed=tm_seed_src, measured=gamma_measured)
     if sim.get("solver_failures"):
         print(f"[sim] {sim['solver_failures']} substap(pen) met een bijna-singulier thermisch "
               "stelsel — Ta/Tm die stap bevroren (zie learned.solver_failures).")
@@ -3352,7 +3470,7 @@ def main():
                            ac_room=ac_room_now, ac_excluded=ac_excluded,
                            heat_now=heat_now, heat_excluded=heat_excluded,
                            paused_now=paused_now, paused_since=paused_since,
-                           pause_excluded=pause_excluded)
+                           pause_excluded=pause_excluded, gamma_measured=gamma_measured)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

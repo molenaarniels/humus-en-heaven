@@ -1797,6 +1797,83 @@ def test_stair_gamma_room_slope_and_door_filter():
     assert am._stair_gamma(info, {"top": 25.0}) == 0.0
 
 
+def test_measured_at_returns_none_outside_the_series():
+    """Anders dan `_interp` (dat vlak extrapoleert) moet buiten het meetvenster expliciet
+    'geen meting' terugkomen — anders zou het koker-profiel bevriezen op de laatste meting
+    zodra de tado-historie ophoudt, inclusief het hele voorspel-venster."""
+    t0 = datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ)
+    ser = [(t0, 20.0), (t0 + timedelta(hours=2), 24.0)]
+    assert am._measured_at(ser, t0 + timedelta(hours=1)) == pytest.approx(22.0)
+    assert am._measured_at(ser, t0) == pytest.approx(20.0)
+    assert am._measured_at(ser, t0 - timedelta(minutes=1)) is None
+    assert am._measured_at(ser, t0 + timedelta(hours=3)) is None
+    assert am._measured_at([], t0) is None
+
+
+def test_gamma_temps_prefers_measurement_and_falls_back():
+    t0 = datetime(2026, 7, 10, 12, 0, tzinfo=am.TZ)
+    Ta = {"top": 30.0, "bot": 30.0, "shaft": 30.0}
+    measured = {"top": [(t0, 25.0), (t0 + timedelta(hours=2), 25.0)]}
+    got = am._gamma_temps(measured, Ta, t0 + timedelta(hours=1))
+    assert got["top"] == pytest.approx(25.0)      # meting wint
+    assert got["bot"] == pytest.approx(30.0)      # geen meting → gesimuleerd
+    # Buiten het meetvenster valt álles terug op de simulatie.
+    assert am._gamma_temps(measured, Ta, t0 + timedelta(hours=5))["top"] == pytest.approx(30.0)
+    # Geen metingen → exact het oude gedrag (dezelfde dict).
+    assert am._gamma_temps(None, Ta, t0) is Ta
+
+
+def test_gamma_no_longer_feeds_back_on_its_own_prediction():
+    """De kern van de koker-fix. γ werd uit de GESIMULEERDE temps berekend, ín de stap-lus:
+    een te warme voorspelling voor de bovenste kamer gaf een steilere γ, en de bronterm
+    duwde daardoor nóg meer warmte in juist die kamer — een lus die op zonnige middagen
+    verzadigde. Met de meting als regressiebasis mag een oplopende voorspelling de gradiënt
+    niet meer opdrijven."""
+    house = _strat_house()
+    params = am.default_params(house)
+    params["top"]["q_int"] = 8.0            # laat de bovenste kamer weglopen (proxy zonlast)
+    tl = _strat_timeline({"top": 0.0, "bot": 0.0, "shaft": 0.0}, hours=48)
+    zones = list(house["rooms"])
+    seed = {z: 22.0 for z in zones}
+    saved = am._NEIGHBOR_TEMP
+    try:
+        am._NEIGHBOR_TEMP = 20.0
+        loop = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]))
+        # Metingen die zeggen: in werkelijkheid is er nauwelijks een verticale gradiënt.
+        flat = {rid: [(s["t"], 22.0) for s in tl] for rid in ("top", "bot")}
+        pinned = am.simulate(house, params, tl, seed, calib_only_rooms=set(house["rooms"]),
+                             measured=flat)
+    finally:
+        am._NEIGHBOR_TEMP = saved
+    # Zonder metingen versterkt de lus de warme kamer; met een vlakke gemeten gradiënt niet.
+    assert pinned["Ta"]["top"] < loop["Ta"]["top"]
+
+
+def test_coupled_sensorless_zones_finds_the_shaft_only():
+    house = _strat_house()
+    # 'shaft' heeft geen meting maar hangt via open deuren aan twee gemeten kamers.
+    assert am.coupled_sensorless_zones(house, ["top", "bot"]) == ["shaft"]
+    # Een gemeten zone hoort er nooit in.
+    assert am.coupled_sensorless_zones(house, ["top", "bot", "shaft"]) == []
+    # Zonder ook maar één meting valt er niets te identificeren.
+    assert am.coupled_sensorless_zones(house, []) == []
+    # Een sensorloze zone zónder deur naar een gemeten kamer blijft buiten de vector.
+    lonely = _strat_house()
+    lonely["rooms"]["cellar"] = {"volume_m3": 20, "exterior_wall_m2": 8}
+    assert "cellar" not in am.coupled_sensorless_zones(lonely, ["top", "bot"])
+
+
+def test_param_keys_includes_the_sensorless_shaft():
+    plain = am._param_keys(["top", "bot"])
+    assert ("shaft", "ua_roof") not in plain
+    with_shaft = am._param_keys(["top", "bot"], ["shaft"])
+    assert ("shaft", "ua_roof") in with_shaft
+    assert ("shaft", "c_mass") in with_shaft
+    # De globalen blijven precies één keer vooraan staan.
+    assert with_shaft[:len(am.GLOBAL_PARAMS)] == [("global", g) for g in am.GLOBAL_PARAMS]
+    assert len(with_shaft) == len(plain) + len(am.PER_ROOM_PARAMS)
+
+
 def _strat_timeline(irr_by_room: dict, hours: int = 24, states: dict | None = None) -> list[dict]:
     t0 = datetime(2026, 6, 15, 0, 0, tzinfo=am.TZ)
     tl = []

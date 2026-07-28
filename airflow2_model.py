@@ -55,6 +55,7 @@ import argparse
 import glob
 import json
 import math
+import multiprocessing
 import os
 import sys
 import time
@@ -63,7 +64,7 @@ from datetime import date, datetime, timedelta, timezone
 import airflow_model as am
 import shared_const
 from http_util import get_json
-from notify import run_guarded
+from notify import run_guarded, sanitize_error
 from shared_const import utc_now_iso
 from window_advisor import ROOM_COMFORT, fetch_wu_current_temp
 from wu_bias import correct_temp
@@ -110,11 +111,20 @@ BATCH_STRIDE_D  = 4.0    # dagen stap tussen window-starts (lichte overlap; 3d g
                          # vensters → ~17 min/epoch — minder overlap koopt ~25% meer
                          # epochs per budget, en epochs zijn nu de schaarse grondstof)
 BATCH_WARMUP_H  = 24.0   # sim-only aanloop per window (massaknoop-equilibratie)
-BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "4200"))
+# Fit-budget. Opgetrokken van 70 min naar ~4,5u (juli 2026): met 70 min haalde de batch
+# 4 epochs met 1 geaccepteerde stap en `converged: false` — epochs zijn simpelweg de
+# schaarse grondstof, en dit is een wekelijkse job met ruim 6u aan Actions-plafond. Samen
+# met de parallelle Jacobiaan (zie batch_jobs) en de warm-start scheelt dat een orde van
+# grootte in stappen per run.
+BATCH_TIME_BUDGET_S = float(os.getenv("BATCH_TIME_BUDGET_S", "16200"))
 BATCH_MAX_EPOCHS = 40
 # Convergentie-stop: een geaccepteerde stap die de kosten relatief minder dan dit
 # verbetert telt als "uitgeconvergeerd" — de resterende budget-tijd is dan verspild.
 BATCH_CONVERGED_RTOL = 1e-3
+# Minimum aantal geaccepteerde stappen om een níet-geconvergeerd anker toch te vertrouwen
+# (zie batch_anchor_trustworthy) — het budget kan een goede fit afkappen vóór de
+# convergentietoets, maar een fit die nauwelijks een stap zette mag niet gezaghebbend zijn.
+MIN_ACCEPTED_STEPS = 3
 
 # ── Vocht (tracer + EMPD-lite buffer) ──────────────────────────────────────────────
 P_ATM_KPA        = 101.325
@@ -1104,10 +1114,82 @@ def anchor_from_batch(house: dict, batch: dict) -> tuple[dict | None, dict]:
     wekelijkse, cumulatieve (warm-gestarte) batch-herfit over de volle historie."""
     if not batch.get("params") or batch.get("physics2_rev") != PHYSICS2_REV:
         return None, {"anchor_at": None, "anchor_src": None}
+    if not batch_anchor_trustworthy(batch):
+        print(f"[anker] batch-anker genegeerd: niet geconvergeerd "
+              f"({batch.get('epochs')} epochs, {batch.get('accepted')} geaccepteerd, "
+              f"{len(batch.get('railed') or [])} gerailde params) → bootstrap-leren.")
+        return None, {"anchor_at": None, "anchor_src": None}
     params = merged_params2(house, {"params": json.loads(json.dumps(batch["params"])),
                                     "physics2_rev": PHYSICS2_REV})
     return params, {"anchor_at": batch.get("fitted_at"),
                     "anchor_src": batch.get("model_version")}
+
+
+# Context voor de Jacobiaan-workers. Module-niveau omdat de procespool via `fork` de
+# ouderstaat erft: de zware timelines hoeven dan niet per taak gepickled te worden.
+_JAC_CTX: dict = {}
+
+
+def batch_jobs() -> int:
+    """Aantal processen voor de Jacobiaan-kolommen. `BATCH_JOBS=1` schakelt parallellisme
+    uit (en is de terugval als forken niet kan). Default conservatief: de kinderen erven de
+    tijdlijnen copy-on-write, dus te veel workers kost vooral geheugen op de CI-runner."""
+    env = os.getenv("BATCH_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return max(1, min(4, (os.cpu_count() or 2) - 1))
+
+
+def _jac_column_worker(task):
+    """Eén Jacobiaan-kolom in een forked kindproces: residuen bij de geperturbeerde
+    parametervector, voor het venster in `_JAC_CTX`."""
+    j, xj = task
+    ctx = _JAC_CTX
+    w = ctx["w"]
+    old_nb = am._NEIGHBOR_TEMP
+    am._NEIGHBOR_TEMP = w["neighbor"]
+    try:
+        p = vec_to_params2(xj, ctx["keys"], ctx["params"])
+        return j, _residuals2(ctx["house"], p, w["timeline"], w["seed"], w["actual"],
+                              w["rh"], set(w["actual"]) | set(w["rh"]), w["seed_w"],
+                              w.get("tm_seed"))
+    finally:
+        am._NEIGHBOR_TEMP = old_nb
+
+
+def _jac_columns_parallel(house, keys, params, w, tasks, jobs: int) -> dict:
+    """De kolommen over een fork-pool. Alleen `fork` (Linux/CI): de context wordt vóór het
+    forken in een module-global gezet zodat de kinderen 'm erven — met `spawn` zou elk
+    kind de tijdlijnen opnieuw gepickled krijgen en dat kost meer dan het oplevert."""
+    global _JAC_CTX
+    ctx = multiprocessing.get_context("fork")            # KeyError/ValueError → caller valt terug
+    _JAC_CTX = {"house": house, "keys": keys, "params": params, "w": w}
+    try:
+        with ctx.Pool(jobs) as pool:
+            return dict(pool.imap_unordered(_jac_column_worker, tasks, chunksize=1))
+    finally:
+        _JAC_CTX = {}
+
+
+def batch_anchor_trustworthy(batch: dict) -> bool:
+    """Mag de kwartierrun zich op dit batch-anker vastpinnen?
+
+    Vastpinnen betekent: de params zijn dit anker, punt, tot de volgende wekelijkse batch.
+    Dat is alleen verdedigbaar als de batch daadwerkelijk een optimum heeft gevónden. Het
+    anker van 26 juli 2026 was dat niet — `converged: false`, 4 epochs, **1** geaccepteerde
+    stap, 17 gerailde params, `rmse_batch` 0.90 (slechter dan de 0.715 die de tweeling live
+    publiceerde) — en tóch stond de tweeling er 56 uur lang bit-voor-bit op vastgepind. Een
+    vastgelopen fit mag niet gezaghebbend zijn: dan is bootstrap-leren aantoonbaar beter.
+
+    Geconvergeerd, óf ten minste `MIN_ACCEPTED_STEPS` geaccepteerde stappen: die tweede weg
+    bestaat omdat de batch een hard tijdbudget heeft en een goede fit best afgekapt kan
+    worden vóór de convergentietoets. Wat we uitsluiten is de fit die niets bereikte."""
+    if batch.get("converged"):
+        return True
+    return int(batch.get("accepted") or 0) >= MIN_ACCEPTED_STEPS
 
 
 def collect_actual_rh(house: dict, wd: dict, since: datetime) -> dict:
@@ -1482,6 +1564,32 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
         finally:
             am._NEIGHBOR_TEMP = old_nb
 
+    def _jac_columns(w, xv) -> dict:
+        """{kolom-index: residuen bij die geperturbeerde parameter} voor één venster.
+
+        Dit ís de hete lus van de batch: `nk` (~70) simulaties per venster per epoch, en
+        precies de reden dat de fit van 26 juli maar 4 epochs met 1 geaccepteerde stap
+        haalde. De kolommen zijn onderling volledig onafhankelijk, dus ze gaan over een
+        procespool. Processen en geen threads: de hergebruikte am-helpers muteren
+        module-globalen (`am._NEIGHBOR_TEMP`) — hetzelfde argument als in
+        tools/twin2_experiment.py. Via `fork` erven de kinderen de zware timelines
+        copy-on-write, zodat er per taak alleen een parametervector heen en een
+        residu-lijst terug hoeft."""
+        tasks = []
+        for j in range(nk):
+            dxj = max(1e-3, abs(xv[j]) * 0.05)
+            xj = xv[:]
+            xj[j] += dxj
+            tasks.append((j, xj))
+        jobs = batch_jobs()
+        if jobs > 1:
+            try:
+                return _jac_columns_parallel(house, keys, params, w, tasks, jobs)
+            except Exception as e:                       # noqa: BLE001 — nooit de fit slopen
+                print(f"[batch] parallelle Jacobiaan niet beschikbaar ({sanitize_error(e)}) "
+                      "→ serieel.")
+        return {j: _win_res(w, vec_to_params2(xj, keys, params)) for j, xj in tasks}
+
     def _total_cost(xv):
         p = vec_to_params2(xv, keys, params)
         cost = 0.0
@@ -1517,20 +1625,18 @@ def batch_fit(house: dict, wins: list[dict], *, max_epochs: int | None = None,
             m = len(r)
             hw = am._huber_weights(r)
             J = [[0.0] * nk for _ in range(m)]
+            # De Jacobiaan van dit venster in één keer (parallel waar mogelijk). De
+            # budget-bewaking zit op vensterniveau i.p.v. per kolom: een half berekende
+            # Jacobiaan werd tóch al weggegooid (aborted → de hele epoch vervalt), dus
+            # per-kolom afbreken kocht niets en verhinderde wel het parallelliseren.
+            cols = _jac_columns(w, x)
             for j in range(nk):
-                if time.time() - t_start > time_budget_s:
-                    aborted = True
-                    break
-                dx = max(1e-3, abs(x[j]) * 0.05)
-                xj = x[:]
-                xj[j] += dx
-                rj = _win_res(w, vec_to_params2(xj, keys, params))
+                rj = cols.get(j) or []
                 if len(rj) != m:
                     continue
+                dx = max(1e-3, abs(x[j]) * 0.05)
                 for i in range(m):
                     J[i][j] = (rj[i] - r[i]) / dx
-            if aborted:
-                break
             for a in range(nk):
                 for b in range(a, nk):
                     v = sum(hw[i] * J[i][a] * J[i][b] for i in range(m))

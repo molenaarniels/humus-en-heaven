@@ -366,7 +366,7 @@ def test_anchor_from_batch_pins_params():
     house = _toy_house()
     batch = {"params": {"vent_eff": 1.2, "a": {"c_air": 2.1}},
              "physics2_rev": a2.PHYSICS2_REV, "fitted_at": "2026-07-14T03:00:00+02:00",
-             "model_version": "abc1234"}
+             "model_version": "abc1234", "converged": True}
     params, stamps = a2.anchor_from_batch(house, batch)
     assert params["vent_eff"] == 1.2
     assert params["a"]["c_air"] == 2.1
@@ -387,6 +387,32 @@ def test_anchor_from_batch_rev_gate_and_absent():
     assert params is None and stamps["anchor_at"] is None
     params, stamps = a2.anchor_from_batch(house, {})
     assert params is None and stamps["anchor_at"] is None
+
+
+def test_batch_anchor_trustworthy_rejects_a_stalled_fit():
+    """De juli-2026-toestand: `converged: false`, 4 epochs, 1 geaccepteerde stap, 17 gerailde
+    params, rmse_batch 0.90 — slechter dan wat de tweeling live publiceerde — en tóch stond
+    hij er 56 uur bit-voor-bit op vastgepind. Een vastgelopen fit mag niet gezaghebbend zijn."""
+    stalled = {"converged": False, "epochs": 4, "accepted": 1}
+    assert a2.batch_anchor_trustworthy(stalled) is False
+    assert a2.batch_anchor_trustworthy({"converged": True, "accepted": 1}) is True
+    # Het budget kan een goede fit afkappen vóór de convergentietoets; genoeg geaccepteerde
+    # stappen telt daarom óók als betrouwbaar.
+    assert a2.batch_anchor_trustworthy(
+        {"converged": False, "accepted": a2.MIN_ACCEPTED_STEPS}) is True
+    assert a2.batch_anchor_trustworthy({}) is False
+
+
+def test_anchor_from_batch_falls_back_to_bootstrap_on_a_stalled_fit():
+    """Geen anker → de kwartierrun bootstrap-leert (tweeling 1's regime) i.p.v. zich op een
+    fit vast te pinnen die niets bereikte."""
+    house = _toy_house()
+    batch = {"params": {"vent_eff": 1.2}, "physics2_rev": a2.PHYSICS2_REV,
+             "fitted_at": "2026-07-26T06:31:58+02:00", "converged": False,
+             "epochs": 4, "accepted": 1, "railed": ["x"] * 17}
+    params, stamps = a2.anchor_from_batch(house, batch)
+    assert params is None
+    assert stamps["anchor_at"] is None and stamps["anchor_src"] is None
 
 
 def test_merged_params2_rev_migration_resets_everything():
@@ -792,3 +818,49 @@ def test_batch_fit_epoch_budget():
     assert stats["epochs"] <= 1
     assert stats["windows"] == 2
     assert stats["rmse_batch"] is not None
+
+
+def test_batch_jobs_env_override(monkeypatch):
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    assert a2.batch_jobs() == 1
+    monkeypatch.setenv("BATCH_JOBS", "6")
+    assert a2.batch_jobs() == 6
+    monkeypatch.setenv("BATCH_JOBS", "onzin")     # onleesbaar → terug naar auto
+    assert a2.batch_jobs() >= 1
+    monkeypatch.delenv("BATCH_JOBS")
+    assert a2.batch_jobs() >= 1
+
+
+def test_batch_fit_parallel_jacobian_matches_serial(monkeypatch):
+    """De procespool mag alléén sneller zijn, niet anders. Zelfde vensters, zelfde
+    start — de geleerde params en de RMSE moeten identiek uitkomen."""
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    serial, stats_s = a2.batch_fit(house, wins, max_epochs=1)
+    monkeypatch.setenv("BATCH_JOBS", "2")
+    par, stats_p = a2.batch_fit(house, wins, max_epochs=1)
+    assert stats_p["rmse_batch"] == pytest.approx(stats_s["rmse_batch"])
+    assert stats_p["epochs"] == stats_s["epochs"]
+    assert stats_p["accepted"] == stats_s["accepted"]
+    assert json.dumps(par, sort_keys=True) == json.dumps(serial, sort_keys=True)
+
+
+def test_batch_fit_falls_back_to_serial_when_forking_fails(monkeypatch):
+    """Een procespool die niet te maken is (geen fork, geheugen, sandbox) mag de wekelijkse
+    fit nooit laten crashen — dan draait hij gewoon serieel verder."""
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    wins = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    monkeypatch.setenv("BATCH_JOBS", "1")
+    serial, stats_s = a2.batch_fit(house, wins, max_epochs=1)
+
+    def _boom(*a, **k):
+        raise OSError("kan niet forken")
+
+    monkeypatch.setenv("BATCH_JOBS", "2")
+    monkeypatch.setattr(a2, "_jac_columns_parallel", _boom)
+    fallback, stats_f = a2.batch_fit(house, wins, max_epochs=1)
+    assert stats_f["rmse_batch"] == pytest.approx(stats_s["rmse_batch"])
+    assert json.dumps(fallback, sort_keys=True) == json.dumps(serial, sort_keys=True)

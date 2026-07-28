@@ -260,6 +260,24 @@ def test_room_trend_clamp_en_te_weinig_data():
     assert room_trend([], now) is None
 
 
+def test_room_trend_buiten_clamp_ruimer_dan_binnen():
+    """De buitentrend gebruikt OUT_TREND_MAX, niet de binnen-clamp: buitenlucht heeft
+    geen thermische massa en koelt op een heldere avond sneller af dan 1.5 °C/uur."""
+    now = datetime(2026, 6, 10, 22, 30)
+    # Werkelijk gemeten avondafkoeling (station, 28 juli 2026, 20:30–22:30): ~−2.6 °C/uur.
+    avond = _history(now, [(2.0, 26.3), (1.75, 26.2), (1.5, 25.9), (1.25, 25.1), (1.0, 24.8),
+                           (0.75, 23.7), (0.5, 22.7), (0.25, 22.0), (0, 21.6)])
+    assert wa.OUT_TREND_MAX > wa.TREND_MAX_SLOPE
+    # Met de binnen-clamp zou dit op de clamp blijven plakken...
+    assert room_trend(avond, now) == pytest.approx(-wa.TREND_MAX_SLOPE)
+    # ...met de buiten-clamp komt de echte helling eruit.
+    buiten = room_trend(avond, now, clamp=wa.OUT_TREND_MAX)
+    assert buiten == pytest.approx(-2.6, abs=0.2)
+    # Een echt kapotte meting wordt nog steeds afgevangen.
+    absurd = _history(now, [(0.25, 10.0), (0, 30.0)])  # +80 °C/uur
+    assert room_trend(absurd, now, clamp=wa.OUT_TREND_MAX) == pytest.approx(wa.OUT_TREND_MAX)
+
+
 def test_room_trend_negeert_oude_samples():
     now = datetime(2026, 6, 10, 12, 0)
     # Sample ver buiten TREND_WINDOW_H telt niet mee → te weinig punten → None.

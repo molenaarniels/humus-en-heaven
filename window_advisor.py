@@ -136,7 +136,15 @@ TREND_WINDOW_H  = 2.0   # uur — historie-venster voor de binnentemp-trend (kor
 GAP_BREAK_MIN   = 40    # min — een gat groter dan dit breekt het trend-venster: de fit gebruikt
                         # alleen de meest recente aaneengesloten reeks, zodat een gepauzeerde of
                         # herstarte loop (stale samples vóór het gat) de helling niet vervuilt/omdraait
-TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte trend
+TREND_MAX_SLOPE = 1.5   # °C/uur — clamp op de geschatte *binnen*trend. Een kamer zit achter
+                        # thermische massa en beweegt nooit echt sneller, dus deze clamp vangt
+                        # enkel een rare meting af.
+OUT_TREND_MAX   = 5.0   # °C/uur — aparte, ruimere clamp op de *buiten*trend. Buitenlucht heeft
+                        # geen thermische massa: heldere avondafkoeling na een hete dag of een
+                        # onweersuitstroom haalt makkelijk 2–4 °C/uur. Met de binnen-clamp (1.5)
+                        # toonde het dashboard structureel de clamp i.p.v. de werkelijkheid
+                        # (28 juli 2026: −1.5 getoond terwijl het station −2.6 °C/uur daalde).
+                        # 5 °C/uur vangt nog steeds een echt kapotte meting af.
 RH_TREND_MAX    = 15.0  # %RH/uur — clamp op de vochttrend (richtingvector op het scatterplot)
 TREND_CAP_H     = 4     # uur — trend wordt max. zoveel uur vooruit geprojecteerd, dan vlak
 PREDICT_HORIZON_H = 18  # uur — hoe ver vooruit we naar een open-moment zoeken (rest van de dag)
@@ -1085,7 +1093,7 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
             # lokale mediaan-fallback (smoothed_solar) voor als history/all faalt.
             sample["solar"] = round(wu_solar, 1)
         out_hist = _append_trim(out_hist, sample)
-    outside_slope = room_trend(out_hist, now)
+    outside_slope = room_trend(out_hist, now, clamp=OUT_TREND_MAX)
     outside_hum_slope = room_trend(out_hist, now, "hum", RH_TREND_MAX)
 
     warm_day = dmax is not None and dmax >= WARM_DAY_MAX

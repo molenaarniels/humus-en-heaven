@@ -9,8 +9,12 @@ de nacht doorkomt:
    equilibreren en re-simuleert het etmaal tot nu met de échte gerapporteerde
    log + het échte weer (geen scenario). Op "nu" wordt de luchtknoop-toestand
    gecorrigeerd met de meest recente échte tado-meting per kamer (mits vers
-   genoeg — zie `ANCHOR_MAX_STALENESS_MIN`); de massaknoop-toestand van de
-   aanloop-sim blijft staan (niet meetbaar, wél al geëvolueerd). Pas dán start
+   genoeg — zie `ANCHOR_MAX_STALENESS_MIN`); de massaknoop wordt tegelijk op de
+   gemeten kamerlucht geijkt (`anchor_mass_now` — gedempt gemiddelde, tau
+   `MASS_ANCHOR_TAU_H`). Dat laatste is niet cosmetisch: de massa draagt veruit
+   de meeste capaciteit, dus zolang die de warmup-drift vasthield trok hij de
+   zojuist geijkte lucht er binnen een paar uur weer doorheen (9 held-out
+   nachten: RMSE 1,46 → 0,86 °C). Pas dán start
    de *forecast*-sim (nu → morgen 08:00) — zo draagt de nacht-voorspelling
    geen ongecorrigeerde 24u-drift meer mee. De `end_h`-parameter van
    build_timeline rekt die tweede fase op; fetch_weather's forecast_days=2
@@ -52,6 +56,7 @@ een stabiele gestookte winternacht niet). Gaat naar de **groepschat**
 (`TELEGRAM_CHAT_GROUP_ID`), net als de weerbriefing — niet naar de privé-chat.
 """
 
+import math
 import os
 from datetime import datetime, timedelta
 
@@ -71,6 +76,8 @@ NIGHT_END_H = 8
 MARKS = (23, 3, 7)               # uur-punten in het bericht
 WARMUP_H = 24.0                  # aanloop-sim zodat de massaknoop equilibreert
 ANCHOR_MAX_STALENESS_MIN = 30    # oudere actuele meting → niet vertrouwen, sim-waarde staat
+MASS_ANCHOR_TAU_H = 8.0          # uur — dempingstijd waarmee de massaknoop op de gemeten
+                                 # kamerlucht wordt geijkt (zie anchor_mass_now)
 SEASON_MONTHS = range(5, 10)     # mei–sep: altijd sturen
 NIGHT_INTEREST_C = 19.0          # daarbuiten: alleen bij een warme nacht
 
@@ -147,6 +154,45 @@ def anchor_now(ta_now: dict, actual: dict, now: datetime,
         if (now - ts).total_seconds() / 60.0 <= max_staleness_min:
             corrected[rid] = temp
     return corrected
+
+
+def anchor_mass_now(tm_now: dict, actual: dict, now: datetime,
+                    tau_h: float = MASS_ANCHOR_TAU_H) -> dict:
+    """Ijk de massaknoop op de gemeten kamerlucht, net zoals `anchor_now` dat voor de
+    luchtknoop doet.
+
+    De 24u-warmup is een blinde simulatie en drijft weg (gemeten: de luchtknoop stond er
+    bij aankomst gemiddeld 0,83 °C naast). `anchor_now` repareert de lucht, maar de massa
+    hield die drift vast — en omdat de massaknoop veruit de meeste capaciteit heeft, trok
+    hij de geijkte lucht er binnen een paar uur weer doorheen. Dat maakte de fout een
+    bijna zuivere offset over de hele nacht.
+
+    Schatting = **exponentieel gewogen gemiddelde van de gemeten luchttemp** over het
+    warmup-venster (tijdconstante `tau_h`): de trage massaknoop ís fysisch een gedempt
+    gemiddelde van de kamerlucht (dezelfde motivatie waarmee `airflow_model.main()` zijn
+    `tm_seed` uit de metingen haalt), en recent weegt zwaarder dan de rand van het venster.
+
+    Bewust **niet** simpelweg `tm = ta` (de instantane geijkte lucht). Dat past op de
+    held-out nachten nóg beter (RMSE 0,64 vs 0,86), maar het is fysisch een overschatting:
+    om 18:45 loopt de massa juist áchter op de lucht na een warme dag. Dat het beter past,
+    komt doordat een te warme massa de resterende koud-bias van het model wegstreept — en
+    twee fouten tegen elkaar wegstrepen is precies wat we hier aan het opruimen zijn.
+
+    Kamers zonder metingen houden hun gesimuleerde waarde (fail open, zoals `anchor_now`).
+    Kopie — `tm_now` wordt niet gemuteerd."""
+    out = dict(tm_now or {})
+    for rid, samples in (actual or {}).items():
+        num = den = 0.0
+        for ts, temp in samples:
+            age_h = (now - ts).total_seconds() / 3600.0
+            if age_h < 0:
+                continue
+            w = math.exp(-age_h / tau_h)
+            num += w * temp
+            den += w
+        if den > 0:
+            out[rid] = num / den
+    return out
 
 
 def night_stats(series: list[tuple], now: datetime) -> dict | None:
@@ -281,6 +327,15 @@ def main() -> None:
     if deltas:
         print(f"[teds-nacht] anker-correctie (sim → actueel): {deltas}")
     ta_now = corrected
+
+    # …en dezelfde behandeling voor de MASSAknoop. Zonder dit ijkten we alleen de lucht,
+    # terwijl de massa 24u aan warmup-drift meedroeg — en de massa heeft veruit de meeste
+    # capaciteit, dus die trok de zojuist geijkte lucht binnen een paar uur weer mee omlaag.
+    # Dat was veruit de grootste foutbron in deze voorspelling: op 9 held-out nachten
+    # RMSE 1,46 → 0,86 °C en de nachtbias van −1,43 naar −0,83. Het verklaart ook waarom
+    # de fysica-parameters niets uithaalden (c_mass ×4 verschoof de bias 0,08°): het verlies
+    # ging niet naar buiten maar naar een te koude interne massa.
+    tm_now = anchor_mass_now(tm_now, actual, now)
 
     # ── Fase 2: forecast (nu → morgen 08:00), scenario-geforceerd, geseed op het anker ──
     end_h = hours_until_morning(now)

@@ -329,3 +329,86 @@ def test_main_geeft_de_geleerde_om_bias_door_aan_build_timeline(monkeypatch, cap
     assert seen, "build_timeline is niet aangeroepen"
     assert all(s == ob for s in seen), (
         f"niet elke timeline kreeg de correctie mee: {seen}")
+
+
+# ── anchor_mass_now: de massaknoop mee-ijken ───────────────────────────────────
+
+def test_anchor_mass_now_ijkt_op_de_metingen():
+    # De massaknoop stond op een weggedreven warmup-waarde; met metingen eromheen
+    # moet hij naar het gedempte gemiddelde van die metingen toe.
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    actual = {"ted": [(now - timedelta(hours=h), 22.0) for h in range(24, 0, -1)]}
+    out = nf.anchor_mass_now({"ted": 18.0}, actual, now)
+    assert out["ted"] == pytest.approx(22.0, abs=0.05)
+
+
+def test_anchor_mass_now_weegt_recent_zwaarder():
+    # Gedempt gemiddelde: het recente verleden telt zwaarder dan de rand van het venster.
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    actual = {"ted": [(now - timedelta(hours=20), 18.0),
+                      (now - timedelta(hours=1), 24.0)]}
+    out = nf.anchor_mass_now({"ted": 15.0}, actual, now)
+    assert out["ted"] > 21.0, "recente 24° moet zwaarder wegen dan de oude 18°"
+    assert out["ted"] < 24.0
+
+
+def test_anchor_mass_now_laat_kamers_zonder_metingen_staan():
+    # Fail open, zoals anchor_now: geen meting → gesimuleerde waarde blijft.
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    out = nf.anchor_mass_now({"ted": 19.0, "stair": 20.5}, {"ted": [(now, 22.0)]}, now)
+    assert out["stair"] == 20.5
+    assert out["ted"] == pytest.approx(22.0)
+
+
+def test_anchor_mass_now_muteert_de_invoer_niet():
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    tm = {"ted": 19.0}
+    nf.anchor_mass_now(tm, {"ted": [(now, 23.0)]}, now)
+    assert tm == {"ted": 19.0}
+
+
+def test_anchor_mass_now_negeert_toekomstige_samples():
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    actual = {"ted": [(now + timedelta(hours=2), 30.0), (now - timedelta(hours=1), 21.0)]}
+    out = nf.anchor_mass_now({"ted": 19.0}, actual, now)
+    assert out["ted"] == pytest.approx(21.0, abs=0.01)
+
+
+def test_anchor_mass_now_leeg_is_een_no_op():
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    assert nf.anchor_mass_now({"ted": 19.0}, {}, now) == {"ted": 19.0}
+    assert nf.anchor_mass_now({"ted": 19.0}, {"ted": []}, now) == {"ted": 19.0}
+
+
+def test_main_ijkt_de_massaknoop_mee(monkeypatch):
+    """Wiring-test in het _NEIGHBOR_TEMP-patroon: vergeten de massaknoop te ijken is
+    stil en onzichtbaar — de voorspelling blijft draaien, alleen structureel te koud."""
+    rows = _rows(datetime.now(TZ))
+    gezien = []
+    orig = am.simulate
+
+    def spy(house, params, timeline, seed, **kw):
+        gezien.append(kw.get("tm_seed"))
+        return orig(house, params, timeline, seed, **kw)
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(am, "load_openings_log", lambda: [])
+    monkeypatch.setattr(am, "load_learned", dict)
+    monkeypatch.setattr(am, "load_window_data", dict)
+    # Echte tado-historie zodat collect_actual samples oplevert: een kamer die de hele
+    # dag stabiel 23° was. Zonder de fix erft de forecast de weggedrifte warmup-massa
+    # (die van het koude weer in `rows` komt); mét de fix staat hij op ~23°.
+    t0 = datetime.now(TZ)
+    wd = {"rooms": {"Ted": {"history": [
+        {"t": (t0 - timedelta(hours=h)).isoformat(), "temp": 23.0}
+        for h in range(int(nf.WARMUP_H), 0, -1)]}}}
+    monkeypatch.setattr(am, "load_window_data", lambda: wd)
+    monkeypatch.setattr(am, "simulate", spy)
+    nf.main()
+    fcst = [s for s in gezien[1:] if s]
+    assert fcst, "forecast-sim kreeg geen massaknoop mee"
+    assert fcst[0].get("ted") == pytest.approx(23.0, abs=0.3), (
+        f"massaknoop niet op de metingen geijkt (kreeg {fcst[0].get('ted')}) — "
+        "de warmup-drift lekt de forecast in")

@@ -158,6 +158,13 @@ function summaryHTML(d) {
     </div></div>`;
 }
 
+// Modelbias als "+1,5°" (te warm) / "−0,4°" (te koel) / "–" als er nog niets geleerd is.
+function fmtBias(v) {
+  if (v == null) return "–";
+  if (v === 0) return "0°";
+  return `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}°`;
+}
+
 function biasStripHTML(d) {
   const biasTxt = d.bias == null ? "–"
     : (d.bias === 0 ? "gelijk aan model"
@@ -165,6 +172,16 @@ function biasStripHTML(d) {
   const dayBadge = d.warm_day
     ? `<span class="badge badge-warm">Warme dag</span>`
     : `<span class="badge badge-cool">Koele dag</span>`;
+  // Geleerde Open-Meteo-modelbias: hoeveel te warm het model op onze plek structureel
+  // leest (nacht/dag apart). Dit is waar de forecast naartoe uitdooft voorbij de
+  // stationscorrectie — zolang er te weinig geverifieerde punten zijn staat hij op 0.
+  const ob = d.om_bias;
+  const obTxt = !ob || (ob.night == null && ob.day == null) ? "–"
+    : (!ob.n_night && !ob.n_day ? "nog aan het leren"
+      : `nacht ${fmtBias(ob.night)} · dag ${fmtBias(ob.day)}`);
+  const obNote = ob && (ob.n_night != null)
+    ? `<span class="lbl" style="opacity:.6;"> (${ob.n_night + (ob.n_day || 0)} punten, ${ob.window_d || 14}d)</span>`
+    : "";
   return `
     <div class="grid"><div class="specimen-card">
       <div class="corner-mark">Buiten nu &amp; ijking</div>
@@ -180,6 +197,7 @@ function biasStripHTML(d) {
         <div style="flex:1;min-width:220px;">
           <div class="stat-row"><span class="lbl">Stationscorrectie</span><span>${biasTxt}</span></div>
           <div class="stat-row"><span class="lbl">Model nu (Open-Meteo)</span><span>${fmtT(d.om_now)}</span></div>
+          <div class="stat-row"><span class="lbl">Modelbias (geleerd)</span><span>${obTxt}${obNote}</span></div>
           <div class="stat-row"><span class="lbl">Luchtvochtigheid buiten</span><span>${d.outside_humidity == null ? "–" : d.outside_humidity + "%"}${humidityNote(d.outside_humidity)}</span></div>
           <div class="stat-row"><span class="lbl">Verwachte dag-max</span><span>${fmtT(d.day_max)}</span></div>
           <div class="stat-row" style="border:none;"><span class="lbl">Drempel koeladvies</span><span>${dayBadge}</span></div>

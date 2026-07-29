@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import om_bias
 import window_advisor as wa
 from window_advisor import (convert_rh, decide, humidity_offset, next_reopen,
                             open_desire, open_reason, open_status_tail,
@@ -431,3 +432,117 @@ def test_open_status_tail_met_heropening():
         {"start": "20:30", "end": "23:00", "start_h": 3.25, "end_h": 5.75},
     ]
     assert open_status_tail(intervals) == " tot ~18:00, weer open rond 20:30"
+
+
+# ── correct_forecast: stationsanker + geleerde Open-Meteo-modelbias ────────────
+
+def _hourly(now, temps):
+    return [{"dt": now + timedelta(hours=i), "temp": t} for i, t in enumerate(temps)]
+
+
+def test_correct_forecast_anker_geldt_volledig_op_nu():
+    # Op lead 0 is de correctie precies het stationsanker, ongeacht wat er geleerd is.
+    now = datetime(2026, 7, 29, 10, 15)
+    fc = wa.correct_forecast(_hourly(now, [26.8]), bias=-1.5, now=now,
+                             learned={"night": 1.4, "day": 0.8})
+    assert fc[0]["out_corr"] == pytest.approx(26.8 - 1.5)
+
+
+def test_correct_forecast_dooft_uit_naar_de_geleerde_bias_niet_naar_nul():
+    # De kern van de fix: voorbij BIAS_DECAY_H bleef de ruwe modelwaarde staan, inclusief
+    # de volle warme nachtbias. Nu landt hij op de geleerde climatologie.
+    now = datetime(2026, 7, 29, 10, 15)
+    ver = now + timedelta(hours=wa.BIAS_DECAY_H + 2)   # valt in de nacht
+    assert om_bias.is_night(ver)
+    fc = wa.correct_forecast([{"dt": ver, "temp": 27.5}], bias=-1.5, now=now,
+                             learned={"night": 1.4, "day": 0.8})
+    assert fc[0]["out_corr"] == pytest.approx(27.5 - 1.4)
+
+
+def test_correct_forecast_kiest_de_emmer_van_het_geldige_uur():
+    # Niet de emmer van "nu" maar die van het voorspelde uur bepaalt de correctie.
+    now = datetime(2026, 7, 29, 10, 15)               # dag
+    nacht = now + timedelta(hours=wa.BIAS_DECAY_H + 4)
+    dag   = now + timedelta(hours=wa.BIAS_DECAY_H + 16)
+    learned = {"night": 1.4, "day": 0.4}
+    fc = wa.correct_forecast([{"dt": nacht, "temp": 25.0}, {"dt": dag, "temp": 25.0}],
+                             bias=0.0, now=now, learned=learned)
+    assert fc[0]["out_corr"] == pytest.approx(25.0 - 1.4)
+    assert fc[1]["out_corr"] == pytest.approx(25.0 - 0.4)
+
+
+def test_correct_forecast_zonder_geleerde_bias_is_het_oude_gedrag():
+    # Terugvalgarantie: leeg leerboek → bit-voor-bit de oorspronkelijke uitdoving naar 0.
+    now = datetime(2026, 7, 29, 10, 15)
+    hourly = _hourly(now, [26.0, 26.5, 27.0, 27.5, 28.0])
+    for learned in (None, {}, {"night": 0.0, "day": 0.0}):
+        fc = wa.correct_forecast(hourly, bias=-1.5, now=now, learned=learned)
+        for r, f in zip(hourly, fc):
+            h = (r["dt"] - now).total_seconds() / 3600.0
+            decay = max(0.0, 1.0 - h / wa.BIAS_DECAY_H)
+            assert f["out_corr"] == pytest.approx(r["temp"] - 1.5 * decay)
+
+
+def test_correct_forecast_verloopt_monotoon_van_anker_naar_climatologie():
+    now = datetime(2026, 7, 29, 10, 15)
+    learned = {"night": 1.0, "day": 1.0}          # emmer-onafhankelijk → puur de overgang
+    hourly = _hourly(now, [25.0] * (wa.BIAS_DECAY_H + 3))
+    corr = [f["out_corr"] for f in wa.correct_forecast(hourly, bias=-3.0, now=now,
+                                                       learned=learned)]
+    assert corr[0] == pytest.approx(22.0)         # anker: 25 − 3
+    assert corr[-1] == pytest.approx(24.0)        # climatologie: 25 − 1
+    assert all(b >= a - 1e-9 for a, b in zip(corr, corr[1:]))
+
+
+def test_correct_forecast_laat_ontbrekende_uren_staan():
+    now = datetime(2026, 7, 29, 10, 15)
+    fc = wa.correct_forecast([{"dt": now, "temp": None}], bias=-1.5, now=now,
+                             learned={"night": 1.4, "day": 0.8})
+    assert fc[0]["out_raw"] is None and fc[0]["out_corr"] is None
+
+
+# ── corrected_hourly: gate en next_reopen op dezelfde schaal ───────────────────
+
+def test_corrected_hourly_geeft_de_geijkte_reeks_door():
+    now = datetime(2026, 7, 29, 10, 15)
+    fc = wa.correct_forecast(_hourly(now, [26.8, 27.0]), bias=-1.5, now=now, learned={})
+    hc = wa.corrected_hourly(fc)
+    assert [r["dt"] for r in hc] == [r["dt"] for r in fc]
+    assert [r["temp"] for r in hc] == [r["out_corr"] for r in fc]
+
+
+def test_gate_ziet_de_geijkte_dagmax():
+    # day_max_temp draaide op de ruwe modelwaarde; met de correctie erop zakt de
+    # gemeten dagmax mee — dit is wat de warme-dag-gate nu beoordeelt.
+    now = datetime(2026, 7, 29, 10, 15)
+    hourly = _hourly(now, [24.0, 25.0, 23.0])
+    fc = wa.correct_forecast(hourly, bias=-1.5, now=now, learned={})
+    assert wa.day_max_temp(wa.corrected_hourly(fc), now.date()) < wa.day_max_temp(hourly,
+                                                                                 now.date())
+
+
+def test_next_reopen_gebruikt_de_geijkte_reeks():
+    # Een model dat te warm leest stelde de voorspelde heropening uit; op de geijkte
+    # schaal valt hij eerder — en dat is de reeks die de hint en MIN_CLOSE_H nu zien.
+    now = datetime(2026, 7, 29, 10, 15)
+    hourly = _hourly(now, [24.0, 23.0, 22.0])
+    inside = 23.0
+    fc = wa.correct_forecast(hourly, bias=-2.0, now=now, learned={})
+    ruw = next_reopen(hourly, inside, now)
+    geijkt = next_reopen(wa.corrected_hourly(fc), inside, now)
+    assert geijkt is not None
+    assert ruw is None or geijkt < ruw
+
+
+# ── station_bias ───────────────────────────────────────────────────────────────
+
+def test_station_bias_zonder_wu_is_nul():
+    # Zonder stationsmeting valt er niets te ijken — het model met zichzelf vergelijken
+    # zou een schijnbias van 0 opleveren en de correctie stilletjes uitzetten.
+    assert wa.station_bias("open-meteo", 26.8, 26.8) == 0.0
+    assert wa.station_bias("wu", None, 26.8) == 0.0
+    assert wa.station_bias("wu", 25.3, None) == 0.0
+
+
+def test_station_bias_is_meting_min_model():
+    assert wa.station_bias("wu", 25.3, 26.8) == pytest.approx(-1.5)

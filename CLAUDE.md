@@ -257,7 +257,10 @@ Elke zone-`/state` levert naast temp/RH ook de **verwarmingsstatus** (`parse_hea
 
 ### Dashboard prediction (`docs/window_data.json` → `docs/window.html`)
 The dashboard predicts, per room, *when* the window can be opened today (or "keep closed today") by combining the forecast with the station and the room-temperature trend — all computed in `window_advisor.py`:
-- **Station bias correction (smart blend):** `bias = WU_now − Open-Meteo_now` is the local microclimate/calibration offset. It is added to the future forecast and **decays linearly to zero over `BIAS_DECAY_H` (12h)** — near-term hours are anchored to the station, far-term relax to the raw model. WU unavailable → `bias = 0`.
+- **Station bias correction (smart blend):** `bias = WU_now − Open-Meteo_now` (`station_bias()`) is the local microclimate/calibration offset. It is added to the future forecast and **decays linearly over `BIAS_DECAY_H` (12h)** — near-term hours are anchored to the station. WU unavailable → `bias = 0`.
+- **…maar het dooft uit naar de geleerde modelbias, niet naar nul (`om_bias.py`, juli 2026).** De uitdoving liep vóórdien naar **0**, in de veronderstelling dat het ruwe model op termijn zuiver is. Dat is het niet: Open-Meteo leest op onze locatie structureel te warm, 's nachts het sterkst — gemeten over 25 dagen (~15.700 geverifieerde forecast-punten) tegen het eigen station **+1,4 °C 's nachts (22–07u) en +0,8 °C overdag**, bij élke vooruitblik. Gevolg: het hele nachtvenster ligt vanaf een ochtend-/middagrun 12–18u vooruit en draaide dus op de ónvergeleken modelwaarde inclusief de volle warme bias — precies waar het raamadvies op leunt (gediagnosticeerd toen de forecast voor middernacht 27,5 °C gaf terwijl het station de nacht ervóór 20,5 mat en het model 23,3 zei). `correct_forecast` splitst nu twee lagen: de **blijvende** modelbias (geldt op elke vooruitblik) plus de **transiënte** stationsoffset daarbovenop (dooft uit over `BIAS_DECAY_H`, want het anker blijkt maar ~6u informatief — r=0,66 op 0–3u, ~0 voorbij 6u). Leeg leerboek → `clim = 0` → bit-voor-bit het oude gedrag.
+- **Eén geijkte reeks voor álle consumenten (`corrected_hourly`).** `day_max_temp`, `upcoming_max_temp` en `next_reopen`/`reopen_is_brief`/`reopen_hour` draaiden op de **ruwe** `om["hourly"]` en vergeleken die met gemeten binnentemperaturen — twee verschillende schalen, met de modelbias er ongefilterd in. `main()` bouwt de geijkte reeks nu één keer en geeft 'm aan alle vijf door, dus de warme-dag-gate, de heropen-hint en de open-tijd-voorspelling zien exact hetzelfde als het dashboard.
+- `outside_history[].src` (additief): de bron van elk sample (`wu`/`open-meteo`), zodat `om_bias` alléén tegen echte stationsmetingen verifieert — op een Open-Meteo-terugval ís de "meting" ditzelfde model en zou de gemeten modelfout per definitie ~0 zijn. Oudere samples zonder `src` worden herkend aan `temp == om` (exacte gelijkheid verraadt de terugval).
 - **Room-temp trend:** a rolling per-room inside-temp history (and outside-now) is kept in `window_data.json`; each run appends the current sample and trims to `HISTORY_KEEP` (~48). The trend `slope` (°C/h, least-squares over `TREND_WINDOW_H` hours, clamped to ±`TREND_MAX_SLOPE`) is projected forward but **damped** (`min(hours, TREND_CAP_H)` then flat) — a heuristic, **not** a thermal house model.
 - **Crossover:** the first future hour (≤ `PREDICT_HORIZON_H`) where `inside_proj > COMFORT_HIGH` **and** `out_corr ≤ inside_proj − OPEN_MARGIN` is the predicted open time; it closes again only on warmte-instroom (`out_corr ≥ inside_proj − CLOSE_MARGIN`) → `open_intervals` — the open-trigger and the stay-open/close-trigger are deliberately asymmetric (`OPEN_MARGIN` vs `CLOSE_MARGIN`), mirroring `decide()`'s own hysteresis, so an open segment doesn't snap shut the instant the projected temp dips back into the dead band. No crossover today → "vandaag dicht houden". **`currently_open`:** the open-trigger only ever encodes the plain "cool" condition — it doesn't know about a dead-band hold, banking, dehumidify or fresh-air open. Without correction, a room already open for one of those other reasons showed a gap on the per-room timeline (`docs/window.html`) until the next *plain-cool* crossover, contradicting the OPEN chip right above it. `predict_open_intervals(..., currently_open=advice=="open")` forces the very first (in-range) grid point open in that case; from there the same asymmetric stay-open/close-trigger applies, so the segment persists until a genuine heat-in rather than closing after a single grid step (a first attempt that only forced the first point without this asymmetry snapped shut almost immediately — the dead-band condition it was meant to fix). Same static-approximation limitation as the dehumidify/fresh-air triggers not being projected forward.
 - **Ventilatie-RH (schimmel):** per room the outside RH is converted to the room's temperature via `convert_rh()` (`vent_rh`) — the RH the room would approach if ventilated with outside air, since absolute vapour pressure is conserved when air changes temperature (Magnus/Tetens `_es`, FAO-56 Eq. 11). Computed from the **raw** WU temp + its own RH reading (a consistent sensor pair, *not* the radiation-bias-corrected temp), Open-Meteo `relative_humidity_2m` + `temperature_2m` as fallback. The dashboard shows it behind the indoor humidity as `(X% buiten)`, tinted green when below indoor RH (ventilating dries → less mould risk) and clay when above (ventilating adds moisture, e.g. a warm humid summer day). **`vent_rh` is no longer purely informational — it now also feeds `decide()` (see "Humidity-balanced decision" below).**
@@ -276,10 +279,12 @@ The dashboard predicts, per room, *when* the window can be opened today (or "kee
   "outside_now": 26.5, "outside_smoothed": 26.2, "outside_source": "wu | open-meteo", "om_now": 25.0,
   "outside_humidity": 60,
   "outside_trend": -0.05, "outside_hum_trend": 1.2, "bias": 1.5, "day_max": 27.0, "warm_day": true, "warm_ahead": true,
+  "om_bias": {"night": 1.5, "day": 0.5, "n_night": 109, "n_day": 181, "updated_at": "ISO+02:00",
+              "window_d": 14, "pending": [{"t": "ISO", "fc": 27.5}], "errors": [{"t": "ISO", "e": 1.6}]},
   "params": {"COMFORT_HIGH": 23.5, "OPEN_MARGIN": 1.5, "CLOSE_MARGIN": 0.5, "WARM_DAY_MAX": 22.0, "LOOKAHEAD_H": 12,
              "RH_COMFORT": 60.0, "RH_HARD_CAP": 72.0,
              "ROOM_COMFORT": {"Living room": {"low": 19.5, "high": 22.0}}},
-  "outside_history": [{"t": "ISO", "temp": 24.0, "om": 23.2, "hum": 58, "solar": 214.2}],
+  "outside_history": [{"t": "ISO", "temp": 24.0, "om": 23.2, "hum": 58, "solar": 214.2, "src": "wu"}],
   "forecast": [{"dt": "ISO", "out_raw": 27.0, "out_corr": 28.5, "is_future": true}],
   "rooms": {"Living room": {
     "inside": 26.2, "humidity": 48, "heating": false, "heating_power": 0,
@@ -503,15 +508,37 @@ Read-only op Project 8's pure helpers + `docs/window_data.json` + de openingen-G
 
 ---
 
-## Shared modules: `wu_bias.py`, `notify.py`, `gist_io.py`, `http_util.py`, `shared_const.py`
+## Shared modules: `wu_bias.py`, `om_bias.py`, `notify.py`, `gist_io.py`, `http_util.py`, `shared_const.py`
 
-Five small cross-project Python modules (everything else is self-contained):
+Six small cross-project Python modules (everything else is self-contained):
 - **`wu_bias.py`** — the WU station's radiative temperature-bias correction — `correct_temp(temp_c, solar_wm2)` and
   `bias_estimate(solar_wm2)` plus the calibrated `SOLAR_BIAS_SLOPE` (°C per W/m², source-agnostic
   driver). Imported by **soil_model.py** (Tmax/Tmean on WU days), **window_advisor.py** (outside-now
   on WU readings) and **airflow_model.py** (outside-now temp on the WU current obs). Calibrated by
   Project 7. Zero third-party deps. See the soil "WU stralingsbiascorrectie" bullet and Project 7 for
   the full picture.
+- **`om_bias.py`** — het spiegelbeeld van `wu_bias.py`: daar corrigeren we een *meetfout* van
+  het eigen station met een door Project 7 gekalibreerde constante, hier een *modelfout* van
+  Open-Meteo — en die constante kan niet vastliggen (hij schuift met het seizoen en het
+  weertype), dus leert de module hem **online** uit de eigen historie. Zuivere functies over
+  gewone dicts (`record_forecast`/`verify_pending`/`learn`/`bias_for`/`correction_for`); het
+  logboek zelf leeft additief in `docs/window_data.json` (veld `om_bias`), waar de aanroeper
+  het persisteert. Geleerd via echte **forecastverificatie** (elke run wordt de forecast voor
+  een uur 6–18u vooruit vastgelegd en na afloop afgerekend tegen wat het station toen mat) —
+  níet via de nowcast-fout, want de modelfout op lange termijn is meetbaar groter (+1,4 vs.
+  +1,0 's nachts) en leren op de nowcast zou structureel ondercorrigeren. Twee emmers,
+  **nacht en dag**: een 24-slots uurprofiel bleek op een holdout niet te generaliseren (het
+  middagpiekje uit de ene hittegolfweek gold de volgende niet meer, MAE 1,31 vs. 1,23 voor
+  één constante), twee emmers wél. Mediaan i.p.v. gemiddelde (één onweersnacht mag de
+  correctie niet meeslepen), geklemd op `MAX_BIAS` 3 °C, en 0 zolang een emmer onder
+  `MIN_SAMPLES` zit — dan gedraagt de aanroeper zich exact als vóór de module. Leren gebeurt
+  met een harde nacht/dag-knip, *toepassen* met een gladde overgang van `TRANSITION_H` (1u)
+  rond de grenzen (zelfde patroon als `neighbor_night_cap` in de tweelingen), anders zet de
+  correctie een sprong van ~1 °C tussen twee forecast-uren waar `predict_open_intervals` een
+  kunstmatige kruising op vastpakt. Gemeten op holdout: nacht-MAE 1,69 → 1,20, RMSE
+  2,21 → 1,55. Nu alleen geïmporteerd door **window_advisor.py** (zie daar); de tweelingen
+  zijn bewust ongemoeid gelaten — hun geleerde params hebben de OM-bias geabsorbeerd, dus de
+  driver wijzigen maakt die kalibratie ongeldig.
 - **`notify.py`** — shared Telegram sender (`send_telegram`, transient-failure retry, never raises) plus
   `sanitize_error(e)`: secret-safe exception rendering (scrubs `apiKey=`/token query params, Telegram
   bot tokens and Gist-IDs out of URLs in exception text). **Always** print/forward exceptions from

@@ -40,6 +40,7 @@ import time
 from datetime import datetime, timedelta
 
 import gist_io
+import om_bias
 from http_util import get_json
 from notify import run_guarded, sanitize_error, send_telegram
 
@@ -534,10 +535,33 @@ def reopen_is_brief(hourly: list[dict], inside: float | None, now: datetime) -> 
 
 # ── Slimme combinatie: forecast geijkt op het eigen station + binnentrend ─────────
 
-def correct_forecast(hourly: list[dict], bias: float, now: datetime) -> list[dict]:
-    """Ijk de Open-Meteo forecast op het WU-station. `bias` = (WU_nu − model_nu) is de
-    lokale microklimaat/kalibratie-offset; we tellen 'm bij de forecast op maar laten 'm
-    lineair uitdoven over BIAS_DECAY_H (dichtbij = stationsanker, ver weg = ruw model).
+def station_bias(outside_source: str, outside: float | None,
+                 om_now: float | None) -> float:
+    """De actuele stationsoffset (WU_nu − model_nu). 0 zonder WU-meting: dan is er niets
+    om op te ijken en zou het "verschil" het model met zichzelf vergelijken."""
+    if outside_source == "wu" and outside is not None and om_now is not None:
+        return round(outside - om_now, 2)
+    return 0.0
+
+
+def correct_forecast(hourly: list[dict], bias: float, now: datetime,
+                     learned: dict | None = None) -> list[dict]:
+    """Ijk de Open-Meteo forecast op het WU-station. Twee lagen, bewust gescheiden:
+
+    1. **Blijvende modelbias** — Open-Meteo leest op onze locatie structureel te warm,
+       's nachts het sterkst (zie `om_bias.py`). Die correctie geldt op *elke*
+       vooruitblik, want ze verdwijnt niet met de tijd.
+    2. **Transiënte stationsoffset** — wat er op dít moment nog bovenop komt
+       (`bias` = WU_nu − model_nu, ná aftrek van laag 1). Die dooft lineair uit over
+       BIAS_DECAY_H, want het anker blijkt maar ~6u informatief (r=0,66 op 0–3u,
+       ~0 voorbij 6u).
+
+    Vóór deze splitsing doofde de héle correctie uit naar **nul**, alsof het ruwe model
+    op termijn zuiver was. Dat is het niet: het nachtvenster ligt vanaf een ochtendrun
+    12–18u vooruit en draaide dus op de volle warme bias — precies waar het raamadvies
+    op leunt. Zonder geleerde bias (`learned` leeg, te weinig samples) is `clim` 0 en is
+    dit bit-voor-bit het oude gedrag.
+
     Geeft per uur {"dt", "out_raw", "out_corr"}."""
     out = []
     for r in hourly:
@@ -547,8 +571,21 @@ def correct_forecast(hourly: list[dict], bias: float, now: datetime) -> list[dic
             continue
         h_ahead = max(0.0, (r["dt"] - now).total_seconds() / 3600.0)
         decay = max(0.0, 1.0 - h_ahead / BIAS_DECAY_H)
-        out.append({"dt": r["dt"], "out_raw": raw, "out_corr": raw + bias * decay})
+        clim = om_bias.correction_for(r["dt"], learned)
+        # decay=1 (nu) → precies het stationsanker; decay=0 (ver) → precies de
+        # climatologie. Daartussen schuift het lineair over.
+        out.append({"dt": r["dt"], "out_raw": raw,
+                    "out_corr": raw + clim + (bias - clim) * decay})
     return out
+
+
+def corrected_hourly(fc: list[dict]) -> list[dict]:
+    """De geijkte forecast in de vorm die `day_max_temp`/`upcoming_max_temp`/
+    `next_reopen` verwachten ({"dt", "temp"}). Die drie vergeleken tot nu toe de *ruwe*
+    modelwaarde met gemeten binnentemperaturen — twee verschillende schalen, met de
+    modelbias er ongefilterd in. Nu zien ze dezelfde geijkte reeks als de
+    open-tijd-voorspelling en het dashboard."""
+    return [{"dt": r["dt"], "temp": r["out_corr"]} for r in fc]
 
 
 def room_trend(history: list[dict], now: datetime,
@@ -1026,7 +1063,10 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
                     outside_rh: float | None = None,
                     outside_rh_temp: float | None = None,
                     outside_decide: float | None = None,
-                    wu_solar: float | None = None) -> dict:
+                    wu_solar: float | None = None,
+                    bias: float | None = None, fc: list[dict] | None = None,
+                    om_log: dict | None = None,
+                    om_learned: dict | None = None) -> dict:
     """Stel het publieke dashboard-artefact samen: stationsgeijkte forecast, per-kamer
     binnentrend + voorspelde open-momenten, en rollende historie voor de grafieken.
 
@@ -1042,10 +1082,11 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     om_now = om.get("current")
     od = outside_decide if outside_decide is not None else outside  # beslis-temp (gladgestreken)
 
-    # Stationscorrectie: alleen ijken als de WU-meting beschikbaar is.
-    bias = 0.0
-    if outside_source == "wu" and outside is not None and om_now is not None:
-        bias = round(outside - om_now, 2)
+    # Stationscorrectie: alleen ijken als de WU-meting beschikbaar is. `main()` rekent
+    # 'm normaal al uit (dezelfde waarde moet de gate én het dashboard voeden); de
+    # fallback houdt deze functie los aanroepbaar.
+    if bias is None:
+        bias = station_bias(outside_source, outside, om_now)
 
     # Genormaliseerde vocht ("RH bij 20°"): meet-nu en model-nu naar RH_REF_T omgerekend,
     # het verschil is de stationsbias in RH@20-ruimte — zelfde ijk-mechaniek als de temp.
@@ -1055,7 +1096,8 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
     if outside_source == "wu" and meas_rh20 is not None and model_rh20 is not None:
         rh_bias = round(meas_rh20 - model_rh20, 2)
 
-    fc = correct_forecast(om["hourly"], bias, now)
+    if fc is None:
+        fc = correct_forecast(om["hourly"], bias, now, om_learned)
     forecast = []
     for r, f in zip(om["hourly"], fc):
         # RH@20 per forecast-uur uit het consistente model-paar (temp + RH van datzelfde uur),
@@ -1080,6 +1122,10 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         # dashboard station vs. model kan terugkijken en de divergentie zichtbaar maakt
         # (bijv. een zonnige avond waarop het station te warm meet).
         sample = {"t": now.isoformat(), "temp": round(outside, 1)}
+        # Bron van deze meting (additief). om_bias verifieert alléén tegen station-
+        # samples: op een Open-Meteo-terugval is de "meting" ditzelfde model, en dan
+        # zou de gemeten modelfout per definitie ~0 zijn en de geleerde bias verwateren.
+        sample["src"] = outside_source
         if om_now is not None:
             sample["om"] = round(om_now, 1)
         if outside_rh is not None:
@@ -1121,6 +1167,13 @@ def build_dashboard(now: datetime, rooms_data: dict, om: dict, outside: float | 
         "outside_trend":  round(outside_slope, 2) if outside_slope is not None else None,
         "outside_hum_trend": round(outside_hum_slope, 2) if outside_hum_slope is not None else None,
         "bias":           bias,
+        # Geleerde Open-Meteo-modelbias + het verificatielogboek waaruit hij komt
+        # (additief, zie om_bias.py). `night`/`day` = mediane modelfout in °C,
+        # + = model leest te warm; 0 zolang er te weinig geverifieerde punten zijn.
+        "om_bias":        {**(om_learned or {}), "updated_at": now.isoformat(),
+                           "window_d": om_bias.LEARN_WINDOW_D,
+                           "pending": (om_log or {}).get("pending", []),
+                           "errors":  (om_log or {}).get("errors", [])},
         "day_max":        round(dmax, 1) if dmax is not None else None,
         "warm_day":       warm_day,
         "warm_ahead":     warm_ahead,
@@ -1159,7 +1212,8 @@ def main():
     # Vooraf ophalen (i.p.v. pas ná de correctie) zodat de lokale solar-mediaan hieronder
     # 'm ook kan gebruiken — dezelfde gepersisteerde historie als de anti-flapping-mediaan
     # verderop.
-    prev_hist = read_prev_dashboard().get("outside_history", [])
+    prev_dash = read_prev_dashboard()
+    prev_hist = prev_dash.get("outside_history", [])
 
     if outside is None:
         outside = om["current"]
@@ -1206,11 +1260,29 @@ def main():
     if outside_decide is not None and outside is not None and abs(outside_decide - outside) >= 0.1:
         print(f"[buiten] beslis-temp (mediaan {SMOOTH_WINDOW_H}u): {outside_decide:.1f}°C")
 
+    # Open-Meteo-modelbias (zie om_bias.py): reken de forecasts af die we eerder
+    # vastlegden en werk de geleerde nacht/dag-bias bij. Verificatie leunt op `prev_hist`
+    # (het uur dat afgerekend wordt ligt in het verleden, dus staat er al in) — het
+    # sample van nú wordt pas in build_dashboard toegevoegd en is hier niet nodig.
+    om_log = om_bias.verify_pending(prev_dash.get("om_bias", {}), prev_hist, now)
+    om_log = om_bias.record_forecast(om_log, om["hourly"], now)
+    om_learned = om_bias.learn(om_log)
+    print(f"[om-bias] geleerd: nacht {om_learned['night']:+.2f}°C "
+          f"(n={om_learned['n_night']}), dag {om_learned['day']:+.2f}°C "
+          f"(n={om_learned['n_day']}), openstaand {len(om_log.get('pending') or [])}")
+
+    # Eén geijkte reeks voor álle consumenten: stationsanker dat uitdooft naar de
+    # geleerde modelbias. Tot nu toe vergeleken de gate en next_reopen de *ruwe*
+    # modelwaarde met gemeten binnentemperaturen — twee schalen, met de warme bias erin.
+    bias = station_bias(outside_source, outside, om.get("current"))
+    fc = correct_forecast(om["hourly"], bias, now, om_learned)
+    hourly_corr = corrected_hourly(fc)
+
     today  = now.date()
-    dmax   = day_max_temp(om["hourly"], today)
+    dmax   = day_max_temp(hourly_corr, today)
     # Komt er een warme dag aan (komende 24u)? Zo ja, dan tanken we 's nachts koelte:
     # ramen blijven open ook als de kamer onder comfort zakt, zolang het buiten kouder is.
-    upcoming_max = upcoming_max_temp(om["hourly"], now)
+    upcoming_max = upcoming_max_temp(hourly_corr, now)
     warm_ahead   = upcoming_max is not None and upcoming_max >= WARM_DAY_MAX
     state  = load_state()
     prev_rooms = state.get("rooms", {})
@@ -1232,7 +1304,8 @@ def main():
     write_dashboard(build_dashboard(
         now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
         warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp,
-        outside_decide=outside_decide, wu_solar=wu_solar))
+        outside_decide=outside_decide, wu_solar=wu_solar,
+        bias=bias, fc=fc, om_log=om_log, om_learned=om_learned))
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")
@@ -1253,7 +1326,7 @@ def main():
             rh_vent[room] = vent_rh
         prev   = prev_rooms.get(room, "dicht")
         low, high = comfort_band(room)
-        reopen_soon = reopen_is_brief(om["hourly"], inside, now)
+        reopen_soon = reopen_is_brief(hourly_corr, inside, now)
         # fresh_air_ok=True: dit blok draait alleen binnen een niet-onderdrukte run (de gate
         # hierboven heeft koele dagen al afgevangen met een vroege return).
         new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead,
@@ -1311,7 +1384,7 @@ def main():
             hint = None
             if (ins is not None and outside_decide is not None
                     and outside_decide > ins - OPEN_MARGIN):
-                hint = reopen_hour(om["hourly"], ins, now)
+                hint = reopen_hour(hourly_corr, ins, now)
             suffix = f" — buiten zakt rond {hint} weer onder binnen" if hint else ""
             lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°, buiten {out_s}°){suffix}")
     message = "\n".join(lines)

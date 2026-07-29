@@ -255,8 +255,9 @@ def main() -> None:
     # ── Fase 1: aanloop (nu−24u → nu), werkelijk weer + werkelijke log, geen scenario ──
     # Laat de massaknoop equilibreren en re-simuleert het etmaal tot nu; `end_h=0.0` zodat
     # het raster exact op `now` eindigt (start = now−WARMUP_H, stap 0.25u → altijd exact).
+    om_learned = am.om_learned_from(wd)
     warmup_tl = am.build_timeline(house, weather, log, now, WARMUP_H,
-                                  beam_iam=True, end_h=0.0)
+                                  beam_iam=True, end_h=0.0, om_learned=om_learned)
     if not warmup_tl:
         print("[teds-nacht] Geen weerdata → stop.")
         raise SystemExit(1)
@@ -284,7 +285,7 @@ def main() -> None:
     # ── Fase 2: forecast (nu → morgen 08:00), scenario-geforceerd, geseed op het anker ──
     end_h = hours_until_morning(now)
     fcst_tl = am.build_timeline(house, weather, log, now, 0.0,
-                                beam_iam=True, end_h=end_h)
+                                beam_iam=True, end_h=end_h, om_learned=om_learned)
     if not fcst_tl:
         print("[teds-nacht] Geen forecast-data → stop.")
         raise SystemExit(1)

@@ -22,6 +22,7 @@ import pytest
 
 import airflow_model as am
 import airflow2_model as a2
+import om_bias
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────────────
@@ -895,3 +896,45 @@ def test_batch_fit_falls_back_to_serial_when_forking_fails(monkeypatch):
     fallback, stats_f = a2.batch_fit(house, wins, max_epochs=1)
     assert stats_f["rmse_batch"] == pytest.approx(stats_s["rmse_batch"])
     assert json.dumps(fallback, sort_keys=True) == json.dumps(serial, sort_keys=True)
+
+
+# ── Ontbiaste driver (om_bias) door de batch-vensters heen ───────────────────────────
+
+def test_prepare_windows_geeft_de_om_bias_door_aan_de_timeline():
+    """De batch-fit moet exact dezelfde driver zien als de kwartierrun. Vergeten =
+    de wekelijkse batch fit op de te warme Open-Meteo-nacht terwijl de live tweeling
+    op de gecorrigeerde draait — twee regimes in één leercurve, onzichtbaar."""
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    ob = {"night": 1.4, "day": 0.5, "n_night": 120, "n_day": 200}
+    plain = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    corr = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0, om_learned=ob)
+    assert len(plain) == len(corr)
+    for wp, wc in zip(plain, corr):
+        for sp, sc in zip(wp["timeline"], wc["timeline"]):
+            assert sc["t"] == sp["t"]
+            verwacht = sp["T_out"] - om_bias.bias_for(sp["t"], ob)
+            assert sc["T_out"] == pytest.approx(verwacht)
+
+
+def test_prepare_windows_zonder_om_bias_is_ongewijzigd():
+    house = _toy_house()
+    ds = _mini_dataset(days=12)
+    plain = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0)
+    same = a2.prepare_windows(house, ds, window_d=5.0, stride_d=5.0, om_learned=None)
+    for wp, ws in zip(plain, same):
+        assert [s["T_out"] for s in ws["timeline"]] == [s["T_out"] for s in wp["timeline"]]
+
+
+def test_physics2_rev_reset_laat_tarrering_en_anker_vallen():
+    """De tarrering corrigeerde grotendeels dít signaal. Bij de rev-bump moeten zowel
+    de params als bias_state vallen, anders tarreert de tweeling een bias weg die er
+    niet meer is en slaat de fout de andere kant op door."""
+    oud = {"params": {"ua_inter": 0.9, "r": {"c_deep": 0.3}},
+           "bias_state": {"r": {"offset": 1.2}},
+           "physics2_rev": a2.PHYSICS2_REV - 1}
+    assert a2.bias_offsets(oud) == {}                       # tarrering gereset
+    batch = {"params": {"ua_inter": 0.9}, "physics2_rev": a2.PHYSICS2_REV - 1}
+    pinned, stamps = a2.anchor_from_batch(_toy_house(), batch)
+    assert pinned is None                                   # fossiel anker genegeerd
+    assert stamps["anchor_at"] is None

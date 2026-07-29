@@ -2335,3 +2335,93 @@ def test_diagnostics_solar_decomp_survives_network_failure(monkeypatch):
                                  "windows": {"w": {"room": "living", "glass_m2": 1.0}}})
     rep = dg.solar_decomp_report(data, "living")
     assert "niet bereikbaar" in rep                    # nette sectie i.p.v. traceback
+
+
+# ── Open-Meteo-modelbias op de driver (om_bias, PHYSICS_REV 4) ─────────────────
+
+def _om_rows(base, t_out=25.0, rh=60.0, hours=6):
+    return [{"dt": base + timedelta(hours=h), "T_out": t_out, "rh": rh,
+             "direct": 0.0, "diffuse": 0.0, "wind_speed": 3.0, "wind_dir": 200.0,
+             "gust": 5.0, "precip": 0.0} for h in range(hours)]
+
+
+def test_build_timeline_zonder_om_learned_is_ongewijzigd():
+    # Terugvalgarantie: geen geleerde bias → bit-voor-bit de oude driver.
+    house = {"rooms": {"r": {}}, "windows": {}}
+    base = datetime(2026, 7, 29, 0, 0, tzinfo=am.TZ)
+    rows = _om_rows(base)
+    now = base + timedelta(hours=2)
+    for learned in (None, {}):
+        grid = am.build_timeline(house, {"hourly": rows}, [], now, 1.0, om_learned=learned)
+        step = next(s for s in grid if s["t"] == now)
+        assert step["T_out"] == pytest.approx(25.0)
+        assert step["weather"]["rh"] == pytest.approx(60.0)
+
+
+def test_build_timeline_trekt_de_nachtbias_van_de_driver_af():
+    # De kern: 's nachts leest Open-Meteo te warm, dus de driver moet omlaag.
+    house = {"rooms": {"r": {}}, "windows": {}}
+    base = datetime(2026, 7, 29, 0, 0, tzinfo=am.TZ)
+    now = base + timedelta(hours=2)                       # 02:00 → volle nachtemmer
+    grid = am.build_timeline(house, {"hourly": _om_rows(base)}, [], now, 1.0,
+                             om_learned={"night": 1.4, "day": 0.5})
+    step = next(s for s in grid if s["t"] == now)
+    assert step["T_out"] == pytest.approx(25.0 - 1.4)
+
+
+def test_build_timeline_laat_de_vochtigheid_meeschuiven():
+    # Bij een temperatuurcorrectie blijft de dampinhoud behouden → koeler = hogere RH.
+    # Alleen de temp corrigeren zou de tweeling stiekem uitdrogen (twin 2 fit op RH mee).
+    house = {"rooms": {"r": {}}, "windows": {}}
+    base = datetime(2026, 7, 29, 0, 0, tzinfo=am.TZ)
+    now = base + timedelta(hours=2)
+    grid = am.build_timeline(house, {"hourly": _om_rows(base)}, [], now, 1.0,
+                             om_learned={"night": 1.4, "day": 0.5})
+    step = next(s for s in grid if s["t"] == now)
+    assert step["weather"]["rh"] > 60.0
+    assert step["weather"]["rh"] == pytest.approx(
+        am.convert_rh(60.0, 25.0, 25.0 - 1.4), abs=1e-6)
+
+
+def test_build_timeline_gebruikt_de_emmer_van_de_stap():
+    # Niet de emmer van "nu", maar die van elke stap zelf bepaalt de correctie.
+    house = {"rooms": {"r": {}}, "windows": {}}
+    base = datetime(2026, 7, 29, 12, 0, tzinfo=am.TZ)      # middag
+    rows = _om_rows(base, hours=16)
+    now = base + timedelta(hours=14)                       # 02:00 → nacht
+    grid = am.build_timeline(house, {"hourly": rows}, [], now, 14.0,
+                             om_learned={"night": 1.4, "day": 0.4})
+    dag  = next(s for s in grid if s["t"] == base + timedelta(hours=1))
+    nacht = next(s for s in grid if s["t"] == now)
+    assert dag["T_out"] == pytest.approx(25.0 - 0.4)
+    assert nacht["T_out"] == pytest.approx(25.0 - 1.4)
+
+
+# ── om_learned_from ────────────────────────────────────────────────────────────
+
+def test_om_learned_from_leeg_geeft_none():
+    # Nog niets geleerd → None → build_timeline gedraagt zich als vóór de correctie.
+    assert am.om_learned_from({}) is None
+    assert am.om_learned_from({"om_bias": {}}) is None
+    assert am.om_learned_from({"om_bias": {"night": 0.0, "day": 0.0,
+                                           "n_night": 3, "n_day": 5}}) is None
+
+
+def test_om_learned_from_geeft_het_blok_door():
+    ob = {"night": 1.4, "day": 0.5, "n_night": 120, "n_day": 200}
+    assert am.om_learned_from({"om_bias": ob}) == ob
+
+
+# ── PHYSICS_REV-poort ──────────────────────────────────────────────────────────
+
+def test_ontbiaste_driver_forceert_een_params_reset():
+    # De geleerde params hebben de OM-bias geabsorbeerd; ze op de gecorrigeerde driver
+    # loslaten zou de fout van teken laten wisselen i.p.v. verdwijnen. De rev-poort moet
+    # ze dus naar de priors terugzetten.
+    house = {"rooms": {"r": {}}, "windows": {}, "doors": {}, "vents": {}}
+    oud = {"params": {"cp_shelter": 0.99, "r": {"ua_env": 0.11}},
+           "physics_rev": am.PHYSICS_REV - 1}
+    assert am.physics_rev_migration_needed(oud)
+    merged = am.merged_params(house, oud)
+    assert merged["cp_shelter"] == pytest.approx(am.PRIORS["cp_shelter"])
+    assert merged["r"]["ua_env"] == pytest.approx(am.PRIORS["ua_env"])

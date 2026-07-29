@@ -87,7 +87,16 @@ HISTORY_DIR     = os.getenv("TWIN2_HISTORY_DIR", "data/twin2_history")
 #   `h_fd` op zijn vloer in 4 van de 5 kamers, waardoor de diepe massaknoop losgekoppeld
 #   raakte en het 3-knoops-model feitelijk tot 2 knopen inzakte. Precies de trage opslag
 #   die de metingen eisen (office swingt 5–6°C/dag met een piek 2,5u ná de buitenpiek).
-PHYSICS2_REV = 2
+# Rev 3 = ontbiaste buitentemperatuur-driver (om_bias.py, mirror van am.PHYSICS_REV 4).
+#   Hier weegt hij extra zwaar: de **tarrering** (`bias_offsets`) corrigeerde per kamer een
+#   systematische warm-bias die 's nachts het grootst was — bias ≈ RMSE, living +1,2 van 1,3,
+#   office +1,1 van 1,5 — en dat is grotendeels dít signaal, één laag te laat gerepareerd.
+#   De meet-laag plakte een pleister op een driverfout. Nu de driver zelf klopt moeten zowel
+#   de params als `bias_state` vallen, anders tarreert de tweeling een bias weg die er niet
+#   meer is en slaat de fout de andere kant op door. Het rev-2-anker vervalt mee; tot de
+#   eerstvolgende wekelijkse batch draait de tweeling op bootstrap-leren (het pad dat voor
+#   precies deze situatie bestaat).
+PHYSICS2_REV = 3
 
 # ── Kalibratie ─────────────────────────────────────────────────────────────────────
 CALIB_WINDOW_H = am.CALIB_WINDOW_H   # zelfde venster/cadans als tweeling 1 → curves vergelijkbaar
@@ -1489,14 +1498,21 @@ def _slice_actual(actual: dict, start: datetime, end: datetime) -> dict:
 
 def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None,
                     stride_d: float | None = None, warmup_h: float | None = None,
-                    neighbor_mode: str = "end") -> list[dict]:
+                    neighbor_mode: str = "end",
+                    om_learned: dict | None = None) -> list[dict]:
     """Venster-bouw voor batch/campagne (voorheen inline in batch_fit): historische
     filters (stook per sample, AC + pauze uit de log), timeline per venster, actual/RH-
     slices, seeds en het buur-anker. `neighbor_mode`: "end" (huidig gedrag — anker
     gesnapshot op venster-éinde en 5 dagen constant) of "mid" (venster-midden; het
     einde-snapshot gaf tot ±6°C anker-fout aan de venster-rand — campagne-arm).
     Elke win draagt `start`/`end`; bij TD_SEED_MODE=="own" ook een `tm_seed`
-    (diepe-massa-seed = kamer-eigen startmeting i.p.v. de blend met het anker)."""
+    (diepe-massa-seed = kamer-eigen startmeting i.p.v. de blend met het anker).
+
+    `om_learned` = de geleerde Open-Meteo-modelbias (zie `om_bias.py`), doorgegeven aan
+    `build_timeline`. De shards bewaren bewust het **ruwe** weer — de correctie is een
+    modelkeuze die bij het lézen wordt toegepast, zodat een herijking van de bias niet
+    het hele archief hoeft te herschrijven en de kwartierrun exact dezelfde driver ziet
+    als de batch."""
     warmup_h = BATCH_WARMUP_H if warmup_h is None else warmup_h
     log = dataset["log"]
     rows = dataset["weather_rows"]
@@ -1528,7 +1544,8 @@ def prepare_windows(house: dict, dataset: dict, *, window_d: float | None = None
         rh = _slice_actual(rh_all, w_start, w_end)
         window_h = (w_end - w_start).total_seconds() / 3600.0 + warmup_h
         timeline = am.build_timeline(house, {"hourly": rows}, log, w_end,
-                                     window_h, beam_iam=True, end_h=0.0)
+                                     window_h, beam_iam=True, end_h=0.0,
+                                     om_learned=om_learned)
         if not timeline:
             continue
         seed = {rid: s[0][1] for rid, s in act.items()}
@@ -1780,7 +1797,7 @@ def batch_main():
     start_params = batch_start_params(house, prev)
     if start_params is not None:
         print(f"[batch] warm-start vanaf het vorige anker (gefit {prev.get('fitted_at')}).")
-    wins = prepare_windows(house, dataset)
+    wins = prepare_windows(house, dataset, om_learned=am.om_learned_from(am.load_window_data()))
     # Budget expliciet op call-time doorgeven (een def-time default zou de module-
     # constante bevriezen — env-override/test-monkeypatch werkte dan niet).
     params, stats = batch_fit(house, wins, time_budget_s=BATCH_TIME_BUDGET_S,
@@ -2088,8 +2105,10 @@ def main():
     actual, pause_excluded = am.filter_paused_samples(actual, p_intervals)
     actual_rh, _ = am.filter_paused_samples(actual_rh, p_intervals)
 
+    om_learned = am.om_learned_from(wd)
     timeline = am.build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H,
-                                 wu_solar_scale=wu_solar_scale, beam_iam=True)
+                                 wu_solar_scale=wu_solar_scale, beam_iam=True,
+                                 om_learned=om_learned)
     if not timeline:
         print("[airflow2] Geen weerdata → kan niet simuleren. Stop.")
         sys.exit(1)

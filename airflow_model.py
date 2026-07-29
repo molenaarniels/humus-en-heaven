@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 # Optionele, pure helpers uit naburige modules (géén netwerk/zijeffect bij import).
 import shared_const
 from shared_const import utc_now_iso
+import om_bias
 from gist_io import read_json as gist_read_json
 from http_util import get_json
 from notify import run_guarded, send_telegram
@@ -200,7 +201,21 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
 #   Die waarden overnemen zou het leren starten in precies de vervorming die deze revisie
 #   opheft. Bovendien verschuift de massabasis zélf (party-muren + vloeren tellen nu mee), dus
 #   dezelfde `c_mass` betekent een andere capaciteit — de definitie van een rev-bump.
-PHYSICS_REV = 3
+#
+# Rev 4 = ontbiaste buitentemperatuur-driver (om_bias.py, juli 2026): Open-Meteo leest op
+#   onze locatie structureel te warm, 's nachts het sterkst (+1,4 °C tussen 22–07u, +0,8
+#   overdag, gemeten over ~15.700 geverifieerde forecast-punten). `build_timeline` trekt die
+#   modelfout er nu af (en schuift de RH mee bij behoud van dampinhoud). T_out is de driver
+#   van élke term die met buiten uitwisselt — ventilatie, gevelconductie, dak-sol-air, en via
+#   het buur-anker ook de party-muur — dus de geleerde params hebben de bias jarenlang
+#   geabsorbeerd: ze compenseerden een driver die 's nachts te warm was door het huis
+#   makkelijker te laten afkoelen dan het echt doet. Twin 2's tarrering maakte dat zichtbaar
+#   (een systematische warm-bias per kamer, 's nachts het grootst — bias ≈ RMSE). Diezelfde
+#   waarden op de gecorrigeerde driver loslaten zou de fout van teken laten wisselen i.p.v.
+#   verdwijnen, dus: alles terug naar de priors en schoon opnieuw leren. Zonder deze reset
+#   zou bovendien het checkpoint (geijkt op de oude driver) de skill-terugval na de deploy
+#   als regressie lezen en de fallback-lus starten die rev 3 nu juist heeft dichtgetimmerd.
+PHYSICS_REV = 4
 
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
 # Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
@@ -2522,6 +2537,19 @@ def load_window_data() -> dict:
         return {}
 
 
+def om_learned_from(wd: dict) -> dict | None:
+    """De geleerde Open-Meteo-modelbias uit het raamadviseur-artefact (`om_bias`, zie
+    `om_bias.py`) — de enige plek waar hij geleerd én gepersisteerd wordt, zodat beide
+    tweelingen, de batch-fit en de nachtvoorspelling dezelfde correctie gebruiken.
+
+    Nog niets geleerd (verse deploy, te weinig geverifieerde punten) → None, en dan
+    gedraagt `build_timeline` zich exact als vóór deze correctie."""
+    ob = (wd or {}).get("om_bias") or {}
+    if not ob.get("night") and not ob.get("day"):
+        return None
+    return ob
+
+
 def load_learned() -> dict:
     try:
         with open(LEARNED_FILE, encoding="utf-8") as f:
@@ -2658,12 +2686,27 @@ def per_window_solar(house: dict, states: dict, sun_az: float, sun_el: float,
 
 def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
                    window_h: float, wu_solar_scale: float | None = None,
-                   beam_iam: bool = False, end_h: float = 2.0) -> list[dict]:
+                   beam_iam: bool = False, end_h: float = 2.0,
+                   om_learned: dict | None = None) -> list[dict]:
     """Bouw een 15-minuten-raster van drivers over het kalibratievenster t/m nu,
     plus een vooruitblik van `end_h` uur (default de korte 2u voor de afgeleide-
     temp-projectie; night_forecast.py rekt hem op tot morgenochtend). Per stap:
     T_out, per-kamer instraling (door het glas), wind, en de gerapporteerde
-    openingen-toestand op dat moment."""
+    openingen-toestand op dat moment.
+
+    `om_learned` = de geleerde Open-Meteo-modelbias (zie `om_bias.py`). Open-Meteo leest
+    op onze locatie structureel te warm, 's nachts het sterkst (+1,4 °C tussen 22–07u),
+    en dít is het enige punt waar de buitentemperatuur de fysica binnenkomt — voor béíde
+    tweelingen, hun batch-fit én de nachtvoorspelling. Zonder correctie absorbeert de
+    kalibratie die modelfout in de kamer-params (twin 2's tarrering maakte 'm zichtbaar:
+    een systematische warm-bias per kamer die 's nachts het grootst is), waarna élke
+    voorspelling ermee besmet is. None → geen correctie, exact het oude gedrag.
+
+    De **vochtigheid schuift mee**: bij een temperatuurcorrectie blijft de absolute
+    dampinhoud behouden, dus de RH bij de gecorrigeerde temperatuur is hoger
+    (`convert_rh`, dezelfde Magnus-redenering als `vent_rh` in de raamadviseur). Alleen
+    de temperatuur corrigeren zou de tweeling stiekem uitdrogen — en twin 2 laat de
+    RH-residuen meewegen in zijn fit."""
     rows = [r for r in weather["hourly"] if r["T_out"] is not None]
     if not rows:
         return []
@@ -2676,6 +2719,11 @@ def build_timeline(house: dict, weather: dict, log: list[dict], now: datetime,
         T_out = _interp_hourly(rows, t, "T_out")
         wx = {k: _interp_hourly(rows, t, k) for k in
               ("wind_speed", "wind_dir", "gust", "precip", "direct", "diffuse", "rh")}
+        if om_learned and T_out is not None:
+            # Modelbias eraf; de RH volgt bij behoud van dampinhoud (zie docstring).
+            T_corr = T_out + om_bias.correction_for(t, om_learned)
+            wx["rh"] = convert_rh(wx["rh"], T_out, T_corr)
+            T_out = T_corr
         st = openings_at(log, t)            # gerapporteerde toestand op dit moment (incl. zonwering)
         # Representatieve zonpositie op het stap-midden (voor de rij/dashboard; `irr` hieronder
         # is een tijdsgemiddelde over de stap, geen momentopname).
@@ -3318,8 +3366,13 @@ def main():
 
     # Timeline reikt WARMUP_H vóór het residu-venster (sim-only massaknoop-aanloop); residuen
     # tellen alleen waar tado-samples bestaan (binnen CALIB_WINDOW_H, zie collect_actual).
+    om_learned = om_learned_from(wd)
+    if om_learned:
+        print(f"[om-bias] driver gecorrigeerd: nacht {om_learned.get('night'):+.2f}°C, "
+              f"dag {om_learned.get('day'):+.2f}°C")
     timeline = build_timeline(house, weather, log, now, CALIB_WINDOW_H + WARMUP_H,
-                              wu_solar_scale=wu_solar_scale, beam_iam=True)
+                              wu_solar_scale=wu_solar_scale, beam_iam=True,
+                              om_learned=om_learned)
     if not timeline:
         print("[airflow_model] Geen weerdata → kan niet simuleren. Stop.")
         sys.exit(1)

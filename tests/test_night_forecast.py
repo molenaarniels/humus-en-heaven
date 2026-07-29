@@ -301,3 +301,31 @@ def test_main_rebinds_neighbor_temp(monkeypatch, capsys):
     assert am._NEIGHBOR_TEMP == pytest.approx(expected, abs=0.2)
     out = capsys.readouterr().out
     assert "Teds nacht" in out or "stil" in out          # bericht of seizoenspoort
+
+
+# ── Open-Meteo-modelbias op de driver ──────────────────────────────────────────
+
+def test_main_geeft_de_geleerde_om_bias_door_aan_build_timeline(monkeypatch, capsys):
+    """Spiegel van de _NEIGHBOR_TEMP-test: de driver-correctie moet écht doorgegeven
+    worden. Vergeten = Teds voorspelling draait stil op de te warme nachtdriver, wat
+    juist de reden was om 'm te bouwen — en niets zou dat zichtbaar maken."""
+    rows = _rows(datetime.now(TZ))
+    ob = {"night": 1.4, "day": 0.5, "n_night": 120, "n_day": 200}
+    seen = []
+    orig = am.build_timeline
+
+    def spy(*a, **kw):
+        seen.append(kw.get("om_learned"))
+        return orig(*a, **kw)
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(am, "load_openings_log", lambda: [])
+    monkeypatch.setattr(am, "load_learned", dict)
+    monkeypatch.setattr(am, "load_window_data", lambda: {"om_bias": ob})
+    monkeypatch.setattr(am, "build_timeline", spy)
+    nf.main()
+    assert seen, "build_timeline is niet aangeroepen"
+    assert all(s == ob for s in seen), (
+        f"niet elke timeline kreeg de correctie mee: {seen}")

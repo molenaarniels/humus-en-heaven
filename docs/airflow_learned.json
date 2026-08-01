@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-01T06:32:27.537591+02:00",
+  "updated_at": "2026-08-01T06:45:00.198169+02:00",
   "model_version": "aa86522",
   "physics_rev": 4,
   "anomaly_nudge_at": null,
@@ -80,8 +80,10 @@
       "f_air": 0.7101920744453323
     }
   },
-  "rmse": 0.548,
-  "railed": [],
+  "rmse": 0.671,
+  "railed": [
+    "hotties.c_mass@floor"
+  ],
   "rmse_history": [
     {
       "t": "2026-07-22T06:45:00.369145+02:00",
@@ -5060,6 +5062,21 @@
       "log_fp": "ec8b49d834769b78",
       "skill": 0.532,
       "rmse_naive": 1.172,
+      "wx": {
+        "tmax": 29.2,
+        "solar_peak": 797,
+        "solar_mean": 197
+      }
+    },
+    {
+      "t": "2026-08-01T06:45:00.198169+02:00",
+      "rmse": 0.671,
+      "held": false,
+      "paused": false,
+      "version": "aa86522",
+      "log_fp": "ec8b49d834769b78",
+      "skill": 0.538,
+      "rmse_naive": 1.451,
       "wx": {
         "tmax": 29.2,
         "solar_peak": 797,

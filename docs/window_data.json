@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-08-01T00:31:48.443193+00:00",
-  "as_of_local": "2026-08-01T02:31:42.255786+02:00",
+  "generated_at": "2026-08-01T00:45:06.574006+00:00",
+  "as_of_local": "2026-08-01T02:45:00.891703+02:00",
   "source": "window_advisor",
   "gated": false,
   "gate_reason": "warme dag",
-  "outside_now": 14.4,
+  "outside_now": 14.3,
   "outside_smoothed": 14.4,
   "outside_source": "wu",
-  "outside_humidity": 86,
-  "outside_rh20": 60.3,
-  "om_now": 17.2,
-  "outside_trend": null,
-  "outside_hum_trend": null,
-  "bias": -2.8,
+  "outside_humidity": 88,
+  "outside_rh20": 61.3,
+  "om_now": 16.5,
+  "outside_trend": -0.45,
+  "outside_hum_trend": 9.02,
+  "bias": -2.2,
   "om_bias": {
     "night": 1.5,
     "n_night": 123,
     "day": 0.4,
     "n_day": 200,
-    "updated_at": "2026-08-01T02:31:42.255786+02:00",
+    "updated_at": "2026-08-01T02:45:00.891703+02:00",
     "window_d": 14,
     "pending": [
       {
@@ -1405,7 +1405,7 @@
       }
     ]
   },
-  "day_max": 25.0,
+  "day_max": 25.2,
   "warm_day": true,
   "warm_ahead": true,
   "params": {
@@ -1437,15 +1437,6 @@
     }
   },
   "outside_history": [
-    {
-      "t": "2026-07-29T15:00:00.737823+02:00",
-      "temp": 31.9,
-      "src": "wu",
-      "om": 33.0,
-      "hum": 30,
-      "rh20": 69.8,
-      "solar": 567.0
-    },
     {
       "t": "2026-07-29T15:15:00.487009+02:00",
       "temp": 32.6,
@@ -3164,119 +3155,128 @@
       "hum": 86,
       "rh20": 60.3,
       "solar": 0.0
+    },
+    {
+      "t": "2026-08-01T02:45:00.891703+02:00",
+      "temp": 14.3,
+      "src": "wu",
+      "om": 16.5,
+      "hum": 88,
+      "rh20": 61.3,
+      "solar": 0.0
     }
   ],
   "forecast": [
     {
       "dt": "2026-08-01T00:00:00+02:00",
-      "out_raw": 18.7,
-      "out_corr": 15.9,
-      "rh20_raw": 65.5,
-      "rh20_corr": 60.4,
+      "out_raw": 18.3,
+      "out_corr": 16.1,
+      "rh20_raw": 65.7,
+      "rh20_corr": 64.4,
       "is_future": false
     },
     {
       "dt": "2026-08-01T01:00:00+02:00",
-      "out_raw": 18.1,
+      "out_raw": 17.5,
       "out_corr": 15.3,
-      "rh20_raw": 64.8,
-      "rh20_corr": 59.7,
+      "rh20_raw": 65.0,
+      "rh20_corr": 63.7,
       "is_future": false
     },
     {
       "dt": "2026-08-01T02:00:00+02:00",
-      "out_raw": 17.4,
-      "out_corr": 14.6,
-      "rh20_raw": 64.6,
-      "rh20_corr": 59.5,
+      "out_raw": 16.9,
+      "out_corr": 14.7,
+      "rh20_raw": 64.2,
+      "rh20_corr": 63.0,
       "is_future": false
     },
     {
       "dt": "2026-08-01T03:00:00+02:00",
-      "out_raw": 17.0,
-      "out_corr": 14.3,
-      "rh20_raw": 65.5,
-      "rh20_corr": 60.5,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-01T04:00:00+02:00",
-      "out_raw": 16.7,
-      "out_corr": 14.1,
-      "rh20_raw": 65.0,
-      "rh20_corr": 60.6,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-01T05:00:00+02:00",
       "out_raw": 16.4,
-      "out_corr": 13.9,
-      "rh20_raw": 64.6,
-      "rh20_corr": 60.5,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-01T06:00:00+02:00",
-      "out_raw": 15.9,
-      "out_corr": 13.5,
-      "rh20_raw": 61.8,
-      "rh20_corr": 58.2,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-01T07:00:00+02:00",
-      "out_raw": 16.1,
-      "out_corr": 14.0,
-      "rh20_raw": 64.2,
+      "out_corr": 14.2,
+      "rh20_raw": 62.2,
       "rh20_corr": 61.0,
       "is_future": true
     },
     {
+      "dt": "2026-08-01T04:00:00+02:00",
+      "out_raw": 16.3,
+      "out_corr": 14.2,
+      "rh20_raw": 62.6,
+      "rh20_corr": 61.5,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-01T05:00:00+02:00",
+      "out_raw": 15.9,
+      "out_corr": 13.8,
+      "rh20_raw": 61.8,
+      "rh20_corr": 60.8,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-01T06:00:00+02:00",
+      "out_raw": 15.4,
+      "out_corr": 13.4,
+      "rh20_raw": 58.4,
+      "rh20_corr": 57.4,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-01T07:00:00+02:00",
+      "out_raw": 15.8,
+      "out_corr": 14.0,
+      "rh20_raw": 59.9,
+      "rh20_corr": 59.1,
+      "is_future": true
+    },
+    {
       "dt": "2026-08-01T08:00:00+02:00",
-      "out_raw": 17.2,
+      "out_raw": 16.9,
       "out_corr": 15.5,
-      "rh20_raw": 61.3,
-      "rh20_corr": 58.5,
+      "rh20_raw": 60.1,
+      "rh20_corr": 59.4,
       "is_future": true
     },
     {
       "dt": "2026-08-01T09:00:00+02:00",
-      "out_raw": 18.7,
-      "out_corr": 17.2,
-      "rh20_raw": 62.7,
-      "rh20_corr": 60.4,
+      "out_raw": 18.2,
+      "out_corr": 16.9,
+      "rh20_raw": 60.8,
+      "rh20_corr": 60.2,
       "is_future": true
     },
     {
       "dt": "2026-08-01T10:00:00+02:00",
-      "out_raw": 20.6,
-      "out_corr": 19.3,
-      "rh20_raw": 52.9,
-      "rh20_corr": 51.0,
+      "out_raw": 20.1,
+      "out_corr": 19.0,
+      "rh20_raw": 54.3,
+      "rh20_corr": 53.8,
       "is_future": true
     },
     {
       "dt": "2026-08-01T11:00:00+02:00",
-      "out_raw": 22.1,
-      "out_corr": 21.0,
-      "rh20_raw": 51.2,
-      "rh20_corr": 49.7,
+      "out_raw": 21.8,
+      "out_corr": 20.8,
+      "rh20_raw": 48.0,
+      "rh20_corr": 47.6,
       "is_future": true
     },
     {
       "dt": "2026-08-01T12:00:00+02:00",
-      "out_raw": 23.5,
+      "out_raw": 23.4,
       "out_corr": 22.6,
-      "rh20_raw": 47.1,
-      "rh20_corr": 46.0,
+      "rh20_raw": 44.3,
+      "rh20_corr": 44.0,
       "is_future": true
     },
     {
       "dt": "2026-08-01T13:00:00+02:00",
       "out_raw": 24.7,
       "out_corr": 24.0,
-      "rh20_raw": 42.6,
-      "rh20_corr": 41.9,
+      "rh20_raw": 43.9,
+      "rh20_corr": 43.7,
       "is_future": true
     },
     {
@@ -3284,271 +3284,271 @@
       "out_raw": 25.3,
       "out_corr": 24.8,
       "rh20_raw": 44.1,
-      "rh20_corr": 43.9,
+      "rh20_corr": 44.1,
       "is_future": true
     },
     {
       "dt": "2026-08-01T15:00:00+02:00",
-      "out_raw": 25.4,
-      "out_corr": 25.0,
-      "rh20_raw": 44.4,
-      "rh20_corr": 44.4,
+      "out_raw": 25.6,
+      "out_corr": 25.2,
+      "rh20_raw": 44.9,
+      "rh20_corr": 44.9,
       "is_future": true
     },
     {
       "dt": "2026-08-01T16:00:00+02:00",
-      "out_raw": 24.8,
-      "out_corr": 24.4,
-      "rh20_raw": 48.2,
-      "rh20_corr": 48.2,
+      "out_raw": 25.6,
+      "out_corr": 25.2,
+      "rh20_raw": 47.7,
+      "rh20_corr": 47.7,
       "is_future": true
     },
     {
       "dt": "2026-08-01T17:00:00+02:00",
-      "out_raw": 23.4,
-      "out_corr": 23.0,
+      "out_raw": 24.2,
+      "out_corr": 23.8,
       "rh20_raw": 51.7,
       "rh20_corr": 51.7,
       "is_future": true
     },
     {
       "dt": "2026-08-01T18:00:00+02:00",
-      "out_raw": 24.4,
-      "out_corr": 24.0,
-      "rh20_raw": 51.0,
-      "rh20_corr": 51.0,
+      "out_raw": 23.4,
+      "out_corr": 23.0,
+      "rh20_raw": 50.5,
+      "rh20_corr": 50.5,
       "is_future": true
     },
     {
       "dt": "2026-08-01T19:00:00+02:00",
-      "out_raw": 24.0,
-      "out_corr": 23.6,
-      "rh20_raw": 48.5,
-      "rh20_corr": 48.5,
+      "out_raw": 23.3,
+      "out_corr": 22.9,
+      "rh20_raw": 55.1,
+      "rh20_corr": 55.1,
       "is_future": true
     },
     {
       "dt": "2026-08-01T20:00:00+02:00",
-      "out_raw": 23.4,
-      "out_corr": 23.0,
-      "rh20_raw": 46.8,
-      "rh20_corr": 46.8,
+      "out_raw": 22.9,
+      "out_corr": 22.5,
+      "rh20_raw": 52.5,
+      "rh20_corr": 52.5,
       "is_future": true
     },
     {
       "dt": "2026-08-01T21:00:00+02:00",
-      "out_raw": 22.6,
-      "out_corr": 22.2,
-      "rh20_raw": 51.6,
-      "rh20_corr": 51.6,
+      "out_raw": 22.3,
+      "out_corr": 21.9,
+      "rh20_raw": 53.0,
+      "rh20_corr": 53.0,
       "is_future": true
     },
     {
       "dt": "2026-08-01T22:00:00+02:00",
-      "out_raw": 21.2,
-      "out_corr": 20.2,
-      "rh20_raw": 53.8,
-      "rh20_corr": 53.8,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-01T23:00:00+02:00",
-      "out_raw": 20.0,
-      "out_corr": 18.5,
+      "out_raw": 20.9,
+      "out_corr": 19.9,
       "rh20_raw": 56.0,
       "rh20_corr": 56.0,
       "is_future": true
     },
     {
-      "dt": "2026-08-02T00:00:00+02:00",
-      "out_raw": 19.5,
-      "out_corr": 18.0,
-      "rh20_raw": 57.2,
-      "rh20_corr": 57.2,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-02T01:00:00+02:00",
-      "out_raw": 19.3,
-      "out_corr": 17.8,
-      "rh20_raw": 57.4,
-      "rh20_corr": 57.4,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-02T02:00:00+02:00",
-      "out_raw": 18.9,
-      "out_corr": 17.4,
-      "rh20_raw": 54.2,
-      "rh20_corr": 54.2,
-      "is_future": true
-    },
-    {
-      "dt": "2026-08-02T03:00:00+02:00",
-      "out_raw": 18.5,
-      "out_corr": 17.0,
+      "dt": "2026-08-01T23:00:00+02:00",
+      "out_raw": 20.2,
+      "out_corr": 18.7,
       "rh20_raw": 53.7,
       "rh20_corr": 53.7,
       "is_future": true
     },
     {
-      "dt": "2026-08-02T04:00:00+02:00",
-      "out_raw": 17.9,
-      "out_corr": 16.4,
-      "rh20_raw": 54.4,
-      "rh20_corr": 54.4,
+      "dt": "2026-08-02T00:00:00+02:00",
+      "out_raw": 19.7,
+      "out_corr": 18.2,
+      "rh20_raw": 51.0,
+      "rh20_corr": 51.0,
       "is_future": true
     },
     {
-      "dt": "2026-08-02T05:00:00+02:00",
-      "out_raw": 17.7,
-      "out_corr": 16.2,
+      "dt": "2026-08-02T01:00:00+02:00",
+      "out_raw": 19.5,
+      "out_corr": 18.0,
+      "rh20_raw": 52.4,
+      "rh20_corr": 52.4,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-02T02:00:00+02:00",
+      "out_raw": 19.3,
+      "out_corr": 17.8,
+      "rh20_raw": 55.5,
+      "rh20_corr": 55.5,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-02T03:00:00+02:00",
+      "out_raw": 18.9,
+      "out_corr": 17.4,
+      "rh20_raw": 56.0,
+      "rh20_corr": 56.0,
+      "is_future": true
+    },
+    {
+      "dt": "2026-08-02T04:00:00+02:00",
+      "out_raw": 18.5,
+      "out_corr": 17.0,
       "rh20_raw": 54.6,
       "rh20_corr": 54.6,
       "is_future": true
     },
     {
+      "dt": "2026-08-02T05:00:00+02:00",
+      "out_raw": 17.8,
+      "out_corr": 16.3,
+      "rh20_raw": 53.2,
+      "rh20_corr": 53.2,
+      "is_future": true
+    },
+    {
       "dt": "2026-08-02T06:00:00+02:00",
-      "out_raw": 17.2,
-      "out_corr": 15.7,
-      "rh20_raw": 53.7,
-      "rh20_corr": 53.7,
+      "out_raw": 16.9,
+      "out_corr": 15.4,
+      "rh20_raw": 52.7,
+      "rh20_corr": 52.7,
       "is_future": true
     },
     {
       "dt": "2026-08-02T07:00:00+02:00",
-      "out_raw": 17.2,
+      "out_raw": 17.1,
       "out_corr": 16.2,
-      "rh20_raw": 53.7,
-      "rh20_corr": 53.7,
+      "rh20_raw": 52.5,
+      "rh20_corr": 52.5,
       "is_future": true
     },
     {
       "dt": "2026-08-02T08:00:00+02:00",
-      "out_raw": 18.8,
-      "out_corr": 18.4,
-      "rh20_raw": 52.9,
-      "rh20_corr": 52.9,
+      "out_raw": 18.3,
+      "out_corr": 17.9,
+      "rh20_raw": 52.2,
+      "rh20_corr": 52.2,
       "is_future": true
     },
     {
       "dt": "2026-08-02T09:00:00+02:00",
-      "out_raw": 21.3,
-      "out_corr": 20.9,
-      "rh20_raw": 50.9,
-      "rh20_corr": 50.9,
+      "out_raw": 20.9,
+      "out_corr": 20.5,
+      "rh20_raw": 50.7,
+      "rh20_corr": 50.7,
       "is_future": true
     },
     {
       "dt": "2026-08-02T10:00:00+02:00",
-      "out_raw": 23.4,
-      "out_corr": 23.0,
-      "rh20_raw": 46.8,
-      "rh20_corr": 46.8,
+      "out_raw": 23.7,
+      "out_corr": 23.3,
+      "rh20_raw": 46.4,
+      "rh20_corr": 46.4,
       "is_future": true
     },
     {
       "dt": "2026-08-02T11:00:00+02:00",
-      "out_raw": 24.8,
-      "out_corr": 24.4,
-      "rh20_raw": 46.9,
-      "rh20_corr": 46.9,
+      "out_raw": 25.5,
+      "out_corr": 25.1,
+      "rh20_raw": 44.7,
+      "rh20_corr": 44.7,
       "is_future": true
     },
     {
       "dt": "2026-08-02T12:00:00+02:00",
-      "out_raw": 26.7,
-      "out_corr": 26.3,
-      "rh20_raw": 43.4,
-      "rh20_corr": 43.4,
+      "out_raw": 26.9,
+      "out_corr": 26.5,
+      "rh20_raw": 42.4,
+      "rh20_corr": 42.4,
       "is_future": true
     },
     {
       "dt": "2026-08-02T13:00:00+02:00",
-      "out_raw": 28.4,
-      "out_corr": 28.0,
-      "rh20_raw": 41.4,
-      "rh20_corr": 41.4,
+      "out_raw": 28.2,
+      "out_corr": 27.8,
+      "rh20_raw": 40.9,
+      "rh20_corr": 40.9,
       "is_future": true
     },
     {
       "dt": "2026-08-02T14:00:00+02:00",
-      "out_raw": 29.5,
-      "out_corr": 29.1,
-      "rh20_raw": 38.8,
-      "rh20_corr": 38.8,
+      "out_raw": 29.1,
+      "out_corr": 28.7,
+      "rh20_raw": 37.9,
+      "rh20_corr": 37.9,
       "is_future": true
     },
     {
       "dt": "2026-08-02T15:00:00+02:00",
-      "out_raw": 30.4,
-      "out_corr": 30.0,
-      "rh20_raw": 39.0,
-      "rh20_corr": 39.0,
+      "out_raw": 29.8,
+      "out_corr": 29.4,
+      "rh20_raw": 35.9,
+      "rh20_corr": 35.9,
       "is_future": true
     },
     {
       "dt": "2026-08-02T16:00:00+02:00",
-      "out_raw": 31.1,
-      "out_corr": 30.7,
-      "rh20_raw": 38.6,
-      "rh20_corr": 38.6,
+      "out_raw": 30.0,
+      "out_corr": 29.6,
+      "rh20_raw": 36.3,
+      "rh20_corr": 36.3,
       "is_future": true
     },
     {
       "dt": "2026-08-02T17:00:00+02:00",
-      "out_raw": 31.0,
-      "out_corr": 30.6,
-      "rh20_raw": 42.3,
-      "rh20_corr": 42.3,
+      "out_raw": 30.1,
+      "out_corr": 29.7,
+      "rh20_raw": 36.5,
+      "rh20_corr": 36.5,
       "is_future": true
     },
     {
       "dt": "2026-08-02T18:00:00+02:00",
-      "out_raw": 30.9,
-      "out_corr": 30.5,
-      "rh20_raw": 43.9,
-      "rh20_corr": 43.9,
+      "out_raw": 29.8,
+      "out_corr": 29.4,
+      "rh20_raw": 37.7,
+      "rh20_corr": 37.7,
       "is_future": true
     },
     {
       "dt": "2026-08-02T19:00:00+02:00",
-      "out_raw": 30.8,
-      "out_corr": 30.4,
+      "out_raw": 29.3,
+      "out_corr": 28.9,
       "rh20_raw": 41.8,
       "rh20_corr": 41.8,
       "is_future": true
     },
     {
       "dt": "2026-08-02T20:00:00+02:00",
-      "out_raw": 29.6,
-      "out_corr": 29.2,
-      "rh20_raw": 37.2,
-      "rh20_corr": 37.2,
+      "out_raw": 28.0,
+      "out_corr": 27.6,
+      "rh20_raw": 43.6,
+      "rh20_corr": 43.6,
       "is_future": true
     },
     {
       "dt": "2026-08-02T21:00:00+02:00",
-      "out_raw": 27.6,
-      "out_corr": 27.2,
-      "rh20_raw": 42.6,
-      "rh20_corr": 42.6,
+      "out_raw": 26.4,
+      "out_corr": 26.0,
+      "rh20_raw": 45.6,
+      "rh20_corr": 45.6,
       "is_future": true
     },
     {
       "dt": "2026-08-02T22:00:00+02:00",
-      "out_raw": 26.2,
-      "out_corr": 25.2,
-      "rh20_raw": 42.2,
-      "rh20_corr": 42.2,
+      "out_raw": 24.7,
+      "out_corr": 23.8,
+      "rh20_raw": 46.6,
+      "rh20_corr": 46.6,
       "is_future": true
     },
     {
       "dt": "2026-08-02T23:00:00+02:00",
-      "out_raw": 25.2,
-      "out_corr": 23.7,
-      "rh20_raw": 45.2,
-      "rh20_corr": 45.2,
+      "out_raw": 23.7,
+      "out_corr": 22.2,
+      "rh20_raw": 57.7,
+      "rh20_corr": 57.7,
       "is_future": true
     }
   ],
@@ -3558,7 +3558,7 @@
       "humidity": 58,
       "heating": false,
       "heating_power": 0,
-      "vent_rh": 49,
+      "vent_rh": 50,
       "rh_offset": -0.5,
       "rh_veto": false,
       "dryout": false,
@@ -3566,25 +3566,20 @@
       "advice": "open",
       "comfort_low": 19.5,
       "comfort_high": 22.0,
-      "trend": null,
-      "hum_trend": null,
+      "trend": 0.0,
+      "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "02:15",
+      "predicted_open": "02:30",
       "open_intervals": [
         {
-          "start": "02:15",
+          "start": "02:30",
           "end": "12:30",
-          "start_h": -0.28,
-          "end_h": 9.97
+          "start_h": -0.25,
+          "end_h": 9.75
         }
       ],
       "status_text": "Nu open tot ~12:30",
       "history": [
-        {
-          "t": "2026-07-29T15:00:00.737823+02:00",
-          "temp": 24.6,
-          "hum": 64
-        },
         {
           "t": "2026-07-29T15:15:00.487009+02:00",
           "temp": 24.6,
@@ -4539,6 +4534,11 @@
           "t": "2026-08-01T02:31:42.255786+02:00",
           "temp": 23.4,
           "hum": 58
+        },
+        {
+          "t": "2026-08-01T02:45:00.891703+02:00",
+          "temp": 23.4,
+          "hum": 58
         }
       ],
       "proj": [
@@ -4597,7 +4597,7 @@
       "humidity": 60,
       "heating": false,
       "heating_power": 0,
-      "vent_rh": 51,
+      "vent_rh": 52,
       "rh_offset": -0.5,
       "rh_veto": false,
       "dryout": false,
@@ -4605,25 +4605,20 @@
       "advice": "open",
       "comfort_low": 17.0,
       "comfort_high": 18.0,
-      "trend": null,
-      "hum_trend": null,
+      "trend": 0.0,
+      "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "02:15",
+      "predicted_open": "02:30",
       "open_intervals": [
         {
-          "start": "02:15",
+          "start": "02:30",
           "end": "12:00",
-          "start_h": -0.28,
-          "end_h": 9.47
+          "start_h": -0.25,
+          "end_h": 9.25
         }
       ],
       "status_text": "Nu open tot ~12:00",
       "history": [
-        {
-          "t": "2026-07-29T15:00:00.737823+02:00",
-          "temp": 23.2,
-          "hum": 65
-        },
         {
           "t": "2026-07-29T15:15:00.487009+02:00",
           "temp": 23.2,
@@ -5578,6 +5573,11 @@
           "t": "2026-08-01T02:31:42.255786+02:00",
           "temp": 22.8,
           "hum": 60
+        },
+        {
+          "t": "2026-08-01T02:45:00.891703+02:00",
+          "temp": 22.8,
+          "hum": 60
         }
       ],
       "proj": [
@@ -5632,37 +5632,32 @@
       ]
     },
     "hotties": {
-      "inside": 19.0,
+      "inside": 18.8,
       "humidity": 69,
       "heating": false,
       "heating_power": 0,
-      "vent_rh": 64,
-      "rh_offset": 0.64,
+      "vent_rh": 66,
+      "rh_offset": 0.93,
       "rh_veto": false,
       "dryout": false,
-      "open_reason": "cool",
+      "open_reason": "bank",
       "advice": "open",
       "comfort_low": 16.0,
       "comfort_high": 18.0,
-      "trend": null,
-      "hum_trend": null,
+      "trend": -0.9,
+      "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "02:15",
+      "predicted_open": "02:30",
       "open_intervals": [
         {
-          "start": "02:15",
-          "end": "09:45",
-          "start_h": -0.28,
-          "end_h": 7.22
+          "start": "02:30",
+          "end": "07:30",
+          "start_h": -0.25,
+          "end_h": 4.75
         }
       ],
-      "status_text": "Nu open tot ~09:45",
+      "status_text": "Nu open tot ~07:30 — koelte tanken",
       "history": [
-        {
-          "t": "2026-07-29T15:00:00.737823+02:00",
-          "temp": 23.4,
-          "hum": 62
-        },
         {
           "t": "2026-07-29T15:15:00.487009+02:00",
           "temp": 23.5,
@@ -6617,16 +6612,21 @@
           "t": "2026-08-01T02:31:42.255786+02:00",
           "temp": 19.0,
           "hum": 69
+        },
+        {
+          "t": "2026-08-01T02:45:00.891703+02:00",
+          "temp": 18.8,
+          "hum": 69
         }
       ],
       "proj": [
         null,
         null,
         null,
-        19.0,
-        19.0,
-        19.0,
-        19.0,
+        18.5,
+        17.6,
+        16.7,
+        15.8,
         null,
         null,
         null,
@@ -6671,11 +6671,11 @@
       ]
     },
     "office": {
-      "inside": 24.6,
+      "inside": 24.5,
       "humidity": 57,
       "heating": false,
       "heating_power": 0,
-      "vent_rh": 46,
+      "vent_rh": 47,
       "rh_offset": -0.5,
       "rh_veto": false,
       "dryout": false,
@@ -6683,31 +6683,20 @@
       "advice": "open",
       "comfort_low": 20.0,
       "comfort_high": 22.0,
-      "trend": null,
-      "hum_trend": null,
+      "trend": -0.45,
+      "hum_trend": 0.0,
       "open_now": true,
-      "predicted_open": "02:15",
+      "predicted_open": "02:30",
       "open_intervals": [
         {
-          "start": "02:15",
-          "end": "13:15",
-          "start_h": -0.28,
-          "end_h": 10.72
-        },
-        {
-          "start": "17:00",
-          "end": "20:30",
-          "start_h": 14.47,
-          "end_h": 17.97
+          "start": "02:30",
+          "end": "12:00",
+          "start_h": -0.25,
+          "end_h": 9.25
         }
       ],
-      "status_text": "Nu open tot ~13:15, weer open rond 17:00",
+      "status_text": "Nu open tot ~12:00",
       "history": [
-        {
-          "t": "2026-07-29T15:00:00.737823+02:00",
-          "temp": 25.9,
-          "hum": 61
-        },
         {
           "t": "2026-07-29T15:15:00.487009+02:00",
           "temp": 26.1,
@@ -7662,16 +7651,21 @@
           "t": "2026-08-01T02:31:42.255786+02:00",
           "temp": 24.6,
           "hum": 57
+        },
+        {
+          "t": "2026-08-01T02:45:00.891703+02:00",
+          "temp": 24.5,
+          "hum": 57
         }
       ],
       "proj": [
         null,
         null,
         null,
-        24.6,
-        24.6,
-        24.6,
-        24.6,
+        24.4,
+        24.0,
+        23.5,
+        23.1,
         null,
         null,
         null,
@@ -7720,7 +7714,7 @@
       "humidity": 66,
       "heating": false,
       "heating_power": 0,
-      "vent_rh": 52,
+      "vent_rh": 53,
       "rh_offset": -0.5,
       "rh_veto": false,
       "dryout": false,
@@ -7728,18 +7722,13 @@
       "advice": "dicht",
       "comfort_low": 23.5,
       "comfort_high": 23.5,
-      "trend": null,
-      "hum_trend": null,
+      "trend": 0.0,
+      "hum_trend": 0.0,
       "open_now": false,
       "predicted_open": null,
       "open_intervals": [],
       "status_text": "Vandaag dicht houden",
       "history": [
-        {
-          "t": "2026-07-29T15:00:00.737823+02:00",
-          "temp": 21.5,
-          "hum": 72
-        },
         {
           "t": "2026-07-29T15:15:00.487009+02:00",
           "temp": 21.5,
@@ -8692,6 +8681,11 @@
         },
         {
           "t": "2026-08-01T02:31:42.255786+02:00",
+          "temp": 22.5,
+          "hum": 66
+        },
+        {
+          "t": "2026-08-01T02:45:00.891703+02:00",
           "temp": 22.5,
           "hum": 66
         }

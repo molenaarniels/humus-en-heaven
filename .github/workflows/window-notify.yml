@@ -59,6 +59,9 @@ jobs:
           WU_API_KEY:             ${{ secrets.WU_API_KEY }}
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Alleen het dagplan gaat naar de groep; het per-kamer-advies en de
+          # operationele alerts blijven op de privé-chat hierboven.
+          TELEGRAM_CHAT_GROUP_ID: ${{ secrets.TELEGRAM_CHAT_GROUP_ID }}
           DRY_RUN:                ${{ inputs.dry_run && '1' || '' }}
         run: |
           git config user.name "github-actions[bot]"

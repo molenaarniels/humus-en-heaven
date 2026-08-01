@@ -13,8 +13,9 @@ import pytest
 import om_bias
 import window_advisor as wa
 from window_advisor import (convert_rh, decide, humidity_offset, next_reopen,
-                            open_desire, open_reason, open_status_tail,
-                            predict_open_intervals, room_trend)
+                            open_desire, open_end_is_horizon, open_end_text,
+                            open_reason, open_status_tail, predict_open_intervals,
+                            room_trend, sustained_open_h, vent_rh_ahead)
 
 LOW, HIGH = 19.5, 22.0  # voorbeeldcomfortband (Living room-achtig)
 
@@ -114,17 +115,24 @@ def test_open_desire_muf_verschuift_drempel():
 def test_open_desire_ontvochtig_trigger():
     binnen_rh = wa.RH_DRYOUT_MIN + 5
     droog = binnen_rh - wa.RH_DRYOUT_MARGIN
+    binnen = LOW + wa.SOFT_OPEN_MARGIN + 0.5
     # Niet warm (binnen de band), maar muf binnen + duidelijk droger buiten → open.
-    args = dict(inside=LOW + 1.0, outside=LOW + 0.5, low=LOW, high=HIGH)
+    args = dict(inside=binnen, outside=binnen - wa.SOFT_OPEN_MARGIN, low=LOW, high=HIGH)
     assert open_desire(**args, vent_rh=droog, humidity=binnen_rh) is True
     # Elke voorwaarde die wegvalt → geen open:
     assert open_desire(**args, vent_rh=droog, humidity=wa.RH_DRYOUT_MIN - 1) is False  # binnen niet muf
     assert open_desire(**args, vent_rh=binnen_rh - wa.RH_DRYOUT_MARGIN + 1,
                        humidity=binnen_rh) is False                                    # buiten niet droog genoeg
-    assert open_desire(inside=LOW - 0.5, outside=LOW - 1.0, low=LOW, high=HIGH,
+    assert open_desire(inside=LOW - 0.5, outside=LOW - 1.0 - wa.SOFT_OPEN_MARGIN,
+                       low=LOW, high=HIGH,
                        vent_rh=droog, humidity=binnen_rh) is False                     # zou overkoelen
-    assert open_desire(inside=LOW + 1.0, outside=LOW + 2.0, low=LOW, high=HIGH,
+    assert open_desire(inside=binnen, outside=binnen + 1.0, low=LOW, high=HIGH,
                        vent_rh=droog, humidity=binnen_rh) is False                     # warmte-instroom
+    # Net te weinig marge: dit is precies de band waarin decide() al zou sluiten. Openen
+    # mág daar niet, anders flappert het advies elke kwartiertick heen en weer.
+    assert open_desire(inside=binnen, outside=binnen - wa.SOFT_OPEN_MARGIN + 0.1,
+                       low=LOW, high=HIGH,
+                       vent_rh=droog, humidity=binnen_rh) is False
 
 
 def test_open_desire_koelte_tanken_drempel_op_low():
@@ -141,22 +149,26 @@ def test_open_desire_koelte_tanken_drempel_op_low():
 
 
 def test_open_desire_frisse_lucht_alleen_met_fresh_air_ok():
-    # Niets thermisch op het spel: binnen in de band, buiten niet warmer, droog genoeg.
+    # Niets thermisch op het spel: binnen in de band, buiten merkbaar koeler, lucht aangenaam.
     inside = (LOW + HIGH) / 2
-    outside = inside - 0.1
-    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
-                       fresh_air_ok=True) is True
+    outside = inside - wa.OPEN_MARGIN
+    fris = wa.RH_FRESH_MAX - 5
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=fris, fresh_air_ok=True) is True
     # Standaard (geen expliciete opt-in) blijft dit uit — puur thermische call sites
     # veranderen niet vanzelf mee.
-    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5) is False
-    # Muf genoeg (> RH_COMFORT) → geen frisse-lucht-bonus.
-    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT + 5,
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=fris) is False
+    # Boven RH_FRESH_MAX → geen frisse-lucht-bonus, ook al blijft het onder RH_COMFORT:
+    # frisse lucht is de reden zónder thermisch belang en mag dus het strengst zijn.
+    assert open_desire(inside, outside, LOW, HIGH, vent_rh=wa.RH_FRESH_MAX + 1,
                        fresh_air_ok=True) is False
     # Zou overkoelen (op/onder low) → geen frisse-lucht-open.
-    assert open_desire(LOW, outside, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
-                       fresh_air_ok=True) is False
+    assert open_desire(LOW, outside, LOW, HIGH, vent_rh=fris, fresh_air_ok=True) is False
     # Warmte-instroom (buiten warmer dan binnen) → geen frisse-lucht-open.
-    assert open_desire(inside, inside + 0.5, LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+    assert open_desire(inside, inside + 0.5, LOW, HIGH, vent_rh=fris,
+                       fresh_air_ok=True) is False
+    # Buiten wél koeler, maar te weinig om te openen: dit is de regel uit de screenshot
+    # (binnen 22.8°, buiten 22.7°) die het advies elke kwartiertick liet omklappen.
+    assert open_desire(inside, inside - 0.1, LOW, HIGH, vent_rh=fris,
                        fresh_air_ok=True) is False
     # Onbekende vochtigheid → conservatief, geen open (kan mugginess niet uitsluiten).
     assert open_desire(inside, outside, LOW, HIGH, vent_rh=None, fresh_air_ok=True) is False
@@ -170,12 +182,40 @@ def test_open_reason_labels():
                        bank_cooling=True) == "bank"
     binnen_rh = wa.RH_DRYOUT_MIN + 5
     droog = binnen_rh - wa.RH_DRYOUT_MARGIN
-    assert open_reason(LOW + 1.0, LOW + 0.5, LOW, HIGH, vent_rh=droog,
-                       humidity=binnen_rh) == "dryout"
-    assert open_reason(bandinside, bandinside - 0.1, LOW, HIGH,
-                       vent_rh=wa.RH_COMFORT - 5, fresh_air_ok=True) == "fresh_air"
+    muf_binnen = LOW + wa.SOFT_OPEN_MARGIN + 0.5
+    assert open_reason(muf_binnen, muf_binnen - wa.SOFT_OPEN_MARGIN, LOW, HIGH,
+                       vent_rh=droog, humidity=binnen_rh) == "dryout"
+    assert open_reason(bandinside, bandinside - wa.OPEN_MARGIN, LOW, HIGH,
+                       vent_rh=wa.RH_FRESH_MAX - 5, fresh_air_ok=True) == "fresh_air"
     assert open_reason(bandinside, bandinside + 1.0, LOW, HIGH) is None
     assert open_reason(30.0, 20.0, LOW, HIGH, vent_rh=wa.RH_HARD_CAP) is None  # veto
+
+
+def test_open_en_sluit_conditie_overlappen_nooit():
+    """De regressietest voor het flapperen (augustus 2026).
+
+    `decide()` sluit zodra `buiten >= binnen - CLOSE_MARGIN`. Mag een open-reden dáár
+    ook waar zijn, dan wint open_desire() (het wordt eerst getoetst) en klapt het advies
+    bij de kleinste wiebel in de buitentemp elke kwartiertick heen en weer. Deze test
+    loopt het hele relevante (binnen, buiten)-vlak af en eist dat de twee elkaar
+    nergens overlappen — voor élke combinatie van open-redenen.
+    """
+    overlap = []
+    for i10 in range(150, 300):              # binnen 15.0 … 29.9 °C
+        inside = i10 / 10.0
+        for d10 in range(-30, 31):           # buiten − binnen: −3.0 … +3.0 °C
+            outside = inside + d10 / 10.0
+            sluit = outside >= inside - wa.CLOSE_MARGIN
+            if not sluit:
+                continue
+            for vent_rh in (30.0, 50.0, 55.0, 59.0, 65.0, 71.0):
+                for humidity in (None, 40.0, 70.0):
+                    for bank in (False, True):
+                        if open_desire(inside, outside, LOW, HIGH, vent_rh=vent_rh,
+                                       humidity=humidity, bank_cooling=bank,
+                                       fresh_air_ok=True):
+                            overlap.append((inside, outside, vent_rh, humidity, bank))
+    assert not overlap, f"open- én sluitconditie tegelijk waar, bv.: {overlap[:5]}"
 
 
 # ── decide ─────────────────────────────────────────────────────────────────────
@@ -217,10 +257,10 @@ def test_decide_koelte_tanken_opent_al_vanaf_dicht():
 def test_decide_frisse_lucht_opent_al_vanaf_dicht():
     # Geen thermische noodzaak, maar ook geen kosten → frisse lucht wint, mits opt-in.
     inside = (LOW + HIGH) / 2
-    outside = inside - 0.1
-    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+    outside = inside - wa.OPEN_MARGIN
+    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_FRESH_MAX - 5,
                   fresh_air_ok=True) == "open"
-    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_COMFORT - 5,
+    assert decide(inside, outside, "dicht", LOW, HIGH, vent_rh=wa.RH_FRESH_MAX - 5,
                   fresh_air_ok=False) == "dicht"
 
 
@@ -434,6 +474,95 @@ def test_open_status_tail_met_heropening():
     assert open_status_tail(intervals) == " tot ~18:00, weer open rond 20:30"
 
 
+# ── horizon-bewuste sluittekst + duur van het lopende segment ──────────────────
+
+def _horizon_interval(start="18:45", start_h=5.5):
+    """Een segment dat eindigt doordat de forecast ophoudt, niet door warmte-instroom."""
+    return {"start": start, "end": "07:15", "start_h": start_h,
+            "end_h": float(wa.PREDICT_HORIZON_H)}
+
+
+def test_open_end_is_horizon_herkent_de_kijkvenstergrens():
+    assert open_end_is_horizon(_horizon_interval()) is True
+    assert open_end_is_horizon(
+        {"start": "17:15", "end": "18:00", "start_h": 0.0, "end_h": 0.75}) is False
+    assert open_end_is_horizon(None) is False
+
+
+def test_open_end_text_zegt_hele_nacht_bij_horizon():
+    # Op 1-8-2026 13:15 rapporteerden álle kamers end "07:15" = nu + PREDICT_HORIZON_H.
+    # Dat is de rand van de forecast, geen voorspelde sluiting — dus geen kloktijd noemen.
+    assert open_end_text([_horizon_interval()]) == "de hele nacht door"
+    assert "07:15" not in open_status_tail([_horizon_interval()])
+
+
+def test_open_end_text_noemt_een_echte_sluittijd():
+    intervals = [{"start": "13:00", "end": "14:00", "start_h": -0.25, "end_h": 0.75}]
+    assert open_end_text(intervals) == "tot ~14:00"
+    assert open_end_text([]) == ""
+
+
+def test_sustained_open_h_meet_alleen_een_lopend_segment():
+    # Het lopende segment begint in het verleden (start_h ≤ 0); de duur telt vanaf nu.
+    assert sustained_open_h(
+        [{"start": "13:00", "end": "14:00", "start_h": -0.25, "end_h": 0.75}]) == 0.75
+    # Precies het office-geval uit de screenshot: een open raam van een kwartier.
+    assert sustained_open_h(
+        [{"start": "13:00", "end": "13:15", "start_h": -0.25, "end_h": -0.0}]) == 0.0
+    # Een segment dat pas later begint, loopt nu nog niet.
+    assert sustained_open_h([_horizon_interval()]) is None
+    assert sustained_open_h([]) is None
+
+
+def test_sustained_open_h_poort_scheidt_blip_van_echt_venster():
+    blip = [{"start": "13:00", "end": "13:15", "start_h": -0.25, "end_h": -0.0}]
+    echt = [{"start": "13:00", "end": "20:00", "start_h": -0.25, "end_h": 6.75}]
+    assert sustained_open_h(blip) < wa.MIN_OPEN_H
+    assert sustained_open_h(echt) >= wa.MIN_OPEN_H
+
+
+# ── vent_rh_ahead: vocht-vooruitblik over het kandidaat-open-venster ───────────
+
+def test_vent_rh_ahead_pakt_de_ongunstigste_uur():
+    now = datetime(2026, 8, 1, 18, 0)
+    fc = [
+        {"dt": now + timedelta(hours=0), "out_raw": 20.0, "out_corr": 20.0, "rh": 50.0},
+        {"dt": now + timedelta(hours=1), "out_raw": 20.0, "out_corr": 20.0, "rh": 80.0},
+        {"dt": now + timedelta(hours=5), "out_raw": 20.0, "out_corr": 20.0, "rh": 95.0},
+    ]
+    # Kamer op dezelfde temperatuur → vent_rh == buiten-RH; het klamme uur binnen het
+    # venster telt, het uur ver daarbuiten niet.
+    assert vent_rh_ahead(fc, 20.0, now, hours=2) == pytest.approx(80.0)
+    assert vent_rh_ahead(fc, 20.0, now, hours=0.5) == pytest.approx(50.0)
+
+
+def test_vent_rh_ahead_gebruikt_het_rauwe_temp_rh_paar():
+    # out_corr wijkt sterk af van out_raw; convert_rh moet het consistente (raw, rh)-paar
+    # gebruiken, anders verandert stilletjes de dampinhoud.
+    now = datetime(2026, 8, 1, 18, 0)
+    fc = [{"dt": now, "out_raw": 15.0, "out_corr": 25.0, "rh": 80.0}]
+    verwacht = convert_rh(80.0, 15.0, 20.0)
+    assert vent_rh_ahead(fc, 20.0, now, hours=1) == pytest.approx(verwacht)
+
+
+def test_vent_rh_ahead_zonder_bruikbare_data():
+    now = datetime(2026, 8, 1, 18, 0)
+    assert vent_rh_ahead([], 20.0, now, hours=2) is None
+    assert vent_rh_ahead([{"dt": now, "out_raw": 20.0, "rh": 50.0}], None, now, 2) is None
+    # Ontbrekend RH-veld (oudere/kapotte forecast-rij) → None, niet crashen.
+    assert vent_rh_ahead([{"dt": now, "out_raw": 20.0, "rh": None}], 20.0, now, 2) is None
+
+
+def test_correct_forecast_draagt_rh_mee():
+    now = datetime(2026, 8, 1, 12, 0)
+    hourly = [{"dt": now, "temp": 20.0, "rh": 65.0},
+              {"dt": now + timedelta(hours=1), "temp": None, "rh": 70.0}]
+    out = wa.correct_forecast(hourly, 0.0, now, {})
+    assert [r["rh"] for r in out] == [65.0, 70.0]
+    # Bestaande velden blijven ongemoeid (additief).
+    assert out[0]["out_raw"] == 20.0 and out[1]["out_corr"] is None
+
+
 # ── correct_forecast: stationsanker + geleerde Open-Meteo-modelbias ────────────
 
 def _hourly(now, temps):
@@ -546,3 +675,278 @@ def test_station_bias_zonder_wu_is_nul():
 
 def test_station_bias_is_meting_min_model():
     assert wa.station_bias("wu", 25.3, 26.8) == pytest.approx(-1.5)
+
+
+# ── Meldlaag: dagbudget, meldgeheugen, duur-poort en de urgente uitzondering ───
+
+NOW = datetime(2026, 8, 1, 18, 45)
+LANG = [{"start": "18:45", "end": "23:00", "start_h": -0.0, "end_h": 4.25}]
+KORT = [{"start": "13:00", "end": "13:15", "start_h": -0.25, "end_h": -0.0}]
+
+
+_DEFAULT = object()
+
+
+def _decide_open(state, room="office", intervals=_DEFAULT, now=NOW, **kw):
+    kw.setdefault("inside", 22.0)
+    kw.setdefault("outside", 19.0)
+    kw.setdefault("vent_rh", 50.0)
+    iv = LANG if intervals is _DEFAULT else intervals
+    return wa.notify_decision(state, room, "open", iv, "cool", now=now, **kw)
+
+
+def _decide_dicht(state, room="office", now=NOW, **kw):
+    kw.setdefault("inside", 22.0)
+    kw.setdefault("outside", 22.0)
+    kw.setdefault("vent_rh", 50.0)
+    return wa.notify_decision(state, room, "dicht", [], None, now=now, **kw)
+
+
+def test_roll_day_reset_bij_datumwissel():
+    state = {"day": {"date": "2026-07-31", "plan_sent": True,
+                     "rooms": {"office": {"open": 1, "close": 1, "urgent": 0,
+                                          "last_urgent": None}}}}
+    day = wa.roll_day(state, "2026-08-01")
+    assert day["date"] == "2026-08-01"
+    assert day["plan_sent"] is False and day["rooms"] == {}
+    # Zelfde dag opnieuw → niets kwijt.
+    day["rooms"]["office"] = {"open": 1, "close": 0, "urgent": 0, "last_urgent": None}
+    assert wa.roll_day(state, "2026-08-01")["rooms"]["office"]["open"] == 1
+
+
+def test_budget_staat_een_open_en_een_dicht_toe():
+    state = {}
+    d = _decide_open(state)
+    assert d and d["kind"] == "open" and d["urgent"] is False
+    wa.record_notification(state, "office", d, NOW)
+    assert wa.notified_advice(state, "office") == "open"
+
+    d2 = _decide_dicht(state, now=NOW + timedelta(hours=4))
+    assert d2 and d2["kind"] == "dicht" and d2["urgent"] is False
+    wa.record_notification(state, "office", d2, NOW + timedelta(hours=4))
+    assert wa.notified_advice(state, "office") == "dicht"
+
+
+def test_budget_blokkeert_het_tweede_open_bericht_dezelfde_dag():
+    state = {}
+    for _ in range(wa.MAX_OPEN_MSGS_PER_DAY):
+        d = _decide_open(state)
+        assert d is not None
+        wa.record_notification(state, "office", d, NOW)
+        # terug naar dicht melden, zodat alleen het budget nog tegenhoudt
+        dd = _decide_dicht(state)
+        wa.record_notification(state, "office", dd, NOW)
+    assert _decide_open(state) is None
+
+
+def test_budget_is_per_kamer_niet_per_huis():
+    state = {}
+    d = _decide_open(state, room="office")
+    wa.record_notification(state, "office", d, NOW)
+    assert _decide_open(state, room="Ted") is not None
+
+
+def test_kort_venster_levert_geen_open_bericht():
+    # Het office-geval uit de screenshot: voorspeld open van 13:00 tot 13:15.
+    assert _decide_open({}, intervals=KORT) is None
+    assert _decide_open({}, intervals=[]) is None
+
+
+def test_geen_dicht_bericht_zonder_voorafgaand_open_bericht():
+    """De val die onderdrukking introduceert.
+
+    Als een open-advies onderdrukt is (te kort venster, budget op), dan mag de sluiting
+    daarna géén "Sluit"-bericht opleveren — de ontvanger heeft dat raam nooit opengezet.
+    """
+    state = {}
+    assert _decide_open(state, intervals=KORT) is None      # open onderdrukt
+    assert _decide_dicht(state) is None                     # dus ook geen dicht
+    assert wa.notified_advice(state, "office") == "dicht"
+
+
+def test_urgent_breekt_door_het_dagmaximum():
+    state = {}
+    d = _decide_open(state)
+    wa.record_notification(state, "office", d, NOW)
+    # Dicht-budget opmaken met een gewone sluiting...
+    dd = _decide_dicht(state)
+    assert dd["urgent"] is False
+    wa.record_notification(state, "office", dd, NOW)
+    # ...daarna opnieuw open melden, en dan écht mis: hitte stroomt naar binnen.
+    state["notified"]["office"] = {"state": "open", "at": NOW.isoformat()}
+    later = NOW + timedelta(hours=1)
+    urgent = wa.notify_decision(state, "office", "dicht", [], None,
+                                inside=22.0, outside=22.0 + wa.URGENT_HEAT_C,
+                                vent_rh=50.0, now=later)
+    assert urgent and urgent["urgent"] is True and urgent["urgent_reason"] == "hitte"
+
+
+def test_urgent_respecteert_cooldown_en_dagmaximum():
+    # Vroeg op de dag beginnen: alle cooldown-sprongen hieronder moeten binnen dezelfde
+    # kalenderdag blijven, anders reset het dagbudget en meet de test iets anders.
+    start = datetime(2026, 8, 1, 7, 0)
+    state = {"notified": {"office": {"state": "open", "at": start.isoformat()}},
+             "day": {"date": start.date().isoformat(), "plan_sent": True,
+                     "rooms": {"office": {"open": 1, "close": 1, "urgent": 0,
+                                          "last_urgent": None}}}}
+    heet = dict(inside=22.0, outside=22.0 + wa.URGENT_HEAT_C, vent_rh=50.0)
+    d = wa.notify_decision(state, "office", "dicht", [], None, now=start, **heet)
+    assert d["urgent"] is True
+    wa.record_notification(state, "office", d, start)
+    state["notified"]["office"] = {"state": "open", "at": start.isoformat()}
+
+    # Binnen de cooldown → stil.
+    kort_erna = start + timedelta(hours=wa.URGENT_COOLDOWN_H - 0.5)
+    assert wa.notify_decision(state, "office", "dicht", [], None,
+                              now=kort_erna, **heet) is None
+    # Erbuiten mag het weer, tot het dagmaximum bereikt is.
+    erna = start + timedelta(hours=wa.URGENT_COOLDOWN_H + 0.1)
+    for _ in range(wa.MAX_URGENT_MSGS_PER_DAY - 1):
+        d = wa.notify_decision(state, "office", "dicht", [], None, now=erna, **heet)
+        assert d["urgent"] is True
+        wa.record_notification(state, "office", d, erna)
+        state["notified"]["office"] = {"state": "open", "at": erna.isoformat()}
+        erna += timedelta(hours=wa.URGENT_COOLDOWN_H + 0.1)
+    assert erna.date() == start.date(), "test moet binnen één kalenderdag blijven"
+    assert wa.notify_decision(state, "office", "dicht", [], None,
+                              now=erna, **heet) is None
+
+
+def test_urgent_alleen_bij_veto_of_hitte_en_alleen_op_een_gemeld_open_raam():
+    assert wa.urgent_reason(22.0, 22.0 + wa.URGENT_HEAT_C, 50.0, "open") == "hitte"
+    assert wa.urgent_reason(22.0, 19.0, wa.RH_HARD_CAP, "open") == "muf"
+    # Net niet heet genoeg, en niet muf genoeg → geen urgentie.
+    assert wa.urgent_reason(22.0, 22.0 + wa.URGENT_HEAT_C - 0.1, 50.0, "open") is None
+    assert wa.urgent_reason(22.0, 19.0, wa.RH_HARD_CAP - 1, "open") is None
+    # Nooit gemeld dat het raam open stond → niets te redden, dus stil.
+    assert wa.urgent_reason(22.0, 30.0, 95.0, "dicht") is None
+    assert wa.urgent_reason(None, 30.0, 95.0, "open") is None
+
+
+def test_dagwissel_geeft_weer_ruimte():
+    state = {}
+    d = _decide_open(state)
+    wa.record_notification(state, "office", d, NOW)
+    dd = _decide_dicht(state)
+    wa.record_notification(state, "office", dd, NOW)
+    assert _decide_open(state) is None
+    morgen = NOW + timedelta(days=1)
+    assert _decide_open(state, now=morgen) is not None
+
+
+# ── Berichtteksten + dagplan ──────────────────────────────────────────────────
+
+def test_open_bericht_noemt_reden_en_duur():
+    d = {"kind": "open", "urgent": False, "reason": "bank", "urgent_reason": None}
+    line = wa.room_message_line("office", d, 22.8, 21.0, LANG)
+    assert "🟢 *office*" in line
+    assert "binnen 22.8°, buiten 21.0°" in line
+    assert wa.REASON_TEXT["bank"] in line
+    assert "open laten tot ~23:00" in line
+
+
+def test_open_bericht_belooft_geen_verzonnen_sluittijd():
+    # Segment tot de forecast-horizon → geen kloktijd, wel een duidelijke instructie.
+    d = {"kind": "open", "urgent": False, "reason": "cool", "urgent_reason": None}
+    line = wa.room_message_line("Ted", d, 22.0, 19.0, [_horizon_interval()])
+    assert "open laten de hele nacht door" in line
+    assert "07:15" not in line
+
+
+def test_dicht_bericht_noemt_heropening():
+    d = {"kind": "dicht", "urgent": False, "reason": None, "urgent_reason": None}
+    line = wa.room_message_line("office", d, 21.4, 22.3, [], reopen="18:45")
+    assert "🔴 *office*" in line
+    assert "weer open rond 18:45" in line
+
+
+def test_urgent_bericht_benoemt_de_urgentie():
+    muf = {"kind": "dicht", "urgent": True, "reason": None, "urgent_reason": "muf"}
+    line = wa.room_message_line("hotties", muf, 21.0, 20.0, [], vent_rh=78.0)
+    assert "schimmelrisico" in line and "RH ~78%" in line
+    heet = {"kind": "dicht", "urgent": True, "reason": None, "urgent_reason": "hitte"}
+    assert wa.URGENT_TEXT["hitte"] in wa.room_message_line("Ted", heet, 21.0, 24.0, [])
+
+
+def test_advice_message_kop_volgt_de_inhoud():
+    op = ("office", {"kind": "open", "urgent": False})
+    dicht = ("Ted", {"kind": "dicht", "urgent": False})
+    urgent = ("Ted", {"kind": "dicht", "urgent": True})
+    assert "Ramen open" in wa.advice_message(NOW, [op], ["x"])
+    assert "Ramen dicht" in wa.advice_message(NOW, [dicht], ["x"])
+    assert "Raam-advies" in wa.advice_message(NOW, [op, dicht], ["x", "y"])
+    assert wa.advice_message(NOW, [urgent], ["x"]).startswith("⚠️")
+    assert "18:45" in wa.advice_message(NOW, [op], ["x"])
+
+
+def test_build_day_plan_kiest_het_eerste_lange_venster_en_sorteert():
+    rooms = {
+        "office": {"open_intervals": [
+            {"start": "13:00", "end": "13:15", "start_h": -0.25, "end_h": -0.0},  # blip
+            _horizon_interval("18:45", 5.5),
+        ]},
+        "Ted": {"open_intervals": [_horizon_interval("19:45", 6.5)]},
+        "hotties": {"open_intervals": []},
+        "Living room": {"open_intervals": [
+            {"start": "17:45", "end": "23:00", "start_h": 4.5, "end_h": 9.75}]},
+    }
+    plan = wa.build_day_plan(rooms, NOW)
+    assert [p["room"] for p in plan] == ["Living room", "office", "Ted"]
+    # De blip van 13:00–13:15 telt niet mee als het open-moment van office.
+    assert plan[1]["start"] == "18:45"
+
+
+def test_day_plan_message_bevat_alle_kamers_en_de_dagmax():
+    plan = [{"room": "office", "start": "18:45", "start_h": 5.5, "end": "07:15",
+             "horizon": True, "running": False}]
+    msg = wa.day_plan_message(plan, 24.1, NOW)
+    assert "Raamplan" in msg and "24.1°" in msg
+    assert "Open vanaf:" in msg and "• office — 18:45" in msg
+    assert "hele nacht" in msg
+
+
+def test_day_plan_scheidt_al_open_van_nog_te_openen():
+    """Een raam dat al openstaat is geen actie meer.
+
+    De vooruitblik levert voor een open kamer een segment dat in het verleden begon;
+    dat als "open vanaf 08:45" opschrijven leest als iets dat nog moet gebeuren.
+    """
+    plan = [
+        {"room": "Ted", "start": "08:45", "start_h": -0.25, "end": "10:45",
+         "horizon": False, "running": True},
+        {"room": "office", "start": "18:45", "start_h": 5.5, "end": "07:15",
+         "horizon": True, "running": False},
+    ]
+    msg = wa.day_plan_message(plan, 24.1, NOW)
+    assert "Staan al open:" in msg and "• Ted — dicht rond 10:45" in msg
+    assert "Open vanaf:" in msg and "• office — 18:45" in msg
+    # De al-open kamer mag niet als toekomstige actie verschijnen.
+    assert "• Ted — 08:45" not in msg
+
+
+def test_build_day_plan_markeert_een_lopend_venster():
+    rooms = {"Ted": {"open_intervals": [
+        {"start": "08:45", "end": "12:15", "start_h": -0.25, "end_h": 3.25}]}}
+    plan = wa.build_day_plan(rooms, NOW)
+    assert plan[0]["running"] is True
+    rooms = {"Ted": {"open_intervals": [
+        {"start": "19:45", "end": "23:00", "start_h": 1.0, "end_h": 4.25}]}}
+    assert wa.build_day_plan(rooms, NOW)[0]["running"] is False
+
+
+def test_day_plan_message_zonder_venster():
+    msg = wa.day_plan_message([], 23.0, NOW)
+    assert "blijven de ramen dicht" in msg
+
+
+def test_urgent_muf_volgt_de_veto_vlag_van_decide():
+    """Het dashboard publiceert `vent_rh` afgerond; de veto zelf rekent onafgerond.
+
+    Zonder doorgifte van die vlag kan de meldlaag op de grens net anders oordelen dan de
+    beslissing die ze beschrijft.
+    """
+    net_onder = wa.RH_HARD_CAP - 0.4  # rondt af naar RH_HARD_CAP
+    assert wa.urgent_reason(22.0, 21.0, net_onder, "open") is None
+    assert wa.urgent_reason(22.0, 21.0, net_onder, "open", rh_veto=True) == "muf"
+    # Andersom: afgerond ópheffend, maar decide() vetode niet → geen muf-label.
+    assert wa.urgent_reason(22.0, 21.0, wa.RH_HARD_CAP, "open", rh_veto=False) is None

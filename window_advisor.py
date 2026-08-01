@@ -47,7 +47,7 @@ from notify import run_guarded, sanitize_error, send_telegram
 import requests
 
 import shared_const
-from shared_const import utc_now_iso
+from shared_const import format_date_nl, utc_now_iso
 from wu_bias import correct_temp
 
 # ── Kamers in scope (tado-zonenamen, hoofdletterongevoelig gematcht) ───────────
@@ -70,6 +70,13 @@ MIN_CLOSE_H  = 1.0    # uur — sluit een open raam niet voor een warmte-instroo
                       #       dit venster alweer voorbij is (kort momentje ≠ moeite waard)
 SOLAR_AVG_WINDOW_MIN = 45  # min — middelingsvenster op de WU-pyranometer vóór de
                       #       stralingsbiascorrectie (zie fetch_wu_recent_solar)
+SOFT_OPEN_MARGIN = 1.0  # °C — minimale buitenmarge voor de níet-thermische open-redenen
+                      #       (ontvochtigen). Móét > CLOSE_MARGIN blijven: eisten die redenen
+                      #       enkel `buiten ≤ binnen`, dan overlapten de open- en de
+                      #       sluitconditie in een band van CLOSE_MARGIN breed en klapte het
+                      #       advies elke kwartiertick heen en weer (gediagnosticeerd
+                      #       augustus 2026: 7 flips tussen 08:00 en 13:15, telkens met
+                      #       binnen en buiten binnen ~0.4°C van elkaar).
 
 # ── Per-kamer comfortband (low, high) in °C ────────────────────────────────────
 # Bóven `high` is de kamer te warm → koelen (raam open als buiten kouder is). Ónder
@@ -97,6 +104,29 @@ RH_BONUS_MAX     = 0.5    # °C — max droog-bonus: open-drempel omlaag (asymme
                           #      zodat het gedrag op gewone droge dagen vrijwel onveranderd blijft)
 RH_DRYOUT_MIN    = 65.0   # % — binnen-RH waarboven droge buitenlucht mag openen
 RH_DRYOUT_MARGIN = 8.0    # % — buitenlucht moet ≥ deze marge droger (vent_rh ≤ RH − marge)
+RH_FRESH_MAX     = 55.0   # % — frisse lucht (de tie-break zónder thermisch belang) alleen bij
+                          #     écht aangename lucht, strenger dan RH_COMFORT. Samen met de
+                          #     OPEN_MARGIN-eis en de duur-poort in de meldlaag maakt dit de
+                          #     frisse-lucht-reden zeldzaam in plaats van de meest voorkomende.
+
+# ── Meldlaag: hoeveel berichten mag dit project sturen? ───────────────────────────
+# Het advies zélf blijft elke kwartiertick herrekend (het dashboard toont de volledige
+# waarheid); deze constanten bepalen alleen wát daarvan een Telegram-bericht waard is.
+# Vóór augustus 2026 was er géén boekhouding: elke advieswijziging van elke kamer in elke
+# tick stuurde een bericht — een plafond van ~96 per kamer per dag.
+MIN_OPEN_H = 1.5          # uur — een korter vóórspeld open-venster is geen bericht waard.
+                          #       Het dashboard toonde letterlijk "Nu open tot ~13:15" om
+                          #       13:15: een raam van een kwartier, terwijl het echte
+                          #       koelvenster die dag pas om 18:45 begon.
+MAX_OPEN_MSGS_PER_DAY  = 1  # per kamer per dag
+MAX_CLOSE_MSGS_PER_DAY = 1  # per kamer per dag
+PLAN_HOUR = 9             # de eerste niet-onderdrukte run op/ná dit lokale uur stuurt het
+                          # dagplan naar de groep. "Eerste run ná" en niet "om 09:00": de
+                          # workflow is een self-driven kwartierlus die elke ~5u herstart.
+URGENT_HEAT_C = 2.0       # °C — buiten ≥ zoveel wármer dan binnen terwijl wij gemeld hebben
+                          #      dat het raam openstaat → er stroomt echt hitte naar binnen
+URGENT_COOLDOWN_H = 3.0   # uur — minimale tijd tussen twee urgente berichten per kamer
+MAX_URGENT_MSGS_PER_DAY = 2  # harde bovengrens per kamer, zodat urgentie zelf niet flappert
 
 
 def comfort_band(room: str) -> tuple[float, float]:
@@ -566,8 +596,12 @@ def correct_forecast(hourly: list[dict], bias: float, now: datetime,
     out = []
     for r in hourly:
         raw = r["temp"]
+        # `rh` reist additief mee: de vocht-vooruitblik (vent_rh_ahead) heeft een
+        # consistent temp+RH-paar nodig, en de geijkte reeks hoort de enige bron voor
+        # álle consumenten te blijven.
         if raw is None:
-            out.append({"dt": r["dt"], "out_raw": None, "out_corr": None})
+            out.append({"dt": r["dt"], "out_raw": None, "out_corr": None,
+                        "rh": r.get("rh")})
             continue
         h_ahead = max(0.0, (r["dt"] - now).total_seconds() / 3600.0)
         decay = max(0.0, 1.0 - h_ahead / BIAS_DECAY_H)
@@ -575,7 +609,8 @@ def correct_forecast(hourly: list[dict], bias: float, now: datetime,
         # decay=1 (nu) → precies het stationsanker; decay=0 (ver) → precies de
         # climatologie. Daartussen schuift het lineair over.
         out.append({"dt": r["dt"], "out_raw": raw,
-                    "out_corr": raw + clim + (bias - clim) * decay})
+                    "out_corr": raw + clim + (bias - clim) * decay,
+                    "rh": r.get("rh")})
     return out
 
 
@@ -749,17 +784,88 @@ def predict_open_intervals(forecast_corr: list[dict], inside_now: float | None,
     return intervals, proj
 
 
+def open_end_is_horizon(interval: dict | None) -> bool:
+    """Eindigt dit segment doordat de fórecast ophoudt, niet doordat er warmte instroomt?
+
+    `predict_open_intervals` sluit het lopende segment af zodra het raster voorbij
+    `PREDICT_HORIZON_H` loopt, en `_close` legt die rand vast in exact hetzelfde veld als
+    een echte warmte-instroom. Zonder dit onderscheid presenteert het dashboard de rand
+    van ons kijkvenster als een precieze sluittijd: op 1 augustus 2026 rapporteerden om
+    13:15 álle vijf de kamers `end: "07:15"` — precies nu + 18u. Dat is geen voorspelling,
+    dat is "verder kijken we niet"."""
+    if not interval:
+        return False
+    end_h = interval.get("end_h")
+    return end_h is not None and end_h >= PREDICT_HORIZON_H - 0.01
+
+
+def open_end_text(intervals: list[dict]) -> str:
+    """Hoe lang moet het raam open blijven? '' zonder segmenten, 'de hele nacht door' als
+    de forecast-horizon het einde bepaalt (zie open_end_is_horizon), anders 'tot ~HH:MM'."""
+    if not intervals:
+        return ""
+    if open_end_is_horizon(intervals[0]):
+        return "de hele nacht door"
+    return f"tot ~{intervals[0]['end']}"
+
+
+def sustained_open_h(intervals: list[dict]) -> float | None:
+    """Duur (uren) van het lopende open-segment, of None als er nu geen segment loopt.
+
+    `predict_open_intervals` levert het lopende segment als `intervals[0]` met
+    `start_h <= 0`. De duur telt vanaf nú (niet vanaf `start_h`), want dat is wat er nog
+    te winnen valt met een raam dat je nu opent."""
+    if not intervals:
+        return None
+    first = intervals[0]
+    start_h, end_h = first.get("start_h"), first.get("end_h")
+    if start_h is None or end_h is None or start_h > 0:
+        return None
+    return max(0.0, end_h)
+
+
+def vent_rh_ahead(fc: list[dict], inside: float | None, now: datetime,
+                  hours: float) -> float | None:
+    """Hoogste kamer-RH die ventileren de komende `hours` zou opleveren, of None als de
+    forecast geen bruikbaar vochtpaar heeft.
+
+    `vent_rh` op het dashboard is een moment-opname: het zegt wat de kamer nú zou worden
+    als je ventileert. Voor de vraag "is dit een goed moment om het raam open te zetten"
+    is dat te kort — een raam gaat uren open. Deze functie kijkt vooruit over het
+    kandidaat-venster en geeft de ongunstigste (hoogste) waarde terug, zodat we niet
+    adviseren te openen in lucht die over een uur klam wordt.
+
+    Rekent bewust met `out_raw` + `rh` en níet met `out_corr`: `convert_rh` behoudt de
+    dampinhoud, dus temperatuur en RH moeten van hetzelfde consistente paar komen. Zelfde
+    argument als waarom `vent_rh` de rauwe WU-temp gebruikt en niet de biasgecorrigeerde.
+    """
+    if inside is None or not fc:
+        return None
+    worst: float | None = None
+    for r in fc:
+        h_ahead = (r["dt"] - now).total_seconds() / 3600.0
+        if h_ahead < 0 or h_ahead > hours:
+            continue
+        vr = convert_rh(r.get("rh"), r.get("out_raw"), inside)
+        if vr is not None and (worst is None or vr > worst):
+            worst = vr
+    return worst
+
+
 def open_status_tail(intervals: list[dict]) -> str:
     """' tot ~HH:MM[, weer open rond HH:MM]' uit de eerste twee voorspelde segmenten van
     `predict_open_intervals`, of '' zonder segmenten. Wordt gebruikt om elke "kamer is nu
     open"-statustekst (Nu open/Blijft open, met of zonder reden-suffix) dezelfde sluit-/
     heropentijd te laten tonen als de tijdlijn eronder — anders belooft de tekst "blijft
-    open" terwijl dezelfde `intervals` een tussentijdse sluiting laten zien."""
+    open" terwijl dezelfde `intervals` een tussentijdse sluiting laten zien.
+
+    Loopt het segment tot de forecast-horizon, dan staat er "de hele nacht door" in plaats
+    van een verzonnen kloktijd (zie open_end_is_horizon)."""
     if not intervals:
         return ""
-    end = intervals[0]["end"]
     reopen = intervals[1]["start"] if len(intervals) > 1 else None
-    return f" tot ~{end}, weer open rond {reopen}" if reopen else f" tot ~{end}"
+    tail = f" {open_end_text(intervals)}"
+    return f"{tail}, weer open rond {reopen}" if reopen else tail
 
 
 # ── Buitentemp gladstrijken vóór de beslissing (anti-flapping) ────────────────────
@@ -860,19 +966,25 @@ def open_reason(inside: float | None, outside: float | None, low: float, high: f
         return "bank"
     # Ontvochtig-trigger: een muffe (niet per se warme) kamer mag open als de buitenlucht
     # duidelijk droger is en er geen warmte instroomt — drogen zonder het huis op te warmen.
+    # De temperatuureis is `SOFT_OPEN_MARGIN` en niet enkel `outside <= inside`: die laatste
+    # overlapt met de sluitconditie van decide() (`outside >= inside - CLOSE_MARGIN`) en gaf
+    # een gegarandeerde flapper-band — zie de toelichting bij SOFT_OPEN_MARGIN.
     if (humidity is not None and vent_rh is not None
             and humidity >= RH_DRYOUT_MIN
             and vent_rh <= humidity - RH_DRYOUT_MARGIN
-            and inside > low and outside <= inside):
+            and inside > low and outside <= inside - SOFT_OPEN_MARGIN):
         return "dryout"
     # Frisse-lucht-trigger: niets thermisch op het spel (buiten warmt niet op, kamer niet
     # onder haar comfortabele minimum) én de lucht is niet muf → dan heeft frisse lucht op
     # zichzelf waarde, ook al is er geen koel- of ontvochtig-noodzaak. Alleen binnen een
     # actieve (niet-onderdrukte) warme-dag-run — `fresh_air_ok` is de aanroeper's gate,
     # zodat een koele/onderdrukte dag hier niet alsnog open van wordt geadviseerd.
+    # Bewust nét zo streng als koelen (`OPEN_MARGIN`) en strenger op vocht (`RH_FRESH_MAX`):
+    # dit was de reden achter vrijwel elk flapper-bericht, terwijl het per definitie de
+    # reden is die er thermisch het mínst toe doet. Een tie-break mag geen hoofdrol spelen.
     if (fresh_air_ok and inside > low
-            and vent_rh is not None and vent_rh <= RH_COMFORT
-            and outside <= inside):
+            and vent_rh is not None and vent_rh <= RH_FRESH_MAX
+            and outside <= inside - OPEN_MARGIN):
         return "fresh_air"
     return None
 
@@ -915,7 +1027,10 @@ def decide(inside: float | None, outside: float | None, prev: str,
 
 def load_state() -> dict:
     raw = gist_read_file(STATE_FILE)
-    defaults = {"rooms": {}, "last_updated": None, "last_notification": None}
+    # `notified` + `day` zijn additief: oudere state-bestanden missen ze en beginnen
+    # gewoon met een leeg meldgeheugen (eerste run stuurt dan hooguit één bericht).
+    defaults = {"rooms": {}, "notified": {}, "day": {},
+                "last_updated": None, "last_notification": None}
     if not raw:
         return defaults
     try:
@@ -927,6 +1042,242 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     state["last_updated"] = datetime.now(TZ).isoformat()
     gist_write_files({STATE_FILE: json.dumps(state, indent=2, ensure_ascii=False)})
+
+
+# ── Meldlaag: wat is een bericht waard? ────────────────────────────────────────────
+# Het advies (state["rooms"]) is het hysterese-geheugen van decide() en wijzigt elke
+# kwartiertick vrij. Wát daarvan verstuurd wordt, is een aparte beslissing met een eigen
+# geheugen (state["notified"]) — anders krijg je de spiegelversie van de flapper-bug: een
+# onderdrukt open-bericht gevolgd door een keurig verstuurd "Sluit", voor een raam dat de
+# ontvanger nooit heeft opengezet.
+
+def roll_day(state: dict, today: str) -> dict:
+    """Het dagblok van `state`, vers gereset zodra de lokale datum wisselt."""
+    day = state.get("day") or {}
+    if day.get("date") != today:
+        day = {"date": today, "plan_sent": False, "rooms": {}}
+    day.setdefault("plan_sent", False)
+    day.setdefault("rooms", {})
+    state["day"] = day
+    return day
+
+
+def room_day_counts(state: dict, room: str, today: str) -> dict:
+    """Het per-kamer dagbudget ({"open","close","urgent","last_urgent"})."""
+    rooms = roll_day(state, today)["rooms"]
+    return rooms.setdefault(room, {"open": 0, "close": 0, "urgent": 0, "last_urgent": None})
+
+
+def notified_advice(state: dict, room: str) -> str:
+    """De laatste stand die we de ontvanger daadwerkelijk gemeld hebben."""
+    return ((state.get("notified") or {}).get(room) or {}).get("state", "dicht")
+
+
+def urgent_reason(inside: float | None, outside: float | None, vent_rh: float | None,
+                  told: str, rh_veto: bool | None = None) -> str | None:
+    """Is er iets aan de hand dat door het dagmaximum heen mag breken?
+
+    Alleen wanneer wij gemeld hebben dat het raam openstaat — anders valt er niets te
+    redden en is een "urgent" bericht enkel lawaai. Twee gevallen, allebei smal:
+    "muf" (ventileren zou de kamer boven RH_HARD_CAP duwen, schimmelrisico) en "hitte"
+    (er stroomt echt warme lucht naar binnen, uren vóór de voorspelling dat zei).
+
+    `rh_veto` is de vlag die `decide()` zelf op de ónafgeronde `vent_rh` berekende; het
+    dashboard publiceert `vent_rh` afgerond, dus zonder deze doorgifte kan de meldlaag op
+    de grens net anders oordelen dan de beslissing die ze beschrijft."""
+    if told != "open" or inside is None or outside is None:
+        return None
+    veto = rh_veto if rh_veto is not None else (vent_rh is not None
+                                                and vent_rh >= RH_HARD_CAP)
+    if veto:
+        return "muf"
+    if outside >= inside + URGENT_HEAT_C:
+        return "hitte"
+    return None
+
+
+def _urgent_allowed(counts: dict, now: datetime) -> bool:
+    """Dagmaximum + cooldown, zodat urgentie zelf niet kan gaan flapperen."""
+    if counts.get("urgent", 0) >= MAX_URGENT_MSGS_PER_DAY:
+        return False
+    last = counts.get("last_urgent")
+    if last:
+        try:
+            prev = datetime.fromisoformat(last)
+        except (TypeError, ValueError):
+            return True
+        if (now - prev).total_seconds() < URGENT_COOLDOWN_H * 3600:
+            return False
+    return True
+
+
+def notify_decision(state: dict, room: str, advice: str, intervals: list[dict],
+                    reason: str | None, inside: float | None, outside: float | None,
+                    vent_rh: float | None, now: datetime,
+                    rh_veto: bool | None = None) -> dict | None:
+    """Mag deze kamer nú een bericht sturen, en zo ja welk?
+
+    Geeft None (zwijgen) of {"kind": "open"|"dicht", "urgent": bool, "reason": ...,
+    "urgent_reason": ...}. Alle poorten zitten hier, zodat ze in één keer te testen zijn:
+    dagbudget, de "heb ik dit al gemeld"-vraag, de duur-poort op de voorspelling, en de
+    urgente uitzondering."""
+    today = now.date().isoformat()
+    counts = room_day_counts(state, room, today)
+    told = notified_advice(state, room)
+    urg = urgent_reason(inside, outside, vent_rh, told, rh_veto)
+
+    if advice == "open" and told != "open":
+        # Alleen melden als het voorspelde open-venster ook wat voorstelt. Een raam van
+        # een kwartier is geen bericht waard — en was in de praktijk de hoofdmoot.
+        dur = sustained_open_h(intervals)
+        if dur is None or dur < MIN_OPEN_H:
+            return None
+        if counts["open"] >= MAX_OPEN_MSGS_PER_DAY:
+            return None
+        return {"kind": "open", "urgent": False, "reason": reason, "urgent_reason": None}
+
+    if told == "open" and (advice == "dicht" or urg is not None):
+        # Normaal dicht-bericht zolang het dagbudget strekt; daarna mag alleen een échte
+        # urgentie er nog doorheen. Urgent budget wordt dus pas aangesproken als het
+        # dagmaximum al bereikt is.
+        if advice == "dicht" and counts["close"] < MAX_CLOSE_MSGS_PER_DAY:
+            return {"kind": "dicht", "urgent": False, "reason": reason,
+                    "urgent_reason": urg}
+        if urg is not None and _urgent_allowed(counts, now):
+            return {"kind": "dicht", "urgent": True, "reason": reason,
+                    "urgent_reason": urg}
+    return None
+
+
+def record_notification(state: dict, room: str, decision: dict, now: datetime) -> None:
+    """Boek een daadwerkelijk verstuurd bericht af op het budget + het meldgeheugen."""
+    today = now.date().isoformat()
+    counts = room_day_counts(state, room, today)
+    if decision["urgent"]:
+        counts["urgent"] = counts.get("urgent", 0) + 1
+        counts["last_urgent"] = now.isoformat()
+    else:
+        key = "open" if decision["kind"] == "open" else "close"
+        counts[key] = counts.get(key, 0) + 1
+    state.setdefault("notified", {})[room] = {"state": decision["kind"],
+                                              "at": now.isoformat()}
+
+
+# ── Berichtteksten ─────────────────────────────────────────────────────────────────
+# Het oude bericht noemde alleen de kamer + twee temperaturen ("🔴 Sluit: office (binnen
+# 22.4°, buiten 22.5°)"). Wat ontbrak was juist het handelbare deel: waaróm, en hoe lang.
+
+REASON_TEXT = {
+    "cool":      "buiten is koeler",
+    "bank":      "koelte tanken voor de warme dag",
+    "dryout":    "ontvochtigen — buiten is droger",
+    "fresh_air": "frisse lucht",
+}
+URGENT_TEXT = {
+    "hitte": "er stroomt warme lucht naar binnen",
+    "muf":   "buiten is te muf — schimmelrisico",
+}
+
+
+def _temps(inside: float | None, outside: float | None) -> str:
+    ins = f"{inside:.1f}" if inside is not None else "?"
+    out = f"{outside:.1f}" if outside is not None else "?"
+    return f"binnen {ins}°, buiten {out}°"
+
+
+def room_message_line(room: str, decision: dict, inside: float | None,
+                      outside: float | None, intervals: list[dict],
+                      vent_rh: float | None = None,
+                      reopen: str | None = None) -> str:
+    """Eén regel per kamer: wat te doen, met welke temperaturen, waarom, en hoe lang."""
+    detail: list[str] = []
+    if decision["kind"] == "open":
+        bullet = "🟢"
+        reden = REASON_TEXT.get(decision.get("reason") or "")
+        if reden:
+            detail.append(reden)
+        duur = open_end_text(intervals)
+        if duur:
+            detail.append(f"open laten {duur}")
+    else:
+        bullet = "🔴"
+        urg = decision.get("urgent_reason")
+        if urg == "muf":
+            vr = f" (RH ~{vent_rh:.0f}%)" if vent_rh is not None else ""
+            detail.append(f"{URGENT_TEXT['muf']}{vr}")
+        elif urg:
+            detail.append(URGENT_TEXT.get(urg, urg))
+        else:
+            detail.append("buiten wordt warmer dan binnen")
+        if reopen:
+            detail.append(f"weer open rond {reopen}")
+    line = f"{bullet} *{room}* — {_temps(inside, outside)}"
+    return f"{line}\n    {' · '.join(detail)}" if detail else line
+
+
+def advice_message(now: datetime, entries: list[tuple[str, dict]], lines: list[str]) -> str:
+    """Kopregel + de per-kamer-regels. De kop volgt de inhoud, zodat je aan de eerste
+    regel al ziet of er iets open of juist dicht moet."""
+    kinds = {d["kind"] for _room, d in entries}
+    urgent = any(d["urgent"] for _room, d in entries)
+    if urgent:
+        kop = "⚠️ *Raam dicht — nu*"
+    elif kinds == {"open"}:
+        kop = "🪟 *Ramen open*"
+    elif kinds == {"dicht"}:
+        kop = "🪟 *Ramen dicht*"
+    else:
+        kop = "🪟 *Raam-advies*"
+    return "\n".join([f"{kop} ({now.strftime('%H:%M')})", *lines])
+
+
+def build_day_plan(dash_rooms: dict, now: datetime) -> list[dict]:
+    """Per advies-kamer het eerste open-venster van vandaag dat lang genoeg is om te
+    melden — de vooruitblik die het dashboard toch al berekent, nu ook bruikbaar als plan."""
+    plan: list[dict] = []
+    for room in ROOMS:
+        d = dash_rooms.get(room) or {}
+        for iv in d.get("open_intervals") or []:
+            start_h, end_h = iv.get("start_h"), iv.get("end_h")
+            if start_h is None or end_h is None:
+                continue
+            if end_h - max(0.0, start_h) < MIN_OPEN_H:
+                continue
+            plan.append({"room": room, "start": iv["start"], "start_h": start_h,
+                         "end": iv["end"], "horizon": open_end_is_horizon(iv),
+                         # Een segment dat in het verleden begon lóópt al: dat raam staat
+                         # nu open. Dat als "open vanaf 08:45" opschrijven leest als een
+                         # actie die nog moet komen, terwijl er niets te doen valt.
+                         "running": start_h <= 0})
+            break
+    plan.sort(key=lambda p: p["start_h"])
+    return plan
+
+
+def day_plan_message(plan: list[dict], dmax: float | None, now: datetime) -> str:
+    """Het dagplan-bericht (naar de groep): wanneer gaat vandaag welk raam open, en wat
+    staat er al open?"""
+    kop = f"🪟 *Raamplan* — {format_date_nl(now.date())}"
+    if dmax is not None:
+        kop += f"\nWarme dag: buiten max {dmax:.1f}°."
+    if not plan:
+        return f"{kop}\n\nVandaag blijven de ramen dicht — buiten koelt niet genoeg af."
+
+    blokken: list[str] = []
+    loopt = [p for p in plan if p.get("running")]
+    komt  = [p for p in plan if not p.get("running")]
+    if loopt:
+        regels = [f"• {p['room']} — "
+                  + ("kan de hele dag open" if p.get("horizon")
+                     else f"dicht rond {p['end']}")
+                  for p in loopt]
+        blokken += ["Staan al open:", *regels, ""]
+    if komt:
+        blokken += ["Open vanaf:", *[f"• {p['room']} — {p['start']}" for p in komt], ""]
+    staart = ("Waarschijnlijk de hele nacht door; je krijgt per kamer een seintje op het "
+              "moment zelf." if any(p["horizon"] for p in komt)
+              else "Je krijgt per kamer een seintje op het moment zelf.")
+    return "\n".join([kop, "", *blokken, staart])
 
 
 # ── Dashboard-artefact (docs/window_data.json) ─────────────────────────────────────
@@ -1301,103 +1652,117 @@ def main():
 
     # Dashboard altijd verversen (ook op onderdrukte dagen, zodat de historie en de
     # "vandaag dicht houden"-status zichtbaar blijven). Telegram blijft ongewijzigd.
-    write_dashboard(build_dashboard(
+    # Het resultaat wordt vastgehouden: de meldlaag hieronder leest er het advies, de
+    # open-reden én de voorspelde open-vensters uit. Vóór augustus 2026 gooide main() dit
+    # dict weg en berekende het decide() daarna een tweede keer — dubbel werk dat uit
+    # elkaar kón lopen, en dat de meldlaag zonder vooruitblik liet zitten.
+    dash = build_dashboard(
         now, rooms_data, om, outside, outside_source, dmax, prev_rooms, gated, gate_reason,
         warm_ahead, outside_rh=outside_rh, outside_rh_temp=outside_rh_temp,
         outside_decide=outside_decide, wu_solar=wu_solar,
-        bias=bias, fc=fc, om_log=om_log, om_learned=om_learned))
+        bias=bias, fc=fc, om_log=om_log, om_learned=om_learned)
+    write_dashboard(dash)
 
     if gated:
         print(f"[gate] Koele dag (max {dmax}°C) en geen warme kamer → geen advies.")
         # State niet wijzigen; ramen blijven op hun laatste advies staan.
         return
 
-    changes: list[tuple[str, str]] = []   # (room, new_advice)
+    dry = os.environ.get("DRY_RUN") == "1"
+    dash_rooms = dash.get("rooms") or {}
+
+    # Het advies zélf komt onveranderd uit build_dashboard/decide(); hier bepalen we
+    # alleen nog wát daarvan een bericht waard is.
     new_rooms = dict(prev_rooms)
-    rh_reason: dict[str, str] = {}        # room → "veto" (dicht ondanks dat koelen zou kunnen)
-    reason_by_room: dict[str, str] = {}   # room → "cool"|"bank"|"dryout"|"fresh_air" (waarom open)
-    rh_vent: dict[str, float] = {}        # room → geprojecteerde vent_rh (voor het bericht)
+    entries: list[tuple[str, dict]] = []
+    lines: list[str] = []
     for room in ROOMS:
-        d = rooms_data.get(room)
-        inside = d["inside"] if d else None
-        humidity = d.get("humidity") if d else None
-        vent_rh = convert_rh(outside_rh, outside_rh_temp, inside)
-        if vent_rh is not None:
-            rh_vent[room] = vent_rh
-        prev   = prev_rooms.get(room, "dicht")
-        low, high = comfort_band(room)
-        reopen_soon = reopen_is_brief(hourly_corr, inside, now)
-        # fresh_air_ok=True: dit blok draait alleen binnen een niet-onderdrukte run (de gate
-        # hierboven heeft koele dagen al afgevangen met een vroege return).
-        new    = decide(inside, outside_decide, prev, low, high, bank_cooling=warm_ahead,
-                        vent_rh=vent_rh, humidity=humidity, reopen_soon=reopen_soon,
-                        fresh_air_ok=True)
-        new_rooms[room] = new
-        # Reden onthouden voor het bericht: veto (te muf → dicht), of wáárom een open-advies
-        # opkwam (cool/bank/dryout/fresh_air) — zelfde open_reason() als decide() zag.
-        if vent_rh is not None and vent_rh >= RH_HARD_CAP:
-            rh_reason[room] = "veto"
-        else:
-            reason = open_reason(inside, outside_decide, low, high, vent_rh, humidity,
-                                 bank_cooling=warm_ahead, fresh_air_ok=True)
-            if reason is not None:
-                reason_by_room[room] = reason
-        ins = f"{inside:.1f}" if inside is not None else "?"
-        out = f"{outside_decide:.1f}" if outside_decide is not None else "?"
+        d = dash_rooms.get(room) or {}
+        advice  = d.get("advice") or prev_rooms.get(room, "dicht")
+        inside  = d.get("inside")
+        vent_rh = d.get("vent_rh")
+        intervals = d.get("open_intervals") or []
+        new_rooms[room] = advice
+
+        told = notified_advice(state, room)
         bank = " [koelte tanken]" if warm_ahead else ""
         rh_s = f" vent_rh {vent_rh:.0f}%" if vent_rh is not None else ""
-        print(f"[kamer] {room}: binnen {ins}° buiten {out}°{rh_s} | {prev} → {new}{bank}")
-        if new != prev:
-            changes.append((room, new))
+        print(f"[kamer] {room}: binnen {inside}° buiten {outside_decide}°{rh_s} | "
+              f"{prev_rooms.get(room, 'dicht')} → {advice}{bank} (gemeld: {told})")
 
-    state["rooms"] = new_rooms
+        decision = notify_decision(state, room, advice, intervals, d.get("open_reason"),
+                                   inside, outside_decide, vent_rh, now,
+                                   rh_veto=d.get("rh_veto"))
+        if decision is None:
+            continue
+        # Frisse lucht is de reden zónder thermisch belang; die mag alleen een bericht
+        # opleveren als de lucht ook de kómende uren aangenaam blijft. Zonder deze poort
+        # adviseert het model te ventileren in lucht die over een uur klam is.
+        if decision["kind"] == "open" and decision.get("reason") == "fresh_air":
+            # De duur-poort in notify_decision is hierboven al gehaald, dus dit is nooit
+            # None; expliciet i.p.v. `or` — 0.0 is falsy en zou stil MIN_OPEN_H worden.
+            dur = sustained_open_h(intervals)
+            duur = MIN_OPEN_H if dur is None else max(dur, MIN_OPEN_H)
+            vooruit = vent_rh_ahead(fc, inside, now, duur)
+            if vooruit is not None and vooruit > RH_COMFORT:
+                print(f"[bericht] {room}: frisse lucht overgeslagen — buiten wordt muffer "
+                      f"(vent_rh tot {vooruit:.0f}% binnen {duur:.1f}u)")
+                continue
 
-    if not changes:
-        print("[bericht] Geen wijzigingen → niets te versturen.")
-        save_state(state)
-        return
-
-    lines = [f"🪟 *Raam-koeladvies* ({now.strftime('%H:%M')})"]
-    for room, advice in changes:
-        d   = rooms_data.get(room) or {}
-        ins = d.get("inside")
-        ins_s = f"{ins:.1f}" if ins is not None else "?"
-        # Toon de gladgestreken beslis-temp: dat is de waarde waarop het advies stoelt.
-        out_s = f"{outside_decide:.1f}" if outside_decide is not None else "?"
-        if advice == "open":
-            suffix_by_reason = {
-                "dryout":    " — ontvochtigen (buiten droger)",
-                "bank":      " — koelte tanken voor de warme dag",
-                "fresh_air": " — frisse lucht",
-            }
-            extra = suffix_by_reason.get(reason_by_room.get(room), "")
-            lines.append(f"🟢 Open: *{room}* (binnen {ins_s}°, buiten {out_s}°){extra}")
-        elif rh_reason.get(room) == "veto":
-            # Te muffe buitenlucht: dicht ondanks dat koelen thermisch zou kunnen.
-            vr = rh_vent.get(room)
-            vr_s = f" (RH ~{vr:.0f}%)" if vr is not None else ""
-            lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°) — buiten te muf{vr_s}")
-        else:
+        reopen = None
+        if decision["kind"] == "dicht":
             # De "buiten zakt rond HH weer onder binnen"-hint slaat alleen ergens op als
             # buiten nú boven de heropen-drempel zit (warmte-instroom). Zit het al onder
             # die drempel, dan is er niets om op te wachten en zou de hint misleiden.
-            hint = None
-            if (ins is not None and outside_decide is not None
-                    and outside_decide > ins - OPEN_MARGIN):
-                hint = reopen_hour(hourly_corr, ins, now)
-            suffix = f" — buiten zakt rond {hint} weer onder binnen" if hint else ""
-            lines.append(f"🔴 Sluit: *{room}* (binnen {ins_s}°, buiten {out_s}°){suffix}")
-    message = "\n".join(lines)
+            if (inside is not None and outside_decide is not None
+                    and outside_decide > inside - OPEN_MARGIN):
+                reopen = reopen_hour(hourly_corr, inside, now)
+        lines.append(room_message_line(room, decision, inside, outside_decide,
+                                       intervals, vent_rh, reopen))
+        entries.append((room, decision))
 
+    state["rooms"] = new_rooms
+
+    # Dagplan (naar de groep): één keer per dag, op de eerste niet-onderdrukte run op of
+    # ná PLAN_HOUR. Idempotent via day.plan_sent, want de kwartierlus herstart elke ~5u.
+    day = roll_day(state, now.date().isoformat())
+    if not day["plan_sent"] and now.hour >= PLAN_HOUR:
+        plan = build_day_plan(dash_rooms, now)
+        plan_msg = day_plan_message(plan, dmax, now)
+        print(plan_msg)
+        groep = os.getenv("TELEGRAM_CHAT_GROUP_ID")
+        if dry:
+            print("DRY_RUN=1, dagplan niet verzonden.")
+        elif not groep:
+            # Zónder expliciete groep-id zou send_telegram terugvallen op de privé-chat
+            # (notify.py: `chat_id or os.getenv("TELEGRAM_CHAT_ID")`). Het dagplan hoort
+            # juist naar de groep, dus liever overslaan dan stilletjes misleveren.
+            print("[dagplan] TELEGRAM_CHAT_GROUP_ID ontbreekt → dagplan overgeslagen.")
+        else:
+            send_telegram(plan_msg, chat_id=groep, parse_mode="Markdown")
+            day["plan_sent"] = True
+            print("[dagplan] Verzonden naar de groep.")
+
+    if not entries:
+        print("[bericht] Niets te melden.")
+        save_state(state)
+        return
+
+    message = advice_message(now, entries, lines)
     print(message)
-    if os.environ.get("DRY_RUN") == "1":
-        print("DRY_RUN=1, niet verzonden.")
+    if dry:
+        # Bewust géén budget afboeken onder DRY_RUN: één handmatige testrun mag de échte
+        # berichten van die dag niet stilleggen. De tokenrotatie en het advies-geheugen
+        # (state["rooms"]) worden wél gewoon bewaard, zoals altijd.
+        print("DRY_RUN=1, niet verzonden (budget niet afgeboekt).")
     else:
-        # Alles van dit project gaat naar de privé-chat (TELEGRAM_CHAT_ID, de
-        # send_telegram default): zowel het raam-advies als de operationele
-        # alerts (token-persist, run_guarded crash) — niets naar de groep.
+        # Het per-kamer-advies gaat naar de privé-chat (TELEGRAM_CHAT_ID, de
+        # send_telegram default), net als de operationele alerts. Alleen het dagplan
+        # hierboven gaat naar de groep.
         send_telegram(message, parse_mode="Markdown")
         state["last_notification"] = now.isoformat()
+        for room, decision in entries:
+            record_notification(state, room, decision, now)
         print("Verzonden naar Telegram.")
 
     save_state(state)

@@ -120,9 +120,13 @@ MIN_OPEN_H = 1.5          # uur — een korter vóórspeld open-venster is geen 
                           #       koelvenster die dag pas om 18:45 begon.
 MAX_OPEN_MSGS_PER_DAY  = 1  # per kamer per dag
 MAX_CLOSE_MSGS_PER_DAY = 1  # per kamer per dag
-PLAN_HOUR = 9             # de eerste niet-onderdrukte run op/ná dit lokale uur stuurt het
-                          # dagplan naar de groep. "Eerste run ná" en niet "om 09:00": de
+PLAN_HOUR = 8             # de eerste niet-onderdrukte run op/ná dit lokale uur stuurt het
+                          # dagplan naar de groep. "Eerste run ná" en niet "om 08:00": de
                           # workflow is een self-driven kwartierlus die elke ~5u herstart.
+MAX_PLAN_WINDOWS = 3      # hoeveel open-vensters het dagplan per kamer noemt. De vooruitblik
+                          # loopt PREDICT_HORIZON_H (18u) vooruit; alles daarbinnen opsommen
+                          # maakt van een overzicht een tabel. Drie dekt het realistische
+                          # patroon (nu open → dicht in de middaghitte → 's avonds weer open).
 URGENT_HEAT_C = 2.0       # °C — buiten ≥ zoveel wármer dan binnen terwijl wij gemeld hebben
                           #      dat het raam openstaat → er stroomt echt hitte naar binnen
 URGENT_COOLDOWN_H = 3.0   # uur — minimale tijd tussen twee urgente berichten per kamer
@@ -1232,52 +1236,79 @@ def advice_message(now: datetime, entries: list[tuple[str, dict]], lines: list[s
 
 
 def build_day_plan(dash_rooms: dict, now: datetime) -> list[dict]:
-    """Per advies-kamer het eerste open-venster van vandaag dat lang genoeg is om te
-    melden — de vooruitblik die het dashboard toch al berekent, nu ook bruikbaar als plan."""
+    """Per advies-kamer álle open-vensters van de komende horizon die lang genoeg zijn om
+    te melden — de vooruitblik die het dashboard toch al berekent, nu ook bruikbaar als plan.
+
+    Twee bewuste keuzes, allebei omdat dit een *dagoverzicht* is en geen losse melding:
+
+    * **Elke kamer staat erin**, ook als er vandaag geen enkel venster voor is (lege
+      `windows`-lijst). Het plan noemde alleen de kamers die toevallig een venster hadden,
+      en over de rest zei het niets — dan weet je niet of die kamer dicht blijft of dat de
+      voorspelling 'm gewoon niet haalde.
+    * **Alle vensters van een kamer** (tot `MAX_PLAN_WINDOWS`), niet alleen het eerste. Een
+      venster heeft een begin én een eind, en juist het eind — wanneer moet dat raam weer
+      dicht — is de actie die je 's ochtends wilt kunnen plannen. Het eerste venster alleen
+      verzweeg zowel de sluittijd als een tweede opening later op de dag.
+    """
     plan: list[dict] = []
     for room in ROOMS:
         d = dash_rooms.get(room) or {}
+        vensters: list[dict] = []
         for iv in d.get("open_intervals") or []:
             start_h, end_h = iv.get("start_h"), iv.get("end_h")
             if start_h is None or end_h is None:
                 continue
             if end_h - max(0.0, start_h) < MIN_OPEN_H:
                 continue
-            plan.append({"room": room, "start": iv["start"], "start_h": start_h,
-                         "end": iv["end"], "horizon": open_end_is_horizon(iv),
-                         # Een segment dat in het verleden begon lóópt al: dat raam staat
-                         # nu open. Dat als "open vanaf 08:45" opschrijven leest als een
-                         # actie die nog moet komen, terwijl er niets te doen valt.
-                         "running": start_h <= 0})
-            break
+            vensters.append({"start": iv["start"], "start_h": start_h,
+                             "end": iv["end"], "end_h": end_h,
+                             "horizon": open_end_is_horizon(iv),
+                             # Een segment dat in het verleden begon lóópt al: dat raam
+                             # staat nu open. Dat als "open vanaf 08:45" opschrijven leest
+                             # als een actie die nog moet komen, terwijl er niets te doen
+                             # valt.
+                             "running": start_h <= 0})
+            if len(vensters) >= MAX_PLAN_WINDOWS:
+                break
+        plan.append({"room": room, "windows": vensters,
+                     # Sorteersleutel: kamers met een venster op volgorde van openen,
+                     # kamers zonder venster achteraan (daar valt niets te plannen).
+                     "start_h": vensters[0]["start_h"] if vensters else float("inf")})
     plan.sort(key=lambda p: p["start_h"])
     return plan
 
 
+def plan_window_text(w: dict) -> str:
+    """Eén open-venster in woorden, altijd mét het moment waarop het raam weer dicht moet.
+
+    Loopt het venster tot de forecast-horizon, dan is die 'sluittijd' de rand van ons
+    kijkvenster en geen voorspelling (zie open_end_is_horizon) — dan staat er "de hele
+    nacht door" in plaats van een verzonnen kloktijd."""
+    if w["running"]:
+        return ("staat al open, de hele nacht door" if w["horizon"]
+                else f"staat al open, dicht rond {w['end']}")
+    return (f"open vanaf {w['start']}, de hele nacht door" if w["horizon"]
+            else f"open {w['start']}–{w['end']}")
+
+
 def day_plan_message(plan: list[dict], dmax: float | None, now: datetime) -> str:
-    """Het dagplan-bericht (naar de groep): wanneer gaat vandaag welk raam open, en wat
-    staat er al open?"""
+    """Het dagplan-bericht (naar de groep): per kamer wanneer het raam open kan én wanneer
+    het weer dicht moet, inclusief de kamers waarvoor vandaag niets te openen valt."""
     kop = f"🪟 *Raamplan* — {format_date_nl(now.date())}"
     if dmax is not None:
         kop += f"\nWarme dag: buiten max {dmax:.1f}°."
-    if not plan:
+    if not any(p["windows"] for p in plan):
         return f"{kop}\n\nVandaag blijven de ramen dicht — buiten koelt niet genoeg af."
 
-    blokken: list[str] = []
-    loopt = [p for p in plan if p.get("running")]
-    komt  = [p for p in plan if not p.get("running")]
-    if loopt:
-        regels = [f"• {p['room']} — "
-                  + ("kan de hele dag open" if p.get("horizon")
-                     else f"dicht rond {p['end']}")
-                  for p in loopt]
-        blokken += ["Staan al open:", *regels, ""]
-    if komt:
-        blokken += ["Open vanaf:", *[f"• {p['room']} — {p['start']}" for p in komt], ""]
-    staart = ("Waarschijnlijk de hele nacht door; je krijgt per kamer een seintje op het "
-              "moment zelf." if any(p["horizon"] for p in komt)
-              else "Je krijgt per kamer een seintje op het moment zelf.")
-    return "\n".join([kop, "", *blokken, staart])
+    regels: list[str] = []
+    for p in plan:
+        if p["windows"]:
+            tekst = "; daarna ".join(plan_window_text(w) for w in p["windows"])
+            regels.append(f"🟢 *{p['room']}* — {tekst}")
+        else:
+            regels.append(f"⚪ *{p['room']}* — blijft vandaag dicht")
+    staart = "Je krijgt per kamer een seintje op het moment zelf."
+    return "\n".join([kop, "", *regels, "", staart])
 
 
 # ── Dashboard-artefact (docs/window_data.json) ─────────────────────────────────────

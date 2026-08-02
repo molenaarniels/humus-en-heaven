@@ -879,7 +879,7 @@ def test_advice_message_kop_volgt_de_inhoud():
     assert "18:45" in wa.advice_message(NOW, [op], ["x"])
 
 
-def test_build_day_plan_kiest_het_eerste_lange_venster_en_sorteert():
+def test_build_day_plan_negeert_blips_en_sorteert_op_openingstijd():
     rooms = {
         "office": {"open_intervals": [
             {"start": "13:00", "end": "13:15", "start_h": -0.25, "end_h": -0.0},  # blip
@@ -891,52 +891,64 @@ def test_build_day_plan_kiest_het_eerste_lange_venster_en_sorteert():
             {"start": "17:45", "end": "23:00", "start_h": 4.5, "end_h": 9.75}]},
     }
     plan = wa.build_day_plan(rooms, NOW)
-    assert [p["room"] for p in plan] == ["Living room", "office", "Ted"]
+    # Kamers met een venster op volgorde van openen; de kamer zónder venster achteraan.
+    assert [p["room"] for p in plan] == ["Living room", "office", "Ted", "hotties"]
     # De blip van 13:00–13:15 telt niet mee als het open-moment van office.
-    assert plan[1]["start"] == "18:45"
+    assert plan[1]["windows"][0]["start"] == "18:45"
 
 
-def test_day_plan_message_bevat_alle_kamers_en_de_dagmax():
-    plan = [{"room": "office", "start": "18:45", "start_h": 5.5, "end": "07:15",
-             "horizon": True, "running": False}]
-    msg = wa.day_plan_message(plan, 24.1, NOW)
-    assert "Raamplan" in msg and "24.1°" in msg
-    assert "Open vanaf:" in msg and "• office — 18:45" in msg
-    assert "hele nacht" in msg
+def test_build_day_plan_houdt_elke_kamer_in_het_overzicht():
+    """Een kamer zonder venster is óók informatie: 'die blijft vandaag dicht'.
 
-
-def test_day_plan_scheidt_al_open_van_nog_te_openen():
-    """Een raam dat al openstaat is geen actie meer.
-
-    De vooruitblik levert voor een open kamer een segment dat in het verleden begon;
-    dat als "open vanaf 08:45" opschrijven leest als iets dat nog moet gebeuren.
+    Vielen die kamers weg, dan noemde het plan alleen de kamers die toevallig een venster
+    hadden en zei het over de rest niets.
     """
+    plan = wa.build_day_plan({}, NOW)
+    assert [p["room"] for p in plan] == list(wa.ROOMS)
+    assert all(p["windows"] == [] for p in plan)
+
+
+def test_build_day_plan_neemt_alle_vensters_mee_tot_het_maximum():
+    """Het plan moet ook de sluiting en een tweede opening kunnen tonen."""
+    ivs = [{"start": "08:45", "end": "10:45", "start_h": -0.25, "end_h": 2.0},
+           {"start": "18:45", "end": "21:00", "start_h": 5.5, "end_h": 7.75},
+           {"start": "22:00", "end": "23:45", "start_h": 8.75, "end_h": 10.5},
+           {"start": "01:00", "end": "03:00", "start_h": 11.75, "end_h": 13.75}]
+    plan = wa.build_day_plan({"Ted": {"open_intervals": ivs}}, NOW)
+    vensters = plan[0]["windows"]
+    assert len(vensters) == wa.MAX_PLAN_WINDOWS
+    assert [w["start"] for w in vensters] == ["08:45", "18:45", "22:00"]
+    assert [w["running"] for w in vensters] == [True, False, False]
+
+
+def test_day_plan_message_noemt_openen_en_sluiten_per_kamer():
     plan = [
-        {"room": "Ted", "start": "08:45", "start_h": -0.25, "end": "10:45",
-         "horizon": False, "running": True},
-        {"room": "office", "start": "18:45", "start_h": 5.5, "end": "07:15",
-         "horizon": True, "running": False},
+        {"room": "Ted", "start_h": -0.25, "windows": [
+            {"start": "08:45", "end": "10:45", "start_h": -0.25, "end_h": 2.0,
+             "horizon": False, "running": True},
+            {"start": "18:45", "end": "21:00", "start_h": 5.5, "end_h": 7.75,
+             "horizon": False, "running": False}]},
+        {"room": "office", "start_h": 5.5, "windows": [
+            {"start": "18:45", "end": "07:15", "start_h": 5.5,
+             "end_h": float(wa.PREDICT_HORIZON_H), "horizon": True, "running": False}]},
+        {"room": "hotties", "start_h": float("inf"), "windows": []},
     ]
     msg = wa.day_plan_message(plan, 24.1, NOW)
-    assert "Staan al open:" in msg and "• Ted — dicht rond 10:45" in msg
-    assert "Open vanaf:" in msg and "• office — 18:45" in msg
-    # De al-open kamer mag niet als toekomstige actie verschijnen.
-    assert "• Ted — 08:45" not in msg
-
-
-def test_build_day_plan_markeert_een_lopend_venster():
-    rooms = {"Ted": {"open_intervals": [
-        {"start": "08:45", "end": "12:15", "start_h": -0.25, "end_h": 3.25}]}}
-    plan = wa.build_day_plan(rooms, NOW)
-    assert plan[0]["running"] is True
-    rooms = {"Ted": {"open_intervals": [
-        {"start": "19:45", "end": "23:00", "start_h": 1.0, "end_h": 4.25}]}}
-    assert wa.build_day_plan(rooms, NOW)[0]["running"] is False
+    assert "Raamplan" in msg and "24.1°" in msg
+    # Een lopend venster is geen actie meer, maar de sluittijd is dat wél.
+    assert "*Ted* — staat al open, dicht rond 10:45; daarna open 18:45–21:00" in msg
+    # Tot de kijkvenstergrens → geen verzonnen kloktijd.
+    assert "*office* — open vanaf 18:45, de hele nacht door" in msg
+    assert "07:15" not in msg
+    # Elke kamer staat erin, ook die zonder venster.
+    assert "*hotties* — blijft vandaag dicht" in msg
 
 
 def test_day_plan_message_zonder_venster():
     msg = wa.day_plan_message([], 23.0, NOW)
     assert "blijven de ramen dicht" in msg
+    alles_dicht = [{"room": r, "windows": [], "start_h": float("inf")} for r in wa.ROOMS]
+    assert "blijven de ramen dicht" in wa.day_plan_message(alles_dicht, 23.0, NOW)
 
 
 def test_urgent_muf_volgt_de_veto_vlag_van_decide():

@@ -862,6 +862,24 @@ def horizon_diffuse_reduction(horizon_deg: float) -> float:
     return max(0.0, min(1.0, 2.0 * h / math.pi + math.sin(2.0 * h) / math.pi))
 
 
+# Conventie van de `direct`-invoer. Open-Meteo's `direct_radiation` is de directe component
+# op het HORIZONTALE vlak (GHI = diffuus + DNI·sin(zonshoogte)) — geverifieerd op de eigen
+# shards: over 459 uren met instraling > 50 W/m² geldt `direct + diffuus == shortwave` tot op
+# 0.00%. `facade_irradiance` behandelde 'm historisch als DNI (loodrecht op de straal) en
+# vermenigvuldigde 'm direct met cos(invalshoek); dat leest structureel te laag, met een
+# factor sin(zonshoogte) — 1.4× bij hoge zon, 2.5× bij lage zon, en op een plat dak geeft de
+# functie dan 61–88% van `shortwave` waar ze exact `shortwave` hoort te geven. Omdat de fout
+# met de zonstand meeschuift kan géén constante schaal (`solar_gain`, `ROOF_SOLAR_GAIN`) 'm
+# opvangen — hij blijft als restfout-vorm zitten, precies op de zonnige middagen/avonden.
+# De vlag staat tijdens de meetcampagne default op het oude gedrag (zie
+# tools/twin2_experiment.py, armen `solar_dni*`); zet 'm pas om als de held-out-cijfers het
+# dragen, samen met een PHYSICS_REV/PHYSICS2_REV-bump (de geleerde params hebben de fout
+# geabsorbeerd).
+DIRECT_IS_HORIZONTAL = False
+SIN_EL_FLOOR = math.sin(math.radians(3.0))   # klem op de 1/sin(el)-versterking vlak boven de horizon
+MAX_DNI = 1100.0                             # W/m² — fysieke bovengrens (zonneconstante na atmosfeer)
+
+
 def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
                       direct: float, diffuse: float, tilt_deg: float = 90.0,
                       diffuse_only: bool = False, horizon_deg: float = 0.0,
@@ -869,6 +887,10 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
     """Instraling (W/m²) op een vlak met azimut `facade_az` en helling `tilt_deg` vanaf
     horizontaal (90 = verticaal raam, 0 = plat dakraam/skylight). Directe component via de
     invalshoek op het hellende vlak; diffuus via de hemelkoepel-viewfactor (1+cos β)/2.
+
+    `direct` wordt als DNI (loodrecht op de straal) gebruikt; staat `DIRECT_IS_HORIZONTAL`
+    aan, dan wordt de horizontale Open-Meteo-waarde éérst naar DNI omgerekend
+    (`direct / sin(zonshoogte)`, geklemd) — zie de toelichting bij die vlag.
 
     `diffuse_only`: het raam wordt door een vast obstakel (b.v. een huis ervóór + zonwering)
     permanent uit de directe zonnestraal gehouden, maar ziet nog wél de diffuse hemel. Dan
@@ -895,7 +917,12 @@ def facade_irradiance(facade_az: float, sun_az: float, sun_el: float,
     daz = math.radians(((sun_az - facade_az + 180.0) % 360.0) - 180.0)
     # cos(invalshoek) op een vlak met helling β: standaard zon-op-vlak-formule.
     cos_inc = math.cos(zen) * math.cos(beta) + math.sin(zen) * math.sin(beta) * math.cos(daz)
-    direct_on = max(0.0, (direct or 0.0) * max(0.0, cos_inc))
+    beam = direct or 0.0
+    if DIRECT_IS_HORIZONTAL:
+        # horizontale directe component → DNI. De klemmen vangen de 1/sin(el)-singulariteit
+        # vlak boven de horizon; daar is de beam sowieso verwaarloosbaar t.o.v. het diffuse.
+        beam = min(beam / max(math.sin(math.radians(sun_el)), SIN_EL_FLOOR), MAX_DNI)
+    direct_on = max(0.0, beam * max(0.0, cos_inc))
     if beam_iam:
         direct_on *= beam_iam_factor(cos_inc)   # scherende-hoek-transmissie-terugval (stap 2)
     return direct_on + diff_on

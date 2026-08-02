@@ -91,7 +91,33 @@ ARMS: dict[str, dict] = {
     # "stookte" 's nachts door (de nachtelijke warm-bias, juli 2026). Param-compatibel
     # (geen reset) → geschikt voor de 0-epoch-configtest, net als de _nr-armen.
     "neighbor_cap_night": {"neighbor_transform": "cap23_night"},
+    # ── Zon-invoer (augustus 2026) ───────────────────────────────────────────────────
+    # Deze armen zijn NIET param-compatibel: ze veranderen de grootte van de zon-drive,
+    # die het huidige anker in `solar_gain`/`ua_roof` heeft geabsorbeerd. Warm-starten
+    # vanaf dat anker maakt ze vals-negatief, dus alle vier starten op kale priors — en
+    # daarom is `baseline_bare` (en niet `baseline`) hun vergelijker.
+    # eerlijke vergelijker voor de bare-priors-armen: kale priors, geen variant.
+    "baseline_bare": {"bare_priors": True},
+    # Open-Meteo's `direct_radiation` is horizontaal, niet loodrecht — de beam werd met
+    # sin(zonshoogte) te laag gelezen (1.4× hoge zon, 2.5× lage zon).
+    "solar_dni": {"bare_priors": True, "direct_is_horizontal": True},
+    # de verduisteringsgordijnen zijn BINNENgordijnen: factor 0.12 is een verduisterings-
+    # fractie, geen zonwarmte-fractie (de geabsorbeerde energie zit binnen het glas).
+    "shade_internal": {"bare_priors": True, "shade_factor": {
+        "ted_window": 0.7, "hotties_window": 0.7, "office_window": 0.7}},
+    # samen: (1) verhoogt de instraling, (2) verlaagt het vermeden aandeel — ze werken
+    # deels tegen elkaar in, dus de combinatie moet apart gemeten worden.
+    "solar_dni_shade": {"bare_priors": True, "direct_is_horizontal": True,
+                        "shade_factor": {"ted_window": 0.7, "hotties_window": 0.7,
+                                         "office_window": 0.7}},
+    # A/A-ruisvloer ín het bare-priors-regime (de warm-start-jitter-armen meten een andere
+    # ruisvloer: daar zit de start op het anker, hier op de priors).
+    "aa_bare_1": {"bare_priors": True, "jitter": 0.02},
+    "aa_bare_2": {"bare_priors": True, "jitter": -0.02},
 }
+
+# Armen die op kale priors starten en dus tegen `baseline_bare` vergeleken moeten worden.
+BARE_BASELINE = "baseline_bare"
 
 
 def apply_config(cfg: dict) -> None:
@@ -105,6 +131,8 @@ def apply_config(cfg: dict) -> None:
         a2.RH_RES_WEIGHT = cfg["rh_weight"]
     if "ridge" in cfg:
         a2.REG_WEIGHT2_BY_PARAM = dict(cfg["ridge"])
+    # Zon-conventie: leeft in airflow_model (gedeeld door béíde tweelingen), niet in a2.
+    am.DIRECT_IS_HORIZONTAL = cfg.get("direct_is_horizontal", am.DIRECT_IS_HORIZONTAL)
 
 
 def load_house_for(cfg: dict) -> dict:
@@ -112,6 +140,10 @@ def load_house_for(cfg: dict) -> dict:
     if cfg.get("strip_subzones"):
         for r in house.get("rooms", {}).values():
             r.pop("subzones", None)
+    for wid, factor in (cfg.get("shade_factor") or {}).items():
+        sh = house.get("windows", {}).get(wid, {}).get("shade")
+        if isinstance(sh, dict) and "factor" in sh:      # alleen het simpele scherm-type
+            sh["factor"] = float(factor)
     loc = house.get("location", {})
     am._LAT = loc.get("lat", am._LAT)
     am._LON = loc.get("lon", am._LON)
@@ -121,8 +153,16 @@ def load_house_for(cfg: dict) -> dict:
 def start_params_for(house: dict, cfg: dict) -> dict:
     """Warm-start: het huidige batch-anker; buur-armen resetten ua_party naar prior
     (het anker zit op de 0-rail gefit onder de óude fysica — anders vals-negatief);
-    A/A-armen jitteren de vector alternerend ±2% (deterministisch, geklemd)."""
-    start = a2.batch_start_params(house, a2.load_batch()) or a2.default_params2(house)
+    A/A-armen jitteren de vector alternerend ±2% (deterministisch, geklemd).
+
+    `bare_priors`: negeer het anker volledig en start op de kale priors. Nodig voor armen
+    die de *drive* veranderen (de zon-conventie, de gordijnfactor): het anker heeft die
+    fout in `solar_gain`/`ua_roof` geabsorbeerd, dus warm-starten daarvandaan meet de oude
+    compensatie mee i.p.v. de variant. Zelfde keuze als bij de om_bias-adoptie."""
+    if cfg.get("bare_priors"):
+        start = a2.default_params2(house)
+    else:
+        start = a2.batch_start_params(house, a2.load_batch()) or a2.default_params2(house)
     if cfg.get("reset_ua_party"):
         for rp in start.values():
             if isinstance(rp, dict) and "ua_party" in rp:
@@ -294,8 +334,13 @@ def report(out_dir: str, offset: int) -> None:
             continue
         with open(path, encoding="utf-8") as f:
             rows.append(json.load(f))
-    base = next((r for r in rows if r["arm"] == "baseline"), None)
-    aa = [r for r in rows if r["arm"].startswith("aa_jitter")]
+    # Vergelijker + A/A-paar volgen het regime van de campagne: bare-priors-armen horen
+    # tegen `baseline_bare` en de `aa_bare_*`-ruisvloer, want een warm-start vanaf het anker
+    # is voor hen geen faire tegenhanger (zie `start_params_for`).
+    bare = any(r["arm"] == BARE_BASELINE for r in rows)
+    base = next((r for r in rows if r["arm"] == (BARE_BASELINE if bare else "baseline")), None)
+    aa_prefix = "aa_bare" if bare else "aa_jitter"
+    aa = [r for r in rows if r["arm"].startswith(aa_prefix)]
 
     def _noise(key: str):
         if len(aa) != 2 or aa[0]["eval"].get(key) is None or aa[1]["eval"].get(key) is None:

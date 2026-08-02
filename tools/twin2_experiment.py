@@ -296,7 +296,7 @@ def run_arm(arm: str, out_dir: str, epochs: int, offset: int) -> None:
               "railed": a2.railed_params2(params), "params": params,
               "wall_s": round(time.time() - t0, 1)}
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"{arm}.off{offset}.json")
+    path = result_path(out_dir, arm, offset)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1, default=str)
     print(f"[{arm}] klaar in {result['wall_s']}s → 5d {ev['rmse_5d']}°C · "
@@ -304,9 +304,27 @@ def run_arm(arm: str, out_dir: str, epochs: int, offset: int) -> None:
           f"48u {ev['rmse_48h']}°C · RH {ev['rmse_rh_5d']}% → {path}")
 
 
-def run_all(out_dir: str, epochs: int, offset: int, jobs: int, arms: list[str]) -> None:
-    """Orchestrator: elke arm als eigen proces (module-globalen!), `jobs`-breed."""
-    pending = list(arms)
+def result_path(out_dir: str, arm: str, offset: int) -> str:
+    return os.path.join(out_dir, f"{arm}.off{offset}.json")
+
+
+def run_all(out_dir: str, epochs: int, offset: int, jobs: int, arms: list[str],
+            force: bool = False) -> None:
+    """Orchestrator: elke arm als eigen proces (module-globalen!), `jobs`-breed.
+
+    Hervatbaar: een arm met een bestaand resultaatbestand wordt overgeslagen (`--force`
+    om tóch over te doen). Een campagne-arm kost uren, en de omgeving kan midden in een
+    golf herstarten — zonder deze poort kost elke herstart de hele golf opnieuw, terwijl
+    de al afgeronde armen gewoon op schijf staan."""
+    pending = []
+    for arm in arms:
+        if not force and os.path.exists(result_path(out_dir, arm, offset)):
+            print(f"[all] overgeslagen (bestaat al): {arm}.off{offset}")
+            continue
+        pending.append(arm)
+    if not pending:
+        print(f"[all] niets te doen voor offset {offset} — alle armen staan er al.")
+        return
     running: list[tuple[str, subprocess.Popen]] = []
     while pending or running:
         while pending and len(running) < jobs:
@@ -403,6 +421,8 @@ def main() -> int:
                     help="start-demping voor de fits (default 1e-3; ronde ≥2: ~1.0)")
     ap.add_argument("--arms", default=None,
                     help="komma-lijst (voor --all), default alle ARMS")
+    ap.add_argument("--force", action="store_true",
+                    help="(voor --all) armen met een bestaand resultaat tóch opnieuw draaien")
     args = ap.parse_args()
     global LAM0
     if args.lam0 is not None:
@@ -411,7 +431,7 @@ def main() -> int:
         report(args.out, args.holdout_offset)
     elif args.all:
         arms = args.arms.split(",") if args.arms else list(ARMS)
-        run_all(args.out, args.epochs, args.holdout_offset, args.jobs, arms)
+        run_all(args.out, args.epochs, args.holdout_offset, args.jobs, arms, args.force)
     elif args.arm:
         run_arm(args.arm, args.out, args.epochs, args.holdout_offset)
     else:

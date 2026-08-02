@@ -112,6 +112,52 @@ def test_facade_irradiance_horizon_blocks_low_sun():
     assert no_obstacle > below
 
 
+def test_facade_irradiance_flat_plane_equals_ghi_when_direct_is_horizontal(monkeypatch):
+    # De invariant die de `direct`-conventie écht vastlegt: Open-Meteo levert de directe
+    # component op het HORIZONTALE vlak (GHI = diffuus + DNI·sin(zonshoogte)), dus een plat
+    # vlak (tilt 0, sky_view 1.0) moet exact `direct + diffuus` teruggeven. Met de vlag uit
+    # doet de functie `direct × cos(zenit)` en leest ze structureel te laag — dat is precies
+    # de fout die deze vlag adresseert.
+    monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", True)
+    diffuse = 150.0
+    for el in (5.0, 10.0, 21.3, 30.0, 45.0, 56.0, 80.0):
+        direct_h = 600.0 * math.sin(math.radians(el))     # horizontale directe component
+        got = am.facade_irradiance(0.0, 180.0, el, direct_h, diffuse, tilt_deg=0.0)
+        assert got == pytest.approx(direct_h + diffuse, abs=1e-9)
+
+
+def test_facade_irradiance_direct_is_horizontal_only_lifts_the_beam(monkeypatch):
+    az, el, direct_h, diffuse = 309.0, 21.3, 223.0, 143.0
+    off = am.facade_irradiance(az, az - 36.0, el, direct_h, diffuse, 90.0, False, 14.0)
+    monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", True)
+    on = am.facade_irradiance(az, az - 36.0, el, direct_h, diffuse, 90.0, False, 14.0)
+    # Lage zon → de 1/sin(el)-correctie tilt de beam fors op (hier ~2.4×).
+    assert on > 2.0 * off
+    # Het diffuse deel blijft exact gelijk: het verschil zit volledig in de beam.
+    sky = 0.5 * (1.0 - am.horizon_diffuse_reduction(14.0))
+    assert (on - diffuse * sky) / (off - diffuse * sky) == pytest.approx(
+        1.0 / math.sin(math.radians(el)), rel=1e-9)
+    # Geen beam (zon onder het obstakel, of 's nachts) → de vlag verandert niets.
+    for sun_el, dh in ((8.0, 223.0), (-5.0, 0.0)):
+        monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", False)
+        a = am.facade_irradiance(az, az, sun_el, dh, diffuse, 90.0, False, 14.0)
+        monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", True)
+        assert am.facade_irradiance(az, az, sun_el, dh, diffuse, 90.0, False,
+                                    14.0) == pytest.approx(a, abs=1e-12)
+
+
+def test_facade_irradiance_direct_is_horizontal_clamped_near_horizon(monkeypatch):
+    # 1/sin(el) is singulier op de horizon; SIN_EL_FLOOR + MAX_DNI houden 'm eindig en
+    # fysiek. Vlak boven de horizon is de beam sowieso verwaarloosbaar t.o.v. het diffuus.
+    monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", True)
+    val = am.facade_irradiance(180.0, 180.0, 0.05, 5.0, 40.0, 90.0)
+    assert math.isfinite(val)
+    assert val <= am.MAX_DNI + 40.0
+    # Een absurd hoge horizontale beam bij lage zon blijft onder de DNI-bovengrens.
+    high = am.facade_irradiance(180.0, 180.0, 2.0, 900.0, 0.0, 90.0)
+    assert high <= am.MAX_DNI
+
+
 def test_horizon_diffuse_reduction_bounds():
     # Geen obstakel → geen reductie; recht-op-de-gevel-hoog obstakel (90°) → volledige blokkade.
     assert am.horizon_diffuse_reduction(0.0) == pytest.approx(0.0, abs=1e-12)

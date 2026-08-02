@@ -6,6 +6,7 @@ getest met gemonkeypatchte weer/log-seams en een tmp-state-bestand.
 """
 import json
 import math
+import pathlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -184,6 +185,51 @@ def test_reminder_gives_up_after_window(state_env, monkeypatch):
     monkeypatch.setattr(am, "load_house", lambda: HOUSE)
     sa.run_reminder(NOON)                                # 13:00 > open 11:00 → opgeven
     assert sent == [] and sa.load_state()["reminder_sent"]
+
+
+def test_stale_state_snapshot_zou_dubbel_sturen(state_env, monkeypatch):
+    """De script-idempotentie leunt volledig op *verse* state.
+
+    `run_reminder` kan een dubbel bericht alleen tegenhouden als het de
+    `reminder_sent`-vlag ziet die een eerdere run wegschreef. Leest een tweede
+    run een oudere momentopname (zoals bij een checkout op de dispatch-SHA),
+    dan stuurt hij opnieuw — precies de dubbele melding van 2 aug 2026. Deze
+    test legt dat gedrag vast en is daarmee de reden achter de `ref:`-pin in
+    shade-notify.yml (zie de test hieronder): de dedup hoort in de checkout,
+    niet in nóg een scriptcheck.
+    """
+    path, sent = state_env
+    _write_state(path, windows=[{"id": "sky", "label": "Serre-dakraam",
+                                 "shade_label": "buitenscherm", "room": "r",
+                                 "close": "09:30", "open": "21:00", "delta_wh": 9000}])
+    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(am, "load_openings_log", lambda: {})
+    monkeypatch.setattr(am, "openings_at", lambda log, now: {})
+    monkeypatch.setattr(am, "fetch_weather", lambda: {
+        "hourly": [], "current": {"direct_radiation": 600.0, "shortwave_radiation": 800.0}})
+
+    state_na_run1 = json.loads(path.read_text())
+    sa.run_reminder(NOON)
+    assert len(sent) == 1 and sa.load_state()["reminder_sent"]
+
+    # Tweede run met de state van vóór run 1 → nogmaals hetzelfde bericht.
+    path.write_text(json.dumps(state_na_run1))
+    sa.run_reminder(NOON)
+    assert len(sent) == 2 and sent[0] == sent[1]
+
+
+def test_workflow_checkout_pint_branch_tip():
+    """De reminder-dedup vereist een checkout op de branch-tip, niet op de
+    dispatch-SHA — anders leest een tweede dispatch de state van vóór de commit
+    van de eerste (dubbele melding, 2 aug 2026)."""
+    wf = (pathlib.Path(__file__).resolve().parents[1]
+          / ".github" / "workflows" / "shade-notify.yml").read_text(encoding="utf-8")
+    lines = wf.splitlines()
+    idx = [i for i, ln in enumerate(lines) if "actions/checkout" in ln]
+    assert idx, "geen checkout-stap in shade-notify.yml"
+    for i in idx:
+        assert any("ref: ${{ github.ref_name }}" in ln for ln in lines[i:i + 3]), \
+            "checkout zonder branch-tip-pin — een 2e reminder-dispatch stuurt dubbel"
 
 
 def test_state_roundtrip(tmp_path, monkeypatch):

@@ -58,8 +58,30 @@ def _weather_view(rows: list[dict], until: datetime) -> dict:
     return {"hourly": [r for r in rows if r["dt"] <= until], "current": {}}
 
 
+def start_params(house: dict, mode: str) -> dict:
+    """Startvector van de replay. `priors` = kale priors (bewijst meteen dat het model
+    from scratch kan leren). `twin1` = de huidige geleerde params van Project 8 uit
+    docs/airflow_learned.json — legitiem én de best bekende staat: de fysica is
+    bit-identiek geport (tests/test_vent_parity.py), dus twin 1's geconvergeerde,
+    niet-gerailde params zíjn params van dit model; de replay bevestigt daarna alleen
+    nog dat de offline route dezelfde fit-kwaliteit reproduceert."""
+    if mode == "priors":
+        return vio.default_params(house)
+    if mode == "twin1":
+        path = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+        if not old.get("params"):
+            raise SystemExit(f"[seed] --start twin1: geen params in {path}")
+        # Bewuste lineage-adoptie: rev 6 ís twin 1's rev-5-fysica (pariteit bewezen),
+        # dus we stempelen de rev mee zodat merged_params NIET naar de priors reset.
+        return vio.merged_params(house, {"params": old["params"],
+                                         "physics_rev": vio.PHYSICS_REV})
+    raise SystemExit(f"[seed] onbekende --start: {mode}")
+
+
 def replay(house: dict, dataset: dict, days: float, step_h: float,
-           om_learned: dict | None) -> tuple[dict, list[dict]]:
+           om_learned: dict | None, params: dict) -> tuple[dict, list[dict]]:
     """De eigenlijke replay. Geeft (eindparams, stap-log) terug."""
     all_ts = [t for s in dataset["actual"].values() for t, _ in s]
     if not all_ts:
@@ -70,7 +92,6 @@ def replay(house: dict, dataset: dict, days: float, step_h: float,
     log = dataset["log"]
     window_h = vio.CALIB_WINDOW_H + vio.WARMUP_H
 
-    params = vio.default_params(house)
     steps: list[dict] = []
     for vnow in vnows:
         weather = _weather_view(dataset["weather_rows"], vnow)
@@ -124,6 +145,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--days", type=float, default=5.0, help="replay-venster (dagen, default 5)")
     ap.add_argument("--step-h", type=float, default=6.0, help="stapgrootte (uren, default 6)")
+    ap.add_argument("--start", choices=["priors", "twin1"], default="priors",
+                    help="startvector: kale priors of twin 1's huidige geleerde params")
     ap.add_argument("--no-refresh", action="store_true",
                     help="shard-weer-verversing (archief, netwerk) overslaan")
     ap.add_argument("--dry-run", action="store_true", help="niets schrijven")
@@ -151,7 +174,9 @@ def main() -> None:
         print(f"[seed] om_bias-driver: nacht {om_learned.get('night'):+.2f}°C, "
               f"dag {om_learned.get('day'):+.2f}°C")
 
-    params, steps = replay(house, dataset, args.days, args.step_h, om_learned)
+    p0 = start_params(house, args.start)
+    print(f"[seed] startvector: {args.start}")
+    params, steps = replay(house, dataset, args.days, args.step_h, om_learned, p0)
     if not steps:
         raise SystemExit("[seed] geen enkele replay-stap gelukt — shards te dun?")
 
@@ -176,7 +201,7 @@ def main() -> None:
            "railed": [],
            "rmse_history": [],     # leercurve toont alléén echte productieruns
            "anomaly": {},
-           "seed_src": f"shard-replay {span}"}
+           "seed_src": f"shard-replay {span} (start={args.start})"}
     if args.dry_run:
         print("[seed] DRY-RUN — niets geschreven.")
         return

@@ -559,7 +559,7 @@ def refine_outside_now(weather: dict) -> tuple[float | None, float | None]:
 
 # ── Maand-shards (trainingsset; geërfd van tweeling 2) ──────────────────────────────
 
-HISTORY_DIR     = os.getenv("TWIN2_HISTORY_DIR", "data/twin2_history")
+HISTORY_DIR     = os.getenv("VENT_HISTORY_DIR", "data/twin2_history")
 
 def _shard_path(month: str) -> str:
     return os.path.join(HISTORY_DIR, f"{month}.json")

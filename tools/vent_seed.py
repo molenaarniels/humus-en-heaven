@@ -81,7 +81,8 @@ def start_params(house: dict, mode: str) -> dict:
 
 
 def replay(house: dict, dataset: dict, days: float, step_h: float,
-           om_learned: dict | None, params: dict) -> tuple[dict, list[dict]]:
+           om_learned: dict | None, params: dict,
+           eval_only: bool = False) -> tuple[dict, list[dict]]:
     """De eigenlijke replay. Geeft (eindparams, stap-log) terug."""
     all_ts = [t for s in dataset["actual"].values() for t, _ in s]
     if not all_ts:
@@ -129,9 +130,14 @@ def replay(house: dict, dataset: dict, days: float, step_h: float,
                  if r.get("shortwave") is not None]
         solar_mean = round(sum(solar) / len(solar)) if solar else None
 
-        params, step_rmse = vf.calibrate(house, params, timeline, seed, ctx, actual,
-                                         solar_mean=solar_mean,
-                                         tm_seed=tm_seed, measured=gamma_measured)
+        if eval_only:
+            step_rmse = vf.rmse(vf._residuals(house, params, timeline, seed, ctx, actual,
+                                              set(actual.keys()),
+                                              tm_seed=tm_seed, measured=gamma_measured))
+        else:
+            params, step_rmse = vf.calibrate(house, params, timeline, seed, ctx, actual,
+                                             solar_mean=solar_mean,
+                                             tm_seed=tm_seed, measured=gamma_measured)
         rails = vf.railed_params(params)
         n = sum(len(s) for s in actual.values())
         steps.append({"t": vnow.isoformat(), "rmse": round(step_rmse, 3),
@@ -149,6 +155,10 @@ def main() -> None:
                     help="startvector: kale priors of twin 1's huidige geleerde params")
     ap.add_argument("--no-refresh", action="store_true",
                     help="shard-weer-verversing (archief, netwerk) overslaan")
+    ap.add_argument("--eval-only", action="store_true",
+                    help="niet fitten, alleen de startvector op het laatste venster scoren "
+                         "(voor --start twin1: pariteit is bewezen, dus twin 1's params zijn "
+                         "al geldig — de replay-fit zou ze alleen het venster in drijven)")
     ap.add_argument("--dry-run", action="store_true", help="niets schrijven")
     args = ap.parse_args()
 
@@ -176,7 +186,8 @@ def main() -> None:
 
     p0 = start_params(house, args.start)
     print(f"[seed] startvector: {args.start}")
-    params, steps = replay(house, dataset, args.days, args.step_h, om_learned, p0)
+    params, steps = replay(house, dataset, args.days if not args.eval_only else 0.1,
+                           args.step_h, om_learned, p0, eval_only=args.eval_only)
     if not steps:
         raise SystemExit("[seed] geen enkele replay-stap gelukt — shards te dun?")
 
@@ -201,13 +212,14 @@ def main() -> None:
            "railed": [],
            "rmse_history": [],     # leercurve toont alléén echte productieruns
            "anomaly": {},
-           "seed_src": f"shard-replay {span} (start={args.start})"}
+           "seed_src": (f"twin1-params eval {span}" if args.eval_only and args.start == "twin1"
+                        else f"shard-replay {span} (start={args.start})")}
     if args.dry_run:
         print("[seed] DRY-RUN — niets geschreven.")
         return
     with open(vio.LEARNED_FILE, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    print(f"[seed] geschreven: {vio.LEARNED_FILE} (seed_src: shard-replay {span})")
+    print(f"[seed] geschreven: {vio.LEARNED_FILE} (seed_src: {out['seed_src']})")
 
 
 if __name__ == "__main__":

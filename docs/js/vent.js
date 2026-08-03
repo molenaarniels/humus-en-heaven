@@ -31,12 +31,21 @@ async function loadData() {
     const res = await fetch(bust("vent_data.json"));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
-    render();
   } catch (e) {
     document.getElementById("banner-slot").innerHTML =
       `<div class="banner banner-error">Kon <code>vent_data.json</code> niet laden (${e.message}). Het model draait elk kwartier via GitHub Actions.</div>`;
     document.getElementById("source-label").textContent = "";
     document.getElementById("content").innerHTML = "";
+    return;
+  }
+  // Renderfouten gescheiden van laadfouten: een chart-/render-exceptie mag de al
+  // opgebouwde pagina (plattegrond, kaarten, speeltuin) niet wegvagen of zich als
+  // "kon niet laden" vermommen.
+  try {
+    render();
+  } catch (e) {
+    document.getElementById("banner-slot").innerHTML =
+      `<div class="banner banner-warn">Deel van de pagina kon niet renderen: ${e.message}</div>`;
   }
 }
 
@@ -155,8 +164,10 @@ function render() {
 
   document.getElementById("content").innerHTML = html;
   renderSandbox();     // vóór de charts: een chart-fout mag de speeltuin niet meenemen
-  drawTempChart();
-  drawRmseChart();
+  if (typeof Chart !== "undefined") {   // CDN niet geladen → pagina zonder grafieken i.p.v. leeg
+    drawTempChart();
+    drawRmseChart();
+  }
 }
 
 // ===================== CHARTS =====================

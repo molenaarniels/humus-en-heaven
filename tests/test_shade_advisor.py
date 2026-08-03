@@ -11,8 +11,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import airflow_model as am
 import shade_advisor as sa
+import vent_io as vio
+import vent_physics as vp
 from shared_const import TZ
 
 LAT, LON = 52.09, 5.12
@@ -57,7 +58,7 @@ NOON = datetime(2026, 7, 2, 13, 0, tzinfo=TZ)
 
 def test_avoidable_delta_simple_factor():
     # Simpel scherm (factor 0.15): dicht laat 15% door → vermijdbaar = 85% van open.
-    open_pw = am.per_window_solar(HOUSE, {}, *am.sun_position(LAT, LON, NOON),
+    open_pw = vp.per_window_solar(HOUSE, {}, *vp.sun_position(LAT, LON, NOON),
                                   600.0, 150.0, beam_iam=True)
     dw = sa._instant_delta(HOUSE, {}, "sky", NOON, LAT, LON, 600.0, 150.0)
     assert open_pw["sky"] > 100.0                 # er staat echt zon op
@@ -68,8 +69,8 @@ def test_avoidable_delta_coverage_lamella():
     # Coverage-lamella: huidige stand "open" (dekking 0.3, papier 0.7) laat
     # 1−0.3·0.3 = 0.91 door; dicht 1−1.0·0.3 = 0.70 → Δfractie 0.21 van kaal glas,
     # oftewel 0.21/0.91 van de húidige doorval (dicht-vs-huidige-stand, niet vs kaal).
-    s_az, s_el = am.sun_position(LAT, LON, datetime(2026, 7, 2, 18, 30, tzinfo=TZ))
-    cur = am.per_window_solar(HOUSE, {}, s_az, s_el, 400.0, 150.0, beam_iam=True)
+    s_az, s_el = vp.sun_position(LAT, LON, datetime(2026, 7, 2, 18, 30, tzinfo=TZ))
+    cur = vp.per_window_solar(HOUSE, {}, s_az, s_el, 400.0, 150.0, beam_iam=True)
     dw = sa._instant_delta(HOUSE, {}, "lam",
                            datetime(2026, 7, 2, 18, 30, tzinfo=TZ), LAT, LON,
                            400.0, 150.0)
@@ -160,15 +161,15 @@ def test_reminder_noop_before_time_and_when_sent(state_env, monkeypatch):
 def test_reminder_materialization_hold_then_send(state_env, monkeypatch):
     path, sent = state_env
     _write_state(path)
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
     # Bewolkt: geen instraling → uitstel, niet als verzonden gemarkeerd.
-    monkeypatch.setattr(am, "fetch_weather", lambda: {
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {
         "hourly": [], "current": {"direct_radiation": 0.0, "shortwave_radiation": 10.0}})
     sa.run_reminder(NOON)
     assert sent == [] and not sa.load_state()["reminder_sent"]
     # Zon breekt door: voorspelde last materialiseert → één bericht + sent-vlag.
-    monkeypatch.setattr(am, "fetch_weather", lambda: {
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {
         "hourly": [], "current": {"direct_radiation": 600.0, "shortwave_radiation": 800.0}})
     sa.run_reminder(NOON)
     assert len(sent) == 1 and "Serre-dakraam" in sent[0]
@@ -182,7 +183,9 @@ def test_reminder_gives_up_after_window(state_env, monkeypatch):
     _write_state(path, windows=[{"id": "sky", "label": "Serre-dakraam",
                                  "shade_label": "buitenscherm", "room": "r",
                                  "close": "09:30", "open": "11:00", "delta_wh": 900}])
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    # Hoort vóór de materialisatie-check op te geven — stub tegen een echte fetch.
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": [], "current": {}})
     sa.run_reminder(NOON)                                # 13:00 > open 11:00 → opgeven
     assert sent == [] and sa.load_state()["reminder_sent"]
 
@@ -202,10 +205,10 @@ def test_stale_state_snapshot_zou_dubbel_sturen(state_env, monkeypatch):
     _write_state(path, windows=[{"id": "sky", "label": "Serre-dakraam",
                                  "shade_label": "buitenscherm", "room": "r",
                                  "close": "09:30", "open": "21:00", "delta_wh": 9000}])
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "load_openings_log", lambda: {})
-    monkeypatch.setattr(am, "openings_at", lambda log, now: {})
-    monkeypatch.setattr(am, "fetch_weather", lambda: {
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "load_openings_log", lambda: {})
+    monkeypatch.setattr(vio, "openings_at", lambda log, now: {})
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {
         "hourly": [], "current": {"direct_radiation": 600.0, "shortwave_radiation": 800.0}})
 
     state_na_run1 = json.loads(path.read_text())

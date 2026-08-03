@@ -2,19 +2,25 @@
 
 Geen netwerk of Gist: de sim-integratietest draait op een mini-fixture-huis met
 alleen de ted-zone; main() wordt getest met gemonkeypatchte weer/artefact-seams
-(o.a. dat het _NEIGHBOR_TEMP-buur-anker écht herbonden wordt — de makkelijk te
-vergeten stap bij extern simulate()-gebruik).
+(o.a. dat de RunContext-ankers — buur + bodem — écht via make_context/build_timeline
+doorgegeven worden; het oude module-global-rebinden bestaat in de herbouw niet meer).
 """
 import math
 from datetime import datetime, timedelta
 
 import pytest
 
-import airflow_model as am
 import night_forecast as nf
+import vent_io as vio
+import vent_physics as vp
 from shared_const import TZ
 
 NOW = datetime(2026, 7, 2, 18, 45, tzinfo=TZ)
+
+# Reproduceert exact het oude module-default-gedrag (_LAT/_LON/_NEIGHBOR_TEMP/_GROUND_TEMP)
+# voor de directe build_timeline/simulate-tests; main() bouwt zijn eigen ctx via make_context.
+CTX = vp.RunContext(lat=52.09, lon=5.12,
+                    neighbor_temp=vp.NEIGHBOR_TEMP, ground_temp=vp.GROUND_TEMP)
 
 HOUSE = {
     "location": {"lat": 52.09, "lon": 5.12},
@@ -67,15 +73,15 @@ def test_hours_until_morning():
 
 
 def test_timeline_reaches_morning():
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
-                           end_h=nf.hours_until_morning(NOW))
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 24.0, CTX,
+                            end_h=nf.hours_until_morning(NOW))
     morgen_745 = (NOW + timedelta(days=1)).replace(hour=7, minute=45)
     assert tl[-1]["t"] >= morgen_745
 
 
 def test_scenario_injection_future_only():
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=4.0,
-                           end_h=6.0)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 4.0, CTX,
+                            end_h=6.0)
     open_tl = nf.scenario_timeline(tl, NOW, "open")
     for orig, sc in zip(tl, open_tl):
         if sc["t"] >= NOW:
@@ -89,8 +95,8 @@ def test_scenario_injection_future_only():
 
 
 def test_scenario_forces_door_closed_in_both_states():
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=4.0,
-                           end_h=6.0)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 4.0, CTX,
+                            end_h=6.0)
     for state in ("open", "dicht"):
         sc = nf.scenario_timeline(tl, NOW, state)
         for step in sc:
@@ -99,8 +105,8 @@ def test_scenario_forces_door_closed_in_both_states():
 
 
 def test_all_open_timeline_opens_every_window_and_door():
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=4.0,
-                           end_h=6.0)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 4.0, CTX,
+                            end_h=6.0)
     all_open = nf.all_open_timeline(tl, HOUSE, NOW)
     for orig, sc in zip(tl, all_open):
         if sc["t"] >= NOW:
@@ -118,17 +124,17 @@ def test_closed_door_retains_more_heat_overnight():
     # Kille trap (14°, zoals de koudere schacht 's nachts); ted start warm. Met de deur
     # geforceerd dicht (het echte gedrag) moet ted minder afkoelen dan een controle-run
     # waarin de deur openblijft.
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
-                           end_h=nf.hours_until_morning(NOW))
-    params = am.default_params(HOUSE)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 24.0, CTX,
+                            end_h=nf.hours_until_morning(NOW))
+    params = vio.default_params(HOUSE)
     seed = {"ted": 24.0, "stair": 14.0}
 
     door_closed_tl = nf.scenario_timeline(tl, NOW, "dicht")
     door_open_tl = [({**step, "states": {**step["states"], nf.WINDOW_ID: "dicht"}}
                      if step["t"] >= NOW else step) for step in tl]
 
-    sim_closed = am.simulate(HOUSE, params, door_closed_tl, seed)
-    sim_open_door = am.simulate(HOUSE, params, door_open_tl, seed)
+    sim_closed = vp.simulate(HOUSE, params, door_closed_tl, seed, CTX)
+    sim_open_door = vp.simulate(HOUSE, params, door_open_tl, seed, CTX)
     stats_closed = nf.night_stats(sim_closed["series"]["ted"], NOW)
     stats_open_door = nf.night_stats(sim_open_door["series"]["ted"], NOW)
 
@@ -139,13 +145,13 @@ def test_closed_door_retains_more_heat_overnight():
 def test_open_window_cools_more_overnight():
     # Buiten 14° 's nachts, kamer start 24°: het open raampje moet om 07:00
     # (en op z'n minst qua nacht-min) kouder uitkomen dan dicht.
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
-                           end_h=nf.hours_until_morning(NOW))
-    params = am.default_params(HOUSE)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 24.0, CTX,
+                            end_h=nf.hours_until_morning(NOW))
+    params = vio.default_params(HOUSE)
     seed = {"ted": 24.0}
     stats = {}
     for state in ("open", "dicht"):
-        sim = am.simulate(HOUSE, params, nf.scenario_timeline(tl, NOW, state), seed)
+        sim = vp.simulate(HOUSE, params, nf.scenario_timeline(tl, NOW, state), seed, CTX)
         stats[state] = nf.night_stats(sim["series"]["ted"], NOW)
     assert stats["open"]["marks"][7] < stats["dicht"]["marks"][7]
     assert stats["open"]["min"] <= stats["dicht"]["min"]
@@ -154,12 +160,12 @@ def test_open_window_cools_more_overnight():
 def test_all_open_cools_at_least_as_much_as_window_only():
     # Alles open (incl. de trapdeur naar de koelere schacht) mag 's nachts niet
     # minder afkoelen dan alleen het raampje open (deur dicht).
-    tl = am.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, window_h=24.0,
-                           end_h=nf.hours_until_morning(NOW))
-    params = am.default_params(HOUSE)
+    tl = vio.build_timeline(HOUSE, {"hourly": _rows()}, [], NOW, 24.0, CTX,
+                            end_h=nf.hours_until_morning(NOW))
+    params = vio.default_params(HOUSE)
     seed = {"ted": 24.0, "stair": 24.0}
-    sim_open = am.simulate(HOUSE, params, nf.scenario_timeline(tl, NOW, "open"), seed)
-    sim_all = am.simulate(HOUSE, params, nf.all_open_timeline(tl, HOUSE, NOW), seed)
+    sim_open = vp.simulate(HOUSE, params, nf.scenario_timeline(tl, NOW, "open"), seed, CTX)
+    sim_all = vp.simulate(HOUSE, params, nf.all_open_timeline(tl, HOUSE, NOW), seed, CTX)
     stats_open = nf.night_stats(sim_open["series"]["ted"], NOW)
     stats_all = nf.night_stats(sim_all["series"]["ted"], NOW)
     assert stats_all["marks"][7] <= stats_open["marks"][7]
@@ -210,11 +216,11 @@ def test_main_applies_anchor_correction(monkeypatch, capsys):
     history.append({"t": (now - timedelta(minutes=5)).isoformat(), "temp": 30.0})
     wd = {"rooms": {"Ted": {"history": history, "inside": 30.0}}}
     monkeypatch.setenv("DRY_RUN", "1")
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
-    monkeypatch.setattr(am, "load_openings_log", lambda: [])
-    monkeypatch.setattr(am, "load_learned", dict)
-    monkeypatch.setattr(am, "load_window_data", lambda: wd)
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_learned", dict)
+    monkeypatch.setattr(vio, "load_window_data", lambda: wd)
     nf.main()
     out = capsys.readouterr().out
     assert "anker-correctie" in out
@@ -285,20 +291,39 @@ def test_message_format_matches_reported_stand():
     assert "voorspelling gaat uit van dicht" not in msg
 
 
-# ── main(): buur-anker-rebind via de gemockte seams ──────────────────────────────────
+# ── main(): RunContext-ankers via de gemockte seams ──────────────────────────────────
 
-def test_main_rebinds_neighbor_temp(monkeypatch, capsys):
-    rows = _rows(datetime.now(TZ))
+def test_main_geeft_de_ctx_ankers_door(monkeypatch, capsys):
+    """Herschreven _NEIGHBOR_TEMP-rebind-test: main() bouwt één RunContext (make_context)
+    en geeft die aan élke build_timeline mee. Bewuste gedragswijziging t.o.v. het oude
+    rebinden: make_context legt óók het zomerplafond (NEIGHBOR_SUMMER_CAP) op het
+    buur-anker — hittegolf-rows horen dus op de kap uit te komen, niet op de rauwe
+    schatting. Het bodem-anker (ground_temp) rijdt in dezelfde ctx mee."""
+    now = datetime.now(TZ)
+    rows = _rows(now, night_out=22.0, day_out=34.0)      # hittegolf: 3-daags gemiddelde > kap
+    seen = []
+    orig = vio.build_timeline
+
+    def spy(*a, **kw):
+        seen.append(a[5] if len(a) > 5 else kw.get("ctx"))
+        return orig(*a, **kw)
+
     monkeypatch.setenv("DRY_RUN", "1")
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
-    monkeypatch.setattr(am, "load_openings_log", lambda: [])
-    monkeypatch.setattr(am, "load_learned", dict)
-    monkeypatch.setattr(am, "load_window_data", dict)
-    am._NEIGHBOR_TEMP = -99.0                            # sentinel
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_learned", dict)
+    monkeypatch.setattr(vio, "load_window_data", dict)
+    monkeypatch.setattr(vio, "build_timeline", spy)
     nf.main()
-    expected = am.neighbor_temp_estimate(rows, datetime.now(TZ))
-    assert am._NEIGHBOR_TEMP == pytest.approx(expected, abs=0.2)
+    assert seen and all(ctx is seen[0] for ctx in seen)  # één ctx voor warmup én forecast
+    ctx = seen[0]
+    raw = vp.neighbor_temp_estimate(rows, now)
+    assert raw > vp.NEIGHBOR_SUMMER_CAP                  # de kap doet er in deze fixture echt toe
+    assert ctx.neighbor_temp == pytest.approx(
+        min(vp.NEIGHBOR_SUMMER_CAP, raw), abs=0.2)
+    assert ctx.ground_temp == pytest.approx(vp.ground_temp_estimate(rows, now), abs=0.2)
+    assert (ctx.lat, ctx.lon) == (52.09, 5.12)           # locatie uit het huismodel
     out = capsys.readouterr().out
     assert "Teds nacht" in out or "stil" in out          # bericht of seizoenspoort
 
@@ -306,25 +331,25 @@ def test_main_rebinds_neighbor_temp(monkeypatch, capsys):
 # ── Open-Meteo-modelbias op de driver ──────────────────────────────────────────
 
 def test_main_geeft_de_geleerde_om_bias_door_aan_build_timeline(monkeypatch, capsys):
-    """Spiegel van de _NEIGHBOR_TEMP-test: de driver-correctie moet écht doorgegeven
+    """Spiegel van de ctx-ankers-test: de driver-correctie moet écht doorgegeven
     worden. Vergeten = Teds voorspelling draait stil op de te warme nachtdriver, wat
     juist de reden was om 'm te bouwen — en niets zou dat zichtbaar maken."""
     rows = _rows(datetime.now(TZ))
     ob = {"night": 1.4, "day": 0.5, "n_night": 120, "n_day": 200}
     seen = []
-    orig = am.build_timeline
+    orig = vio.build_timeline
 
     def spy(*a, **kw):
         seen.append(kw.get("om_learned"))
         return orig(*a, **kw)
 
     monkeypatch.setenv("DRY_RUN", "1")
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
-    monkeypatch.setattr(am, "load_openings_log", lambda: [])
-    monkeypatch.setattr(am, "load_learned", dict)
-    monkeypatch.setattr(am, "load_window_data", lambda: {"om_bias": ob})
-    monkeypatch.setattr(am, "build_timeline", spy)
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_learned", dict)
+    monkeypatch.setattr(vio, "load_window_data", lambda: {"om_bias": ob})
+    monkeypatch.setattr(vio, "build_timeline", spy)
     nf.main()
     assert seen, "build_timeline is niet aangeroepen"
     assert all(s == ob for s in seen), (
@@ -381,22 +406,21 @@ def test_anchor_mass_now_leeg_is_een_no_op():
 
 
 def test_main_ijkt_de_massaknoop_mee(monkeypatch):
-    """Wiring-test in het _NEIGHBOR_TEMP-patroon: vergeten de massaknoop te ijken is
+    """Wiring-test in het ctx-ankers-patroon: vergeten de massaknoop te ijken is
     stil en onzichtbaar — de voorspelling blijft draaien, alleen structureel te koud."""
     rows = _rows(datetime.now(TZ))
     gezien = []
-    orig = am.simulate
+    orig = vp.simulate
 
-    def spy(house, params, timeline, seed, **kw):
+    def spy(house, params, timeline, seed, ctx, **kw):
         gezien.append(kw.get("tm_seed"))
-        return orig(house, params, timeline, seed, **kw)
+        return orig(house, params, timeline, seed, ctx, **kw)
 
     monkeypatch.setenv("DRY_RUN", "1")
-    monkeypatch.setattr(am, "load_house", lambda: HOUSE)
-    monkeypatch.setattr(am, "fetch_weather", lambda: {"hourly": rows, "current": {}})
-    monkeypatch.setattr(am, "load_openings_log", lambda: [])
-    monkeypatch.setattr(am, "load_learned", dict)
-    monkeypatch.setattr(am, "load_window_data", dict)
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_learned", dict)
     # Echte tado-historie zodat collect_actual samples oplevert: een kamer die de hele
     # dag stabiel 23° was. Zonder de fix erft de forecast de weggedrifte warmup-massa
     # (die van het koude weer in `rows` komt); mét de fix staat hij op ~23°.
@@ -404,8 +428,8 @@ def test_main_ijkt_de_massaknoop_mee(monkeypatch):
     wd = {"rooms": {"Ted": {"history": [
         {"t": (t0 - timedelta(hours=h)).isoformat(), "temp": 23.0}
         for h in range(int(nf.WARMUP_H), 0, -1)]}}}
-    monkeypatch.setattr(am, "load_window_data", lambda: wd)
-    monkeypatch.setattr(am, "simulate", spy)
+    monkeypatch.setattr(vio, "load_window_data", lambda: wd)
+    monkeypatch.setattr(vp, "simulate", spy)
     nf.main()
     fcst = [s for s in gezien[1:] if s]
     assert fcst, "forecast-sim kreeg geen massaknoop mee"

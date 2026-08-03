@@ -503,7 +503,14 @@ Read-only aggregation of the published artefacts of Projects 1, 5, 7, 8 from the
 
 ---
 
-## Project 12: Ventilatie 2 (tweede, hogere-fideliteit tweeling)
+## Project 12: Ventilatie 2 (tweede, hogere-fideliteit tweeling) — **MET PENSIOEN (aug 2026)**
+
+> **Status: gepensioneerd.** Vervangen door **Project 13** (de herbouwde tweeling, zie hieronder):
+> `airflow2_model.py` draait niet meer in de kwartierloop (zijn plek is van `vent_twin.py`),
+> `airflow2-batch.yml` is verwijderd en de artefacten `docs/airflow2_*.json` worden niet meer
+> ververst. De maand-shards (`data/twin2_history/`) leven dóór als evaluatie-/seed-dataset van
+> Project 13 (dat ze ook zelf bijvult). Code + dashboard + backfill-workflow blijven tot Fase C
+> van de herbouw in de boom als referentie; de beschrijving hieronder is historisch.
 
 **Goal:** A second digital twin next to Project 8 — same inputs (openings log, weather, tado temps), a richer model, its own dashboard — a pure prediction experiment: the twin1-vs-twin2 learning curves ARE the deliverable. **No Telegram** (only the shared `run_guarded` crash alert), no suggestion engine, no advice.
 
@@ -542,6 +549,52 @@ Top-level: `generated_at`, `as_of_local`, `source: "airflow2_model"`, `model_ver
 
 ### Relation to other projects
 Read-only op Project 8's pure helpers + `docs/window_data.json` + de openingen-Gist + `docs/airflow_learned.json` (alleen vergelijk-weergave); schrijft uitsluitend eigen artefacten + de shards. Env-overrides voor tests: `AIRFLOW2_DATA_PATH`/`AIRFLOW2_LEARNED_PATH`/`AIRFLOW2_BATCH_PATH`/`TWIN2_HISTORY_DIR`. Geen nieuwe secrets.
+
+---
+
+## Project 13: Ventilatie-tweeling (herbouw — parallel-run naast Project 8)
+
+**Goal:** Eén slanke, onderhoudbare tweeling die Projects 8 + 12 vervangt: twin 1's gevalideerde
+fysica woordelijk geport, het leer-vangnet-complex (checkpoint/fallback, backfill/vingerafdrukken,
+batch-verankering, tarrering) bewust weggelaten — elk groot incident kwam dááruit, niet uit de
+fysica. Draait nu **parallel** naast Project 8 in dezelfde kwartierloop (Fase B van het
+herbouwplan); na de validatieperiode gaat Project 8 met pensioen en wordt dit hét
+ventilatie-project (Fase C: volledige CLAUDE.md-herschrijving).
+
+### Files
+- `vent_physics.py` — pure fysicakern (zon/gevel, druknetwerk + gedempte herkansing, eenzijdige
+  ventilatie, 2-knoops RC met tussenwoning-termen, trap-stratificatie) + `RunContext` — de
+  frozen dataclass die de oude module-globals (`_LAT/_LON/_NEIGHBOR_TEMP/_GROUND_TEMP`)
+  vervangt: expliciet doorgegeven, vergeten = TypeError (de night_forecast-les structureel
+  opgelost). Ook het parameter-oppervlak (PRIORS/BOUNDS, `CD` vast).
+- `vent_io.py` — loaders (incl. `PHYSICS_REV` 6-poort in `merged_params`), openingen-log-
+  reconstructie (`ac_room`/`paused`-sleutels), `fetch_weather(lat, lon)` + WU-verfijning
+  (`refine_outside_now`), `build_timeline` (om_bias-gecorrigeerde driver), `make_context()`,
+  en de maand-shard-I/O (append/load/refresh — geërfd van P12; env `VENT_HISTORY_DIR`).
+- `vent_fit.py` — online Gauss-Newton + ridge-naar-priors + Huber + recency (`calibrate`),
+  de AC/verwarmings/pauze-filters, en de **deadlock-proof anomalie-poort** `anomaly_step`:
+  hold max `ANOMALY_MAX_HOLD_H` 24u, daarna hervat het leren met een `ANOMALY_REARM_H`-cooloff
+  (de zelfvoedende hold die P12 bevroor kan niet terug); revisie-migratie → cooloff i.p.v. hold.
+- `vent_twin.py` — runner + dashboard-bouwer (slank schema), anomalie-nudge (privé-chat) +
+  "leren hervat"-variant; append't elke run de verse samples/weer-uren aan de shards.
+- `tools/vent_seed.py` — **parameter-seeding uit de shards**: replay van ~5 dagen historie door
+  de productie-onlinefit (ververst eerst het shard-weer uit het archief), acceptatiepoort
+  RMSE ≤ 0.9 °C + geen gerailde params, schrijft `docs/vent_learned.json` met `seed_src`-stempel.
+  **Ook draaien bij elke toekomstige `PHYSICS_REV`-bump** — een revisie deployt dan met
+  her-geseede params i.p.v. live vanaf de priors te leren (de reset-schok-klasse is daarmee weg).
+- `docs/vent.html` + `docs/js/vent.js` — dashboard: meldmodal (schrijft dezelfde
+  `house_openings.json`-Gist + workflow_dispatch), plattegrond met stroompijlen, kamerkaarten,
+  voorspeld-vs-gemeten, leercurve, speeltuin (gedeelde `speeltuin.js`, twin-1-strategie).
+- `docs/vent_data.json`, `docs/vent_learned.json` — **generated, never edit manually**; slank
+  additief schema (herbouwplan §4). `weekjournaal.py` schakelt in Fase B om naar
+  `vent_learned.json`.
+
+### Relation to other projects
+Zelfde voetafdruk als Project 8: leest `docs/window_data.json` + de openingen-Gist read-only,
+WU/Telegram/Gist-secrets hergebruikt, geen tado-auth, geen nieuwe secrets. Deelt de
+kwartierloop (`airflow-notify.yml`) met Project 8 zolang de parallel-run loopt. P9/P10 migreren
+in Fase B van `airflow_model`-imports naar `vent_physics`/`vent_io` (ctx-prologue van 3 regels).
+Volledige plan-/meetgeschiedenis: het herbouwplan + `AIRFLOW_ASSESSMENT.md`/`AIRFLOW2_ASSESSMENT.md`.
 
 ---
 

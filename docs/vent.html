@@ -14,7 +14,7 @@
   base-uri 'none';
   form-action 'none';
 ">
-<title>Ventilatie-tweeling · Humus &amp; Heaven</title>
+<title>Ventilatie (nieuw) · Humus &amp; Heaven</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" crossorigin="anonymous">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js" integrity="sha384-oNtu+d18330MVFpltUTve1DatxCkkctlpA2AC3GulbVFOSqhHdDat3qHse/Lbuek" crossorigin="anonymous"></script>
@@ -31,21 +31,6 @@
     .airy { animation: breathe 3.5s ease-in-out infinite; }
     .zone-rect { transition: fill .4s; }
     .fp-svg text { -webkit-user-select: none; user-select: none; }
-    .ranked-row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed #2a241b22; align-items:baseline; }
-    .ranked-windows { font-style:italic; font-size:14px; }
-    .ranked-rooms { font-family:"JetBrains Mono",monospace; font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft); }
-    .ranked-effect { font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--ink-soft); white-space:nowrap; }
-    .ranked-bar { height:4px; background:var(--moss); margin-top:3px; border-radius:2px; }
-    /* Advies als verander-checklist + uitklapbare volledige stand */
-    .adv-headline { font-style:italic; font-size:15px; }
-    .adv-checklist { list-style:none; margin:8px 0 4px; padding:0; }
-    .adv-checklist li { padding:7px 0; border-bottom:1px dashed #2a241b22; font-family:"Cormorant Garamond",serif; font-size:17px; }
-    .adv-open { color:var(--moss); }
-    .adv-close { color:var(--clay); }
-    .adv-ok { color:var(--moss); font-style:italic; font-size:15px; margin-top:8px; }
-    details.adv-more { margin-top:12px; }
-    details.adv-more summary { cursor:pointer; font-family:"JetBrains Mono",monospace; font-size:10px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-soft); }
-    details.adv-more summary:hover { color:var(--ink); }
     .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
     .grid-rooms { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
     .big-num { font-family: "JetBrains Mono", monospace; font-size: 44px; font-weight: 600; line-height: 1; }
@@ -63,6 +48,7 @@
     .err-pos { color: var(--clay); }
     .err-neg { color: var(--rain); }
     .room-temp { font-family: "JetBrains Mono", monospace; font-size: 13px; }
+    .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(42,36,27,.55); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
     .modal-backdrop.open { opacity: 1; pointer-events: auto; }
     .modal { background: var(--parchment); padding: 30px; width: min(540px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow-y: auto; border: 1px solid var(--ink); box-shadow: 6px 8px 0 #2a241b33; }
@@ -74,7 +60,6 @@
     .seg button { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 8px 12px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; cursor: pointer; color: var(--ink-soft); }
     .seg button.active { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
     .seg button:not(:last-child) { border-right: none; }
-    .grp-title { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 2px; }
     .when-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0 10px; border-bottom: 1px dashed #2a241b22; }
     .when-row input, .when-row select { font-family: "JetBrains Mono", monospace; font-size: 13px; padding: 8px 10px; min-height: 40px; border: 1px solid #2a241b44; background: transparent; color: var(--ink); }
     .when-row.disabled, #ctl-list.disabled { pointer-events: none; opacity: .4; }
@@ -92,14 +77,14 @@
   <div class="title-row">
     <div>
       <div class="corner-mark" id="folio-mark"></div>
-      <h1>Ventilatie-tweeling</h1>
-      <div class="subtitle">Een digitale tweeling van het huis. Jíj vertelt welke ramen, roosters en deuren open staan; het model voorspelt per kamer de temperatuur (lucht- &amp; massaknoop), gevoed door een luchtstroomnetwerk (wind + schoorsteen) en zon dóór het glas — en leert van de échte tado-temperaturen om steeds beter te worden.</div>
+      <h1>Ventilatie <span style="font-size:.45em;vertical-align:middle;">(nieuw)</span></h1>
+      <div class="subtitle">De herbouwde digitale tweeling van het huis. Jíj vertelt welke ramen, roosters en deuren open staan; het model voorspelt per kamer de temperatuur, gevoed door een luchtstroomnetwerk (wind + schoorsteen) en zon dóór het glas — en leert van de échte tado-temperaturen. Draait parallel naast de oude tweeling tot de aflossing.</div>
     </div>
     <div style="text-align:right;">
       <div class="corner-mark">Vandaag</div>
       <div class="num date-big" id="today-date"></div>
       <div style="margin-top:8px;display:flex;gap:14px;justify-content:flex-end;flex-wrap:wrap;">
-        <a class="link" href="index.html">Bodem</a><a class="link" href="mowing.html">Gazon</a><a class="link" href="window.html">Ramen</a><a class="link" href="accuracy.html">IJking</a><a class="link" href="vent.html">Ventilatie (nieuw)</a><a class="link" href="grafiek.html">Grafiek</a>
+        <a class="link" href="index.html">Bodem</a><a class="link" href="mowing.html">Gazon</a><a class="link" href="window.html">Ramen</a><a class="link" href="accuracy.html">IJking</a><a class="link" href="airflow.html">Ventilatie (oud)</a><a class="link" href="grafiek.html">Grafiek</a>
       </div>
     </div>
   </div>
@@ -120,8 +105,9 @@
 <footer>
   Geen CFD-simulatie maar een grijze-doos-model: de fysica (zonpositie, orifice-stroming, massabehoud) is exact;
   de invoer (winddruk-coëfficiënten, exacte openingsgeometrie, deurstanden) is benaderd en wordt al lerend bijgesteld.
-  Een relatieve rangschikker — "open déze ramen voor de beste bries" — geen liter-per-seconde-orakel.
-  Alleen-lezen gevoed door <code>window_data.json</code>; niets anders hangt hiervan af.
+  Een relatieve rangschikker, geen liter-per-seconde-orakel.
+  Deze pagina leest <code>vent_data.json</code> (elk kwartier ververst); de tado-grondwaarheid
+  komt read-only uit <code>window_data.json</code>.
 </footer>
 
 <!-- ── Rapportage-modal ───────────────────────────────────────────────────────── -->
@@ -169,6 +155,6 @@
 <script src="js/theme.js"></script>
 <script src="js/shared.js"></script>
 <script src="js/speeltuin.js?v=2"></script>
-<script src="js/airflow.js?v=1"></script>
+<script src="js/vent.js?v=1"></script>
 </body>
 </html>

@@ -911,4 +911,7 @@ function normState(v, kind) {
   if (allowed.includes(v)) return v;
   return kind==="window" ? "dicht" : "open";   // ramen default dicht; rest (vent/shade/door) open
 }
-function toggleModal(open) { document.getElementById("report-modal").classList.toggle("open", open); }
+function toggleModal(open) {
+  const m = document.getElementById("report-modal");   // niet elke pagina heeft de modal
+  if (m) m.classList.toggle("open", open);
+}

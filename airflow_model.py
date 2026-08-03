@@ -604,6 +604,12 @@ def _huber_weights(residuals: list[float], delta: float = HUBER_DELTA) -> list[f
 # Leakage (infiltratie) per kamer: een kleine, altijd aanwezige lek naar buiten. Houdt
 # het luchtstroomnetwerk goed geconditioneerd (een verder dichte kamer is niet singulier)
 # en is fysisch reëel (kieren). m² effectief lekoppervlak.
+# Convergentie-eisen van het drukwerk-netwerk. NET_TOL is de max. toegestane massabalans-
+# afwijking per zone (kg/s); NET_ALPHA_RETRY is de maximale Newton-stapfractie van de
+# herkansing die een oscillerende iteratie breekt — zie de toelichting in solve_network.
+NET_TOL = 1e-6
+NET_ALPHA_RETRY = 0.5
+
 LEAK_AREA = 0.004
 
 # ── Dak (zolder/bovenste verdieping) — sol-air-term ─────────────────────────────────
@@ -1135,40 +1141,60 @@ def solve_network(zones: list[str], openings: list[dict], zone_temps: dict[str, 
     def sse(r):
         return sum(v * v for v in r)
 
-    P = list(P_init) if P_init and len(P_init) == n else [0.0] * n
-    r = residual(P)
-    for _ in range(40):
-        if max(abs(v) for v in r) < 1e-6:
-            break
-        # Numerieke Jacobiaan.
-        J = [[0.0] * n for _ in range(n)]
-        eps = 0.02
-        for j in range(n):
-            P[j] += eps
-            rp = residual(P)
-            P[j] -= eps
-            for i in range(n):
-                J[i][j] = (rp[i] - r[i]) / eps
-        delta = solve_linear(J, [-v for v in r])
-        if delta is None:
-            break
-        # Backtracking line search: neem de grootste stapfractie die de residu-norm
-        # daadwerkelijk verkleint. Zonder dit kan de Newton-iteratie tussen twee
-        # toestanden oscilleren (sterke deurkoppeling + de √-niet-lineariteit) en nooit
-        # convergeren.
-        sse0 = sse(r)
-        alpha = 1.0
-        r_try = r
-        for _ in range(24):
-            P_try = [P[j] + alpha * delta[j] for j in range(n)]
-            r_try = residual(P_try)
-            if sse(r_try) < sse0:
+    def newton(P0: list[float], alpha_max: float = 1.0) -> tuple[list, list, bool]:
+        """Gedempte Newton op de massabalans. Geeft (P, residu, geconvergeerd).
+        `alpha_max` begrenst de stapfractie — zie de retry in solve_network."""
+        P = list(P0)
+        r = residual(P)
+        for _ in range(40):
+            if max(abs(v) for v in r) < NET_TOL:
+                return P, r, True
+            # Numerieke Jacobiaan.
+            J = [[0.0] * n for _ in range(n)]
+            eps = 0.02
+            for j in range(n):
+                P[j] += eps
+                rp = residual(P)
+                P[j] -= eps
+                for i in range(n):
+                    J[i][j] = (rp[i] - r[i]) / eps
+            delta = solve_linear(J, [-v for v in r])
+            if delta is None:
                 break
-            alpha *= 0.5
-        else:
-            break   # geen verbeterende stap meer → klaar
-        P = P_try
-        r = r_try
+            # Backtracking line search: neem de grootste stapfractie die de residu-norm
+            # daadwerkelijk verkleint. Zonder dit kan de Newton-iteratie tussen twee
+            # toestanden oscilleren (sterke deurkoppeling + de √-niet-lineariteit) en nooit
+            # convergeren.
+            sse0 = sse(r)
+            alpha = alpha_max
+            r_try = r
+            for _ in range(24):
+                P_try = [P[j] + alpha * delta[j] for j in range(n)]
+                r_try = residual(P_try)
+                if sse(r_try) < sse0:
+                    break
+                alpha *= 0.5
+            else:
+                break   # geen verbeterende stap meer — de line search zit vast
+            P = P_try
+            r = r_try
+        return P, r, max(abs(v) for v in r) < NET_TOL
+
+    P0 = list(P_init) if P_init and len(P_init) == n else [0.0] * n
+    P, r, converged = newton(P0)
+    if not converged:
+        # **Gedempte herkansing.** De volle Newton-stap kan gaan OSCILLEREN: bij ≥6 m/s
+        # sprong de druk van hotties heen en weer tussen ~12.5 en ~0.4 Pa, terwijl de
+        # line search elke stap accepteerde (de SSE dáált immers, maar minimaal: 3.12 → 2.40
+        # in 20 iteraties). Na 40 iteraties gaf de solver dat stilzwijgend terug alsof het
+        # een oplossing was — massabalans 1.4 kg/s tegen een tolerantie van 1e-6, goed voor
+        # een fantoom-ventilatie van ~135 ACH waar het echte antwoord 1.5 ACH is
+        # (gediagnosticeerd augustus 2026). Géén tweede wortel dus, maar één wortel plus een
+        # afgekapte iteratie. Een stapfractie van ten hoogste NET_ALPHA_RETRY breekt de
+        # oscillatie: getest van 5.5 tot 12 m/s convergeert hij dan in 17–19 iteraties.
+        # De volle stap blijft de eerste poging, zodat de normale (verreweg meest
+        # voorkomende) solve niets langzamer wordt.
+        P, r, converged = newton(P0, alpha_max=NET_ALPHA_RETRY)
 
     # Debieten + verse-lucht-aanvoer reconstrueren.
     flows = []
@@ -1194,7 +1220,11 @@ def solve_network(zones: list[str], openings: list[dict], zone_temps: dict[str, 
             # interne deur: telt niet als 'verse' lucht, maar wel voor menging (apart).
             pass
     return {"flows": flows, "fresh": fresh,
-            "pressures": {z: P[idx[z]] for z in zones}, "P": P}
+            "pressures": {z: P[idx[z]] for z in zones}, "P": P,
+            # Eerlijk over de oplos-kwaliteit: een niet-geconvergeerde solve is géén geldige
+            # drukverdeling en de debieten eruit zijn fysiek onzin (massa uit het niets).
+            # Callers tellen dit mee i.p.v. het stilzwijgend te slikken.
+            "converged": converged, "residual": max(abs(v) for v in r) if r else 0.0}
 
 
 # ════════════════════════════════════════════════════════════════════════════════════

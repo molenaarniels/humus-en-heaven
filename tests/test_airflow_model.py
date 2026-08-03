@@ -159,6 +159,53 @@ def test_facade_irradiance_direct_is_horizontal_clamped_near_horizon(monkeypatch
     assert high <= am.MAX_DNI
 
 
+def _hotties_network(wind, p_init=None):
+    """Het echte huis met alléén het hotties-raam open — de configuratie waarop de
+    drukoplosser bij ≥6 m/s ging oscilleren en een niet-oplossing teruggaf."""
+    house = am.load_house()
+    params = am.merged_params(house, {})
+    zones = list(house["rooms"]) + list(house.get("junctions", {}))
+    states = {k: "dicht" for k in list(house["windows"]) + list(house["doors"])}
+    for v in house["vents"]:
+        states[v] = "open"
+    states["hotties_window"] = "open"
+    temps = {z: 23.0 for z in zones}
+    ops = am.build_openings(house, states, {"wind_speed": wind, "wind_dir": 309.0,
+                                            "T_out": 20.0}, params, temps, 20.0)
+    net = am.solve_network(zones, ops, temps, 20.0, P_init=p_init)
+    vol = house["rooms"]["hotties"]["volume_m3"]
+    return net, net["fresh"]["hotties"] * 3600.0 / vol
+
+
+def test_solve_network_converges_at_high_wind():
+    # Regressie: bij ≥6 m/s oscilleerde de volle Newton-stap (druk heen en weer tussen
+    # ~12.5 en ~0.4 Pa) en gaf de solver na 40 iteraties een massabalans van ~1.4 kg/s terug
+    # alsóf het een oplossing was — goed voor een fantoom-ventilatie van ~135 ACH.
+    for wind in (0.5, 3.0, 5.5, 6.0, 8.0, 12.0, 15.0):
+        net, ach = _hotties_network(wind)
+        assert net["converged"], f"niet geconvergeerd bij {wind} m/s"
+        assert net["residual"] < am.NET_TOL
+        assert 0.0 < ach < 20.0, f"onfysieke ventilatie {ach:.1f} ACH bij {wind} m/s"
+
+
+def test_solve_network_no_discontinuity_across_wind():
+    # De ventilatie mag met de wind meestijgen, maar niet springen: vóór de fix ging het
+    # van 1.41 ACH (5.5 m/s) naar 135.08 (6.0 m/s).
+    achs = [_hotties_network(w)[1] for w in (4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0)]
+    for a, b in zip(achs, achs[1:]):
+        assert b >= a - 1e-6              # monotoon stijgend in wind
+        assert b < a * 1.5                # en zonder sprong
+
+
+def test_solve_network_result_is_start_independent():
+    # Dezelfde invoer moet hetzelfde antwoord geven, ongeacht de warme start. Vóór de fix
+    # gaf 6 m/s 135 ACH koud maar 1.5 ACH warm-gestart vanaf de 5.5-oplossing.
+    net55, ach55 = _hotties_network(5.5)
+    net60, ach60 = _hotties_network(6.0)
+    assert _hotties_network(6.0, p_init=net55["P"])[1] == pytest.approx(ach60, abs=1e-3)
+    assert _hotties_network(5.5, p_init=net60["P"])[1] == pytest.approx(ach55, abs=1e-3)
+
+
 def test_single_sided_exchange_matches_de_gids_phaff():
     # Eenzijdige ventilatie: Q = (A/2)·√(C1·U² + C2·H·ΔT + C3). Nul bij een dicht raam,
     # groeit met ΔT en met wind, en is véél vlakker in wind dan de netto-netwerkstroom

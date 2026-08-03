@@ -1258,16 +1258,28 @@ def build_day_plan(dash_rooms: dict, now: datetime) -> list[dict]:
             start_h, end_h = iv.get("start_h"), iv.get("end_h")
             if start_h is None or end_h is None:
                 continue
-            if end_h - max(0.0, start_h) < MIN_OPEN_H:
+            # Een segment dat in het verleden begon en nog niet voorbij is lóópt: dat raam
+            # staat nu open. Dat als "open vanaf 08:45" opschrijven leest als een actie die
+            # nog moet komen, terwijl er niets te doen valt. `end_h > 0` hoort erbij — een
+            # segment dat al voorbij is (start_h ≤ end_h ≤ 0) loopt niet meer.
+            running = start_h <= 0 < end_h
+            # De duur-poort weegt of een *voorspeld* venster het openzetten waard is: hij
+            # rekent vanaf nú, want dat is wat een raam dat je nu opendoet nog oplevert.
+            # Op een lópend venster is dat de verkeerde vraag — dat raam stáát open, er
+            # valt niets meer te wegen, en het enige dat er nog te plannen valt is juist de
+            # sluittijd. Toch poorten leverde het omgekeerde van een plan op: op 3 augustus
+            # 2026 stonden alle vier de kamers open met sluittijden rond 09:15–09:30, maar
+            # Living room en Ted hadden er nog 1.25u te gaan → onder MIN_OPEN_H → uit het
+            # plan → en dan drukt day_plan_message ze af als "blijft vandaag dicht", precies
+            # het tegendeel van wat er aan de hand was (en van de OPEN-chip op het
+            # dashboard). Op een voorspeld venster blijft de poort staan: dáár is een blip
+            # van een kwartier inderdaad niets om je dag op in te richten.
+            if not running and end_h - max(0.0, start_h) < MIN_OPEN_H:
                 continue
             vensters.append({"start": iv["start"], "start_h": start_h,
                              "end": iv["end"], "end_h": end_h,
                              "horizon": open_end_is_horizon(iv),
-                             # Een segment dat in het verleden begon lóópt al: dat raam
-                             # staat nu open. Dat als "open vanaf 08:45" opschrijven leest
-                             # als een actie die nog moet komen, terwijl er niets te doen
-                             # valt.
-                             "running": start_h <= 0})
+                             "running": running})
             if len(vensters) >= MAX_PLAN_WINDOWS:
                 break
         plan.append({"room": room, "windows": vensters,

@@ -897,6 +897,27 @@ def test_build_day_plan_negeert_blips_en_sorteert_op_openingstijd():
     assert plan[1]["windows"][0]["start"] == "18:45"
 
 
+def test_build_day_plan_houdt_een_lopend_venster_altijd_in_het_plan():
+    """Een raam dat nú openstaat verdwijnt niet uit het plan omdat het bijna dicht moet.
+
+    De duur-poort weegt of een vóórspeld venster het openzetten waard is; op een lopend
+    venster is dat de verkeerde vraag — dat raam staat al open en de sluittijd is het enige
+    dat er nog te plannen valt. Toch poorten gaf op 3 augustus 2026 het omgekeerde van een
+    plan: vier open kamers, sluittijden rond 09:15–09:30, en de twee met nog géén anderhalf
+    uur te gaan (Living room, Ted) stonden in het bericht als "blijft vandaag dicht".
+    """
+    kort = {"start": "08:00", "end": "09:15", "start_h": -0.25, "end_h": 1.0}
+    plan = wa.build_day_plan({"Ted": {"open_intervals": [kort]}}, NOW)
+    ted = next(p for p in plan if p["room"] == "Ted")
+    assert [w["start"] for w in ted["windows"]] == ["08:00"]
+    assert ted["windows"][0]["running"] is True
+    assert "*Ted* — staat al open, dicht rond 09:15" in wa.day_plan_message(plan, 33.7, NOW)
+    # Hetzelfde korte venster in de toekomst is wél een blip: daar poort de duur-eis door.
+    straks = {"start": "12:00", "end": "13:15", "start_h": 3.75, "end_h": 5.0}
+    plan = wa.build_day_plan({"Ted": {"open_intervals": [straks]}}, NOW)
+    assert next(p for p in plan if p["room"] == "Ted")["windows"] == []
+
+
 def test_build_day_plan_houdt_elke_kamer_in_het_overzicht():
     """Een kamer zonder venster is óók informatie: 'die blijft vandaag dicht'.
 

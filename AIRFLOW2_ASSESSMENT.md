@@ -110,7 +110,12 @@ dat de optimizer uitwijkt naar `ua_env`/`ua_party`/`f_air` en die in hun vloer d
 De 141,60 ACH bij 6 m/s is een tweede, apart signaal: het netwerk gaat daar niet-lineair los.
 Dat verdient een eigen blik.
 
-## 5. Aanbevolen vervolg
+## 5. Status en vervolg
+
+> **Update, zelfde dag:** punt 1 is **geïmplementeerd en uitgerold** (fysica-rev 5 / rev 4),
+> gebundeld met de twee zon-correcties zodat er één herleer-cyclus nodig is i.p.v. twee.
+> **Nog niet held-out gemeten** — punt 2 staat dus nog volledig open, en is nu de eerste
+> prioriteit: als de term niet doet wat §3–4 voorspellen, hoort hij terug.
 
 1. **Eenzijdige-ventilatie-term voor buitenramen.** Het patroon bestaat al in deze codebase:
    `am.buoyant_door_exchange` (Brown–Solvason) voegt voor bínnendeuren een bidirectionele
@@ -118,7 +123,7 @@ Dat verdient een eigen blik.
    orifice-term is. Voor buitenramen ontbreekt het equivalent; de Gids & Phaff is de
    standaardformule. Toe te voegen als extra verse-lucht-bijdrage per buitenraam wanneer de
    kamer géén doorstroompad heeft, niet als vervanging van het netwerk.
-2. **Meten vóór adoptie**, met de nu-bewezen campagne-instellingen (`--lam0 1.0 --epochs 14`,
+2. **Meten (nu: achteraf) — de openstaande verplichting.** Met de bewezen campagne-instellingen (`--lam0 1.0 --epochs 14`,
    drie rotaties, béíde A/A-armen). Verwachting: het railen van `ua_env`/`ua_party`/`f_air`
    ontspant — dát is de primaire uitkomstmaat, niet alleen de RMSE.
 3. **De 6 m/s-uitschieter** apart nalopen (§4).

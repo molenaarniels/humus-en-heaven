@@ -128,6 +128,7 @@ def test_facade_irradiance_flat_plane_equals_ghi_when_direct_is_horizontal(monke
 
 def test_facade_irradiance_direct_is_horizontal_only_lifts_the_beam(monkeypatch):
     az, el, direct_h, diffuse = 309.0, 21.3, 223.0, 143.0
+    monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", False)   # de oude conventie, expliciet
     off = am.facade_irradiance(az, az - 36.0, el, direct_h, diffuse, 90.0, False, 14.0)
     monkeypatch.setattr(am, "DIRECT_IS_HORIZONTAL", True)
     on = am.facade_irradiance(az, az - 36.0, el, direct_h, diffuse, 90.0, False, 14.0)
@@ -156,6 +157,51 @@ def test_facade_irradiance_direct_is_horizontal_clamped_near_horizon(monkeypatch
     # Een absurd hoge horizontale beam bij lage zon blijft onder de DNI-bovengrens.
     high = am.facade_irradiance(180.0, 180.0, 2.0, 900.0, 0.0, 90.0)
     assert high <= am.MAX_DNI
+
+
+def test_single_sided_exchange_matches_de_gids_phaff():
+    # Eenzijdige ventilatie: Q = (A/2)·√(C1·U² + C2·H·ΔT + C3). Nul bij een dicht raam,
+    # groeit met ΔT en met wind, en is véél vlakker in wind dan de netto-netwerkstroom
+    # (die ∝ U² gaat) — dát is de hele reden dat de term bestaat.
+    assert am.single_sided_exchange(0.0, 1.2, 3.0, 23.0, 20.0) == 0.0
+    q_still = am.single_sided_exchange(1.4, 1.2, 0.0, 23.0, 20.0)
+    assert q_still > 0.0                       # buoyantie alleen is al een echte stroom
+    assert am.single_sided_exchange(1.4, 1.2, 3.0, 23.0, 20.0) > q_still      # wind helpt
+    assert am.single_sided_exchange(1.4, 1.2, 0.0, 26.0, 20.0) > q_still      # ΔT helpt
+    # geen temperatuurverschil én geen wind → alleen de C3-restterm, maar niet nul
+    assert am.single_sided_exchange(1.4, 1.2, 0.0, 20.0, 20.0) == pytest.approx(
+        0.5 * 1.4 * math.sqrt(am.SS_C3), rel=1e-9)
+    # wind-helling: 0.5 → 6 m/s mag hooguit een factor ~2 schelen (empirisch ~1.4×)
+    lo = am.single_sided_exchange(1.4, 1.2, 0.5, 23.0, 20.0)
+    hi = am.single_sided_exchange(1.4, 1.2, 6.0, 23.0, 20.0)
+    assert 1.0 < hi / lo < 2.0
+
+
+def test_single_sided_fresh_only_open_vertical_windows():
+    house = am.load_house()
+    # Dicht raam → geen bijdrage; open raam → een substantiële, maar eindige stroom.
+    assert am.single_sided_fresh(house, {"hotties_window": "dicht"}, {"wind_speed": 2.0},
+                                 {"hotties": 23.0}, 20.0).get("hotties", 0.0) == 0.0
+    ss = am.single_sided_fresh(house, {"hotties_window": "open"}, {"wind_speed": 2.0},
+                               {"hotties": 23.0}, 20.0)
+    ach = ss["hotties"] * 3600.0 / house["rooms"]["hotties"]["volume_m3"]
+    assert 5.0 < ach < 30.0        # eenzijdige ventilatie door een open raam ≈ 10–20 ACH
+    # Platte dakramen vallen buiten de correlatie (ander regime) → geen koker-bijdrage.
+    assert "stair" not in am.single_sided_fresh(
+        house, {"stair_skylight": "open"}, {"wind_speed": 2.0}, {"stair": 23.0}, 20.0)
+
+
+def test_effective_fresh_takes_max_never_sum():
+    house = am.load_house()
+    states, weather = {"hotties_window": "open"}, {"wind_speed": 2.0}
+    temps = {"hotties": 23.0}
+    ss = am.single_sided_fresh(house, states, weather, temps, 20.0)["hotties"]
+    # Netto klein → de eenzijdige term neemt het over (geen som).
+    out = am.effective_fresh({"hotties": 0.001}, house, states, weather, temps, 20.0)
+    assert out["hotties"] == pytest.approx(ss)
+    # Netto groot (echte dwarsventilatie) → het netwerk blijft leidend.
+    big = am.effective_fresh({"hotties": 10.0}, house, states, weather, temps, 20.0)
+    assert big["hotties"] == pytest.approx(10.0)
 
 
 def test_horizon_diffuse_reduction_bounds():

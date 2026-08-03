@@ -215,7 +215,7 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
 #   verdwijnen, dus: alles terug naar de priors en schoon opnieuw leren. Zonder deze reset
 #   zou bovendien het checkpoint (geijkt op de oude driver) de skill-terugval na de deploy
 #   als regressie lezen en de fallback-lus starten die rev 3 nu juist heeft dichtgetimmerd.
-PHYSICS_REV = 4
+PHYSICS_REV = 5
 
 # ── Beste-params-checkpoint + auto-fallback ──────────────────────────────────────────
 # Online leren met gepersisteerde params kan een slechte excursie — een rare/niet-gemelde
@@ -871,11 +871,12 @@ def horizon_diffuse_reduction(horizon_deg: float) -> float:
 # functie dan 61–88% van `shortwave` waar ze exact `shortwave` hoort te geven. Omdat de fout
 # met de zonstand meeschuift kan géén constante schaal (`solar_gain`, `ROOF_SOLAR_GAIN`) 'm
 # opvangen — hij blijft als restfout-vorm zitten, precies op de zonnige middagen/avonden.
-# De vlag staat tijdens de meetcampagne default op het oude gedrag (zie
-# tools/twin2_experiment.py, armen `solar_dni*`); zet 'm pas om als de held-out-cijfers het
-# dragen, samen met een PHYSICS_REV/PHYSICS2_REV-bump (de geleerde params hebben de fout
-# geabsorbeerd).
-DIRECT_IS_HORIZONTAL = False
+# Aan sinds fysica-rev 5 (augustus 2026). De held-out-campagne toonde géén meetbare
+# RMSE-winst (≲0.02 °C, onder de A/A-ruisvloer van 0.032) maar ook géén regressie; de
+# adoptiegrond is dus correctheid, niet prestatie — en P9 (zonwering) drempelt op absolute
+# watts zónder leerbare schaal die de fout kan opvangen. De vlag blijft bestaan zodat
+# tools/twin2_experiment.py het oude gedrag nog als arm kan draaien.
+DIRECT_IS_HORIZONTAL = True
 SIN_EL_FLOOR = math.sin(math.radians(3.0))   # klem op de 1/sin(el)-versterking vlak boven de horizon
 MAX_DNI = 1100.0                             # W/m² — fysieke bovengrens (zonneconstante na atmosfeer)
 
@@ -1579,6 +1580,81 @@ def buoyant_door_exchange(area_m2: float, t_a: float, t_b: float,
     return BUOY_EXCH_C * area_m2 * math.sqrt(G * height_m * dt / t_mean_k)
 
 
+# ── Eenzijdige ventilatie (de Gids & Phaff 1982) ────────────────────────────────────
+# Het drukwerk-netwerk lost per opening het NETTO debiet op. Staat er in een kamer één raam
+# open zonder doorstroompad, dan is dat netto debiet vrijwel nul — terwijl er in werkelijkheid
+# een forse tweerichtings-uitwisseling dóór diezelfde opening loopt, gedreven door buoyantie
+# (warm eruit bovenlangs, koel erin onderlangs) en door turbulente winddruk-pulsatie. Exact
+# dezelfde blinde vlek die `buoyant_door_exchange` voor bínnendeuren repareert.
+#
+# Gemeten gevolg (AIRFLOW2_ASSESSMENT.md, augustus 2026): met het raam open leest het model
+# 0.58 ACH waar de correlatie 14.2 geeft (24×), en het schiet door naar 141 ACH bij 6 m/s —
+# een wind-helling van 243× tegen 1.4× empirisch. Dat verklaart beide takken van de
+# residu-bias (te warm bij weinig wind, te koud bij veel wind) en waarom de fit het niet kan
+# repareren: `cp_shelter`/`vent_eff` zijn lineaire vermenigvuldigers en kunnen een verkeerde
+# hélling niet rechttrekken — vandaar dat ua_env/ua_party/f_air collectief in hun vloer werden
+# gedrukt.
+#
+# Q = (A/2)·√(C1·U² + C2·H·ΔT + C3), U op gevelhoogte, H = hoogte van de opening.
+SS_C1, SS_C2, SS_C3 = 0.001, 0.0035, 0.01
+SS_MIN_TILT_DEG = 45.0   # alleen (bijna-)verticale ramen; een plat dakraam is een ander regime
+
+
+def single_sided_exchange(area_m2: float, height_m: float, wind_ms: float,
+                          t_in: float | None, t_out: float) -> float:
+    """Eenzijdig ventilatiedebiet (m³/s) door één open buitenraam — de Gids & Phaff (1982).
+    Nul bij een dicht raam. Dit is de uitwisseling die het netto-netwerkdebiet mist."""
+    if area_m2 <= 0.0:
+        return 0.0
+    dt = 0.0 if t_in is None else abs(t_in - t_out)
+    v = math.sqrt(SS_C1 * (wind_ms or 0.0) ** 2 + SS_C2 * max(0.0, height_m) * dt + SS_C3)
+    return 0.5 * area_m2 * v
+
+
+def single_sided_fresh(house: dict, states: dict, weather: dict,
+                       zone_temps: dict, outside_temp: float) -> dict[str, float]:
+    """Per kamer de eenzijdige verse-lucht-bijdrage van haar open, (bijna-)verticale
+    buitenramen (m³/s). Roosters blijven erbuiten: de correlatie is voor raamopeningen, en
+    een spleet van 0.01 m² levert er sowieso verwaarloosbaar in."""
+    wind = weather.get("wind_speed") or 0.0
+    out: dict[str, float] = {}
+    for wid, w in house.get("windows", {}).items():
+        rid = w.get("room")
+        if rid is None or w.get("tilt_deg", 90.0) < SS_MIN_TILT_DEG:
+            continue
+        frac = _open_frac(states[wid], w) if wid in states else _default_frac(w, "window")
+        max_open = w.get("max_open_area_m2", 0.0)
+        # Bewust ZONDER `_eff_open_area`: dat is de aerodynamische contractiefactor voor de
+        # orifice-vergelijking, en de C-constanten van de Gids & Phaff zijn juist geijkt tegen
+        # het geometrische openingsoppervlak van echte ramen. Beide toepassen zou de
+        # contractie dubbel verdisconteren.
+        area = frac * max_open
+        if area <= 0.0:
+            continue
+        # Hoogte van het openende deel; bij gebrek aan een expliciete maat de wortel van het
+        # openende vlak (vierkant-benadering) — de term gaat met √H, dus dit is mild.
+        height = w.get("open_height_m") or math.sqrt(max(max_open, 1e-6))
+        out[rid] = out.get(rid, 0.0) + single_sided_exchange(
+            area, height, wind, zone_temps.get(rid), outside_temp)
+    return out
+
+
+def effective_fresh(fresh: dict, house: dict, states: dict, weather: dict,
+                    zone_temps: dict, outside_temp: float) -> dict[str, float]:
+    """Netto-netwerk-verselucht aangevuld met de eenzijdige term, per zone het **maximum**
+    van de twee — géén som. Bij echte dwarsventilatie overtreft het netto debiet de
+    pulserende uitwisseling en is het netwerk juist; zonder doorstroompad neemt de
+    eenzijdige term het over. Zo wordt niets dubbel geteld.
+
+    Bewust binnen de geleerde `vent_eff` (anders dan `buoyant_door_exchange`, dat er
+    bewust buiten valt): dít is écht buitenlucht die de kamer in komt en met de kamerlucht
+    moet mengen — precies waar `vent_eff` voor staat."""
+    ss = single_sided_fresh(house, states, weather, zone_temps, outside_temp)
+    if not ss:
+        return fresh
+    return {z: max(fresh.get(z, 0.0), ss.get(z, 0.0)) for z in set(fresh) | set(ss)}
+
+
 def stair_crown(irr_roof_wm2: float) -> float:
     """Zon-kroon (°C) bovenop de γ-lijn voor de tóp-weergave van een gestratificeerde koker —
     de skylight-/dak-zon die bovenin landt en boven de hoogste deur niet weggemengd wordt."""
@@ -1788,7 +1864,11 @@ def simulate(house: dict, params: dict, timeline: list[dict],
         ops = build_openings(house, step["states"], step["weather"], params, Ta, T_out)
         net = solve_network(zones, ops, Ta, T_out, P_init=P_warm)
         P_warm = net["P"]
-        fresh = net["fresh"]
+        # Netto-netwerkdebiet aangevuld met de eenzijdige uitwisseling per open buitenraam
+        # (zie effective_fresh): zonder doorstroompad rekent het netwerk ~nul waar er in
+        # werkelijkheid ~14 ACH loopt.
+        fresh = effective_fresh(net["fresh"], house, step["states"], step["weather"],
+                                Ta, T_out)
         mix = door_mix(house, net["flows"], ops)
         # Trappenhuis-stratificatie: γ = kleinste-kwadraten-helling door de OPEN-deur-kamers
         # (proxy-meting van het profiel), plus de Brown–Solvason-counterflow per open koker-deur —
@@ -2436,12 +2516,16 @@ def suggest(house: dict, params: dict, weather: dict, room_now: dict,
     def score(states):
         ops = build_openings(house, states, weather, params, zone_temps, outside_temp)
         net = solve_network(zones, ops, zone_temps, outside_temp)
+        # Zelfde eenzijdige-ventilatie-aanvulling als in simulate(): zonder haar onderschat
+        # het koeladvies juist de kamers met één raam open (geen doorstroompad).
+        fresh_all = effective_fresh(net["fresh"], house, states, weather,
+                                    zone_temps, outside_temp)
         total = 0.0
         for room_id in rooms:
             t_in = room_now.get(_wd_key(house, room_id))
             if t_in is None:
                 continue
-            fresh = net["fresh"].get(room_id, 0.0)
+            fresh = fresh_all.get(room_id, 0.0)
             low, high = comfort(room_id)
             # Vocht-veto: nooit lucht binnenhalen die de kamer voorbij RH_HARD_CAP duwt.
             vent_rh = convert_rh(outside_rh, outside_rh_temp, t_in)
@@ -2843,7 +2927,9 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         net = solve_network(list(house["rooms"]) + list(house.get("junctions", {})),
                             ops, ta_all, now_step["T_out"])
         vol = room.get("volume_m3", 40.0)
-        fresh_m3s = net["fresh"].get(rid, 0.0)
+        fresh_m3s = effective_fresh(net["fresh"], house, now_step["states"],
+                                    now_step["weather"], ta_all,
+                                    now_step["T_out"]).get(rid, 0.0)
         fresh_ach = round(fresh_m3s * 3600.0 / vol, 2)
         # De twee "naar buiten"-termen, de tegenhanger van de zonwinst: schil-conductie
         # en ventilatie-uitwisseling met de buitenlucht. Negatief = energie verlaat de

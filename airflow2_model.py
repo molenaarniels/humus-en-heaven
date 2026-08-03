@@ -96,7 +96,7 @@ HISTORY_DIR     = os.getenv("TWIN2_HISTORY_DIR", "data/twin2_history")
 #   meer is en slaat de fout de andere kant op door. Het rev-2-anker vervalt mee; tot de
 #   eerstvolgende wekelijkse batch draait de tweeling op bootstrap-leren (het pad dat voor
 #   precies deze situatie bestaat).
-PHYSICS2_REV = 3
+PHYSICS2_REV = 4
 
 # ── Kalibratie ─────────────────────────────────────────────────────────────────────
 CALIB_WINDOW_H = am.CALIB_WINDOW_H   # zelfde venster/cadans als tweeling 1 → curves vergelijkbaar
@@ -710,6 +710,18 @@ def simulate2(house: dict, params: dict, timeline: list[dict], seed: dict,
                 if q_ex > 0.0:
                     gpairs[key] = gpairs.get(key, 0.0) + rho_cp * q_ex
                     mpairs[mk] = mpairs.get(mk, 0.0) + rho_a * q_ex
+
+        # Eenzijdige ventilatie per open (bijna-verticaal) buitenraam — de uitwisseling die
+        # het netto-netwerkdebiet mist (am.single_sided_fresh; zie AIRFLOW2_ASSESSMENT.md).
+        # Per zone het máximum van netto en eenzijdig, nooit de som. Subzone-kokers blijven
+        # erbuiten: hun enige glas is de platte skylight, en die valt onder SS_MIN_TILT_DEG.
+        ss = am.single_sided_fresh(house, step["states"], step["weather"],
+                                   {z: Ta[z][0] for z in zones}, T_out)
+        for z, q_ss in ss.items():
+            if z in subm or z not in fresh_zone or q_ss <= fresh_zone[z]:
+                continue
+            fresh_sub[z][0] += q_ss - fresh_zone[z]
+            fresh_zone[z] = q_ss
 
         # Verticale uitwisseling tussen gestapelde sub-knopen.
         for z, info in subm.items():
@@ -1876,6 +1888,11 @@ def build_dashboard2(house, params, weather, wd, timeline, sim, learned, actual,
         ops = build_openings2(house, now_step["states"], now_step["weather"], params,
                               ta_all, now_step["T_out"])
         net_now = am.solve_network(zones, ops, ta_all, now_step["T_out"])
+        # Zelfde eenzijdige-ventilatie-aanvulling als in simulate2(), zodat de getoonde
+        # ACH/vent_w klopt met wat het model werkelijk heeft gerekend.
+        net_now = dict(net_now)
+        net_now["fresh"] = am.effective_fresh(net_now["fresh"], house, now_step["states"],
+                                              now_step["weather"], ta_all, now_step["T_out"])
 
     horizon = now - timedelta(hours=CALIB_WINDOW_H)
     par2 = _zone_thermal_params2(house, params)

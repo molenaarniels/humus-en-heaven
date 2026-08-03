@@ -46,9 +46,6 @@ P_ATM  = 101325.0   # Pa
 
 R_AIR  = 287.05     # J/(kg·K)
 
-                               # pauze-filters) waaronder het dashboard waarschuwt: het venster
-                               # is nominaal 48u vol, maar de filters kunnen er stilletjes veel
-                               # minder van overlaten — dan leunt de fit op te weinig data
 SUBSTEP_S      = 300.0   # interne tijdstap (s) voor de Euler-integratie (stabiliteit)
 
 SOLAR_SUBSTEPS = 3       # sub-samples per 15-min stap voor het tijdsgemiddelde van de instraling:

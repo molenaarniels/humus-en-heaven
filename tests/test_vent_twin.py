@@ -225,7 +225,11 @@ def test_rmse_history_groeit_met_precies_een_punt(setup):
     assert len(hist) == 2
     assert hist[0] == oud                              # bestaande punten onaangeroerd
     nieuw = hist[-1]
-    assert set(nieuw) == {"t", "rmse", "held", "paused", "version"}
+    # Kernvelden altijd aanwezig; skill/rmse_naive/wx zijn additieve stempels (voeden
+    # vent_diagnostics' regime-analyse) en mogen erbij zitten wanneer ze bekend zijn.
+    assert {"t", "rmse", "held", "paused", "version"} <= set(nieuw)
+    assert set(nieuw) <= {"t", "rmse", "held", "paused", "version",
+                          "skill", "rmse_naive", "wx"}
     assert nieuw["t"] == NOW.isoformat()
     assert nieuw["rmse"] == pytest.approx(0.7)
     assert nieuw["held"] is False and nieuw["paused"] is False

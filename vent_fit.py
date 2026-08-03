@@ -31,18 +31,10 @@ from vent_physics import (
     _interp, _to_sensor_series, simulate, solve_linear,
 )
 
-                         # de lage avondzon draait snel door het NW-gevelvlak (cos-invalshoek-knik),
-                         # waardoor één punt-sample per stap aliast tot zichtbare wiebel in de
-                         # voorspelde temp. Middel de flux over [t, t+dt] op de subinterval-middens
-                         # (300s ≈ SUBSTEP_S) — fysisch de juiste grootheid (gemiddelde flux over de
-                         # stap), niet een momentopname. Behoudt de dag-energie; dempt enkel de
-                         # hoogfrequente aliasing.
 RMSE_HISTORY_KEEP = 1000  # hard vangnet op het aantal leercurve-punten (na uitdunning ~384)
 
 RMSE_HISTORY_DAYS = 10.0  # leeftijdslimiet van de leercurve. De uitdunning (thin_rmse_history)
 
-                                  # waarde ≥ dit verschuift (correctie zonder materieel effect
-                                  # raakt het punt niet aan)
 LEARN_RATE     = 0.5     # online: schuif deze fractie naar het nieuwe optimum per run
 
 # Tikhonov-regularisatie: trek elke leerbare schaal zacht naar zijn prior (1.0, cp_shelter 0.5)

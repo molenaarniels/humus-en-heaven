@@ -1,15 +1,14 @@
-"""Pure-functie-checks voor de Ventilatie 2-backfill (`tools/twin2_backfill.py`):
+"""Pure-functie-checks voor de shard-backfill (`tools/twin2_backfill.py`):
 commit-selectie, sample-extractie/merge-idempotentie, openingen-reconstructie
 (Gist primair, gedolven snapshots alleen vóór het Gist-begin en alleen bij een
-standswijziging) en de shard-merge — alles zónder git of netwerk."""
+standswijziging) en de shard-merge via vent_io — alles zónder git of netwerk."""
 import importlib
 import json
 import os
 import sys
 from datetime import datetime, timedelta
 
-import airflow_model as am
-import airflow2_model as a2
+import vent_io as vio
 
 
 def _bf():
@@ -20,7 +19,7 @@ def _bf():
 
 
 def _t(day, hour=12, minute=0):
-    return datetime(2026, 6, day, hour, minute, tzinfo=am.TZ)
+    return datetime(2026, 6, day, hour, minute, tzinfo=vio.TZ)
 
 
 # ── Commit-selectie ──────────────────────────────────────────────────────────────────
@@ -70,8 +69,8 @@ def test_airflow_snapshot_states_includes_special_keys():
     dash = {"openings": {"a_win": "open"}, "paused": True, "ac": {"room": "ted"}}
     st = bf.airflow_snapshot_states(dash)
     assert st["a_win"] == "open"
-    assert st[am.PAUSE_STATE_KEY] is True
-    assert st[am.AC_STATE_KEY] == "ted"
+    assert st[vio.PAUSE_STATE_KEY] is True
+    assert st[vio.AC_STATE_KEY] == "ted"
     assert bf.airflow_snapshot_states({"weather": {}}) is None   # geen openings-veld
 
 
@@ -87,8 +86,8 @@ def test_reconstruct_openings_gist_primary_mined_gapfiller():
     log = bf.reconstruct_openings(gist, mined)
     assert [e["t"] for e in log] == [_t(8).isoformat(), _t(9).isoformat(), _t(10).isoformat()]
     # openings_at accumuleert correct over de gemengde log.
-    assert am.openings_at(log, _t(9, 18))["a_win"] == "tilt"
-    assert am.openings_at(log, _t(10, 18))["a_win"] == "open"
+    assert vio.openings_at(log, _t(9, 18))["a_win"] == "tilt"
+    assert vio.openings_at(log, _t(10, 18))["a_win"] == "open"
 
 
 def test_reconstruct_openings_empty_gist_uses_all_mined():
@@ -102,7 +101,7 @@ def test_reconstruct_openings_empty_gist_uses_all_mined():
 
 def test_merge_into_shards_dedupes_and_sorts(tmp_path, monkeypatch):
     bf = _bf()
-    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr(vio, "HISTORY_DIR", str(tmp_path))
     t0 = _t(5)
     samples = bf.extract_room_samples(_wd(t0))
     log = [{"t": t0.isoformat(), "states": {"a_win": "open"}}]
@@ -113,7 +112,7 @@ def test_merge_into_shards_dedupes_and_sorts(tmp_path, monkeypatch):
     assert len(shard["openings"]) == 1
     # De shard is direct consumeerbaar door load_dataset.
     house = {"rooms": {"a": {"from_window_data": "Living room"}}}
-    ds = a2.load_dataset(house)
+    ds = vio.load_dataset(house)
     assert len(ds["actual"]["a"]) == 4
     assert ds["log"][0]["states"] == {"a_win": "open"}
 

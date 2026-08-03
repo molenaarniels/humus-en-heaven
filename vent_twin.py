@@ -238,7 +238,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, learned,
                     learning_held=False, skill=None, rmse_baseline=None,
                     ac_room=None, heat_now=None,
                     paused_now=False, paused_since=None,
-                    gamma_measured=None) -> dict:
+                    gamma_measured=None, wx=None) -> dict:
     """Stel docs/vent_data.json samen — het slanke schema uit het herbouwplan (§4):
     precies de velden die de vijf dashboard-features lezen, additief vanaf dag één."""
     cur = weather["current"]
@@ -288,9 +288,19 @@ def build_dashboard(house, params, weather, wd, timeline, sim, learned,
     # was zelf een incidentbron (zie het herbouwplan).
     rmse_hist = (learned.get("rmse_history") or [])[:]
     if rmse_now == rmse_now:   # niet-NaN
-        rmse_hist.append({"t": now.isoformat(), "rmse": round(rmse_now, 3),
-                          "held": bool(learning_held), "paused": bool(paused_now),
-                          "version": model_version()})
+        entry = {"t": now.isoformat(), "rmse": round(rmse_now, 3),
+                 "held": bool(learning_held), "paused": bool(paused_now),
+                 "version": model_version()}
+        # Additieve context per punt: weer-genormaliseerde skill + persistentie-baseline +
+        # weer-samenvatting, zodat de leercurve (en vent_diagnostics) te lezen is als
+        # "model vs. weer" i.p.v. een RMSE-stijging blind als regressie te lezen.
+        if skill is not None:
+            entry["skill"] = skill
+        if rmse_baseline is not None and rmse_baseline == rmse_baseline:
+            entry["rmse_naive"] = round(rmse_baseline, 3)
+        if wx:
+            entry["wx"] = wx
+        rmse_hist.append(entry)
     rmse_hist = thin_rmse_history(rmse_hist, now)
 
     return {
@@ -595,7 +605,7 @@ def main():
                            rmse_baseline=rmse_baseline,
                            ac_room=ac_room_now, heat_now=heat_now,
                            paused_now=paused_now, paused_since=paused_since,
-                           gamma_measured=gamma_measured)
+                           gamma_measured=gamma_measured, wx=wx_summary)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)

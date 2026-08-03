@@ -9,23 +9,30 @@ bevatten het weer) en zonder API-sleutels.
 
 Wat het doet
 ------------
-1. `airflow2_model.load_dataset(house)` — voegt alle shards samen tot de
-   uitgelijnde grond-waarheid: per kamer de tado-temp/RH-samples, de stook-
-   tijdstippen, de weer-rijen en de samengevoegde openingen-log.
-2. `airflow_model.build_timeline(...)` — bouwt één 15-minuten-raster van drivers
+1. `vent_io.load_dataset(house)` — voegt alle shards samen tot de uitgelijnde
+   grond-waarheid: per kamer de tado-temp/RH-samples, de stook-tijdstippen, de
+   weer-rijen en de samengevoegde openingen-log.
+2. `vent_io.build_timeline(...)` — bouwt één 15-minuten-raster van drivers
    over de hele spanwijdte: buitentemp, wind, per-kamer instraling *door het
    glas*, dak-instraling, zonstand en de (voorwaarts-ingevulde) raam/deur/
-   rooster-standen op elk moment.
+   rooster-standen op elk moment. Per venster een eigen RunContext
+   (`vent_io.make_context`) — geen module-globals meer.
 3. Voegt per (tijdstip, kamer) de gemeten temp/RH toe als **doelwaarde**
    (nearest-sample binnen `--join-tol-min`), plus de stook/airco/pauze-vlaggen
    waarmee de tweeling die samples juist uit de kalibratie laat vallen — zodat
    jij dezelfde filters kunt reproduceren.
-4. Optioneel (`--baseline`, standaard aan): draait de bestaande grey-box-
-   fysica (tweeling 1 = 2-knoops, tweeling 2 = 3-knoops) opnieuw over
-   niet-overlappende 5-daagse vensters (24u warmup, hergeseed uit de metingen)
-   en schrijft hun voorspelling per rij weg als `pred_twin1_c`/`pred_twin2_c`.
-   Zo heb je meteen een fysica-baseline om te verslaan, of om residu-leren op
-   te doen ("leer alleen de fout van het fysica-model").
+4. Optioneel (`--baseline`, standaard aan): draait de grey-box-fysica van de
+   tweeling (vent_physics, 2-knoops RC) opnieuw over niet-overlappende
+   5-daagse vensters (24u warmup, hergeseed uit de metingen) en schrijft de
+   voorspelling per rij weg als `pred_twin1_c`. Zo heb je meteen een
+   fysica-baseline om te verslaan, of om residu-leren op te doen.
+
+Verwijderde kolommen (aug 2026): **`pred_twin2_c`** — tweeling 2 (het 3-knoops
++ vocht-experiment, Project 12) is met pensioen en zijn batch-fit bestaat niet
+meer. Deze export is een afgeleide dataset (download-artefact), geen gecommit
+dashboard-artefact, dus de additief-alleen-schemaregel geldt hier niet; de dode
+kolom is verwijderd i.p.v. voor eeuwig leeg mee te reizen. `pred_twin1_c`
+behoudt zijn naam (de herbouwde tweeling ís twin 1's fysica, woordelijk geport).
 
 Uitvoer (in `--out`, standaard `data/ml/`):
   - `ventilation_long.csv`   — één rij per (tijdstip, kamer); handig voor
@@ -49,15 +56,19 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import airflow_model as am          # noqa: E402
-import airflow2_model as a2         # noqa: E402
-from shared_const import TZ         # noqa: E402
+import vent_fit as vf                # noqa: E402
+import vent_io as vio                # noqa: E402
+import vent_physics as vp            # noqa: E402
+from shared_const import TZ          # noqa: E402
+
+WINDOW_D = 5.0    # dagen per hergeseed baseline-venster (het gepensioneerde BATCH_WINDOW_D)
+WARMUP_H = vio.WARMUP_H   # sim-only aanloop per venster (massaknoop-equilibratie)
 
 # Kolommen die per tijdstip gedeeld zijn (identiek voor elke kamer op dat moment).
 SHARED_META = ["t", "t_epoch"]
@@ -68,7 +79,7 @@ HOUSE_STATE_COLS = ["paused", "ac_room", "ac_here"]
 # Per-kamer kolommen (in long: platte kolommen; in wide: met `__<kamer>`-suffix).
 TARGET_COLS = ["temp_c", "humidity"]
 ROOM_DRIVER_COLS = ["solar_glass_w", "roof_irr_w", "heating"]
-BASELINE_COLS = ["pred_twin1_c", "pred_twin2_c"]
+BASELINE_COLS = ["pred_twin1_c"]
 
 
 def _openness(val, elem: dict) -> float:
@@ -127,27 +138,93 @@ def _iso_min(dt: datetime) -> str:
 def _sensor_series(house, timeline, rid, series):
     """Fysica-voorspelling naar sensor-ruimte (buitenmuur-voeler-debias) zodat
     ze vergelijkbaar is met de gemeten tado-temp — het runner-recept."""
-    return dict(_iso_pairs(am._to_sensor_series(house, timeline, rid, series)))
+    return dict(_iso_pairs(vp._to_sensor_series(house, timeline, rid, series)))
 
 
 def _iso_pairs(series):
     return [(_iso_min(t), v) for t, v in series]
 
 
+def _window_bounds(t_min: datetime, t_max: datetime, window_d: float) -> list[tuple]:
+    """(start, eind)-vensters van `window_d` dagen, stride == venster, achterwaarts
+    verankerd op t_max zodat het meest recente venster altijd meedoet (het
+    gepensioneerde airflow2_model.batch_windows-recept)."""
+    ends = []
+    end = t_max
+    first_end = t_min + timedelta(days=window_d)
+    while end >= first_end:
+        ends.append(end)
+        end -= timedelta(days=window_d)
+    ends.reverse()
+    return [(e - timedelta(days=window_d), e) for e in ends]
+
+
+def _slice_actual(actual: dict, start: datetime, end: datetime) -> dict:
+    out = {}
+    for rid, samples in actual.items():
+        s = [(t, v) for t, v in samples if start <= t <= end]
+        if s:
+            out[rid] = s
+    return out
+
+
+def prepare_export_windows(house: dict, ds: dict, window_d: float) -> list[dict]:
+    """Venster-bouw voor de export (opvolger van het gepensioneerde
+    airflow2_model.prepare_windows, getrimd tot wat de export nodig heeft):
+    per venster de driver-timeline (incl. 24u warmup-aanloop), de seed uit de
+    hygiëne-gefilterde metingen en een venster-eigen RunContext — het buur- en
+    bodem-anker horen bij het VENSTER, niet bij de run: een spanwijdte van
+    maanden schuift door het seizoen. `dataclasses.replace`-achtige wissels per
+    venster gaan via een verse `vio.make_context` i.p.v. module-globals."""
+    log = ds["log"]
+    rows = ds["weather_rows"]
+    actual_all = ds["actual"]
+    ts_all = [t for s in actual_all.values() for t, _ in s]
+    if not ts_all or not rows:
+        return []
+    t_min, t_max = min(ts_all), max(ts_all)
+
+    # Dezelfde hygiënefilters als de fit (alleen voor de séeds; de doelkolommen
+    # blijven de ruwe metingen — de vlaggen heating/ac_here/paused staan ernaast).
+    acc = vio.ac_changes(log)
+    p_intervals = vio.paused_intervals(vio.pause_changes(log), t_max)
+    act_f, _ = vf.filter_heating_samples(actual_all, ds["heat_on"])
+    act_f, _ = vf.filter_ac_samples(act_f, acc, None, t_max, guard_h=0.0)
+    act_f, _ = vf.filter_paused_samples(act_f, p_intervals)
+
+    wins = []
+    for w_start, w_end in _window_bounds(t_min, t_max, window_d):
+        act = _slice_actual(act_f, w_start, w_end)
+        if not act:
+            continue
+        window_h = (w_end - w_start).total_seconds() / 3600.0 + WARMUP_H
+        # make_context kijkt alleen naar weer-historie ≤ w_end → venster-eigen ankers.
+        ctx = vio.make_context(house, {"hourly": rows}, w_end)
+        timeline = vio.build_timeline(house, {"hourly": rows, "current": {}}, log,
+                                      w_end, window_h, ctx, beam_iam=True, end_h=0.0)
+        if not timeline:
+            continue
+        seed = {rid: s[0][1] for rid, s in act.items()}
+        for rid in house.get("rooms", {}):
+            seed.setdefault(rid, timeline[0]["T_out"])
+        wins.append({"start": w_start, "end": w_end, "timeline": timeline,
+                     "seed": seed, "ctx": ctx})
+    return wins
+
+
 def build_long_rows(house: dict, ds: dict, *, join_tol_min: float,
                     baseline: bool, window_d: float | None = None):
     """Bouw de long-format rijen (één per (tijdstip, kamer)) + de kolom-metadata.
 
-    Itereert de niet-overlappende 5-daagse vensters van `prepare_windows` (stride
-    == venster → elk rooster-tijdstip in precies één gescoord venster). Uit
-    ELKZELFDE venster-timeline komen zowel de features als — bij `baseline` — de
-    fysica-voorspellingen, zodat ze per constructie exact op hetzelfde 15-min-
+    Itereert de niet-overlappende 5-daagse vensters van `prepare_export_windows`
+    (stride == venster → elk rooster-tijdstip in precies één gescoord venster).
+    Uit ELKZELFDE venster-timeline komen zowel de features als — bij `baseline` —
+    de fysica-voorspelling, zodat ze per constructie exact op hetzelfde 15-min-
     tijdstip liggen. De warmup-aanloop (< venster-start) dient enkel om de trage
     massaknoop te laten inregelen en levert geen rij.
 
-    Rebindt `am._NEIGHBOR_TEMP` per venster/model exact als de fit (`_win_res`):
-    tweeling 1 met zijn eigen `neighbor_temp_estimate`, tweeling 2 met het
-    `neighbor_anchor` dat `prepare_windows` al berekende.
+    De simulatie krijgt het vénster-eigen anker-paar expliciet mee via de
+    RunContext van dat venster (geen `am._NEIGHBOR_TEMP`-globals-wissel meer).
 
     Geeft terug: (rows, room_ids, element_ids)."""
     actual = ds["actual"]
@@ -158,103 +235,91 @@ def build_long_rows(house: dict, ds: dict, *, join_tol_min: float,
                 if r.get("from_window_data")]
     elem_meta = _element_meta(house)
 
-    window_d = a2.BATCH_WINDOW_D if window_d is None else window_d
-    wins = a2.prepare_windows(house, ds, window_d=window_d, stride_d=window_d)
+    window_d = WINDOW_D if window_d is None else window_d
+    wins = prepare_export_windows(house, ds, window_d)
     if not wins:
         return [], room_ids, sorted(elem_meta)
 
     # Stabiele element-kolommen: unie van de huis-elementen en alles wat ooit in
     # de log stond (m.u.v. de speciale niet-element-sleutels).
-    specials = {am.AC_STATE_KEY, am.PAUSE_STATE_KEY}
+    specials = {vio.AC_STATE_KEY, vio.PAUSE_STATE_KEY}
     logged = {k for w in wins for step in w["timeline"]
               for k in step["states"] if k not in specials}
     element_ids = sorted(set(elem_meta) | logged)
 
     if baseline:
-        p1 = am.merged_params(house, am.load_learned())
-        p2 = a2.merged_params2(house, a2.load_learned2())
+        p1 = vio.merged_params(house, vio.load_learned())
 
     tol_s = join_tol_min * 60.0
     rows = []
     seen_t = set()
-    old_nb, old_gr = am._NEIGHBOR_TEMP, am._GROUND_TEMP
-    try:
-        for w in wins:
-            tl, seed, w_start, w_end = w["timeline"], w["seed"], w["start"], w["end"]
-            pred1, pred2 = {}, {}
-            if baseline:
-                am._NEIGHBOR_TEMP = min(am.NEIGHBOR_SUMMER_CAP,
-                                        am.neighbor_temp_estimate(rows_wx, w_end))
-                # Bodem-anker per venster, net als in de fit (zie a2.window_anchors) —
-                # zonder deze rebind zou de export op de module-default simuleren.
-                am._GROUND_TEMP = w.get("ground", am.ground_temp_estimate(rows_wx, w_end))
-                sim1 = am.simulate(house, p1, tl, seed, tm_seed=w.get("tm_seed"))
-                pred1 = {rid: _sensor_series(house, tl, rid, ser)
-                         for rid, ser in sim1["series"].items()}
-                am._NEIGHBOR_TEMP = w["neighbor"]
-                am._GROUND_TEMP = w.get("ground", am._GROUND_TEMP)
-                sim2 = a2.simulate2(house, p2, tl, seed, seed_w=w.get("seed_w"),
-                                    tm_seed=w.get("tm_seed"))
-                pred2 = {rid: _sensor_series(house, tl, rid, ser)
-                         for rid, ser in sim2["series"].items()}
+    for w in wins:
+        tl, seed, w_start, w_end = w["timeline"], w["seed"], w["start"], w["end"]
+        ctx = w["ctx"]
+        pred1 = {}
+        if baseline:
+            sim1 = vp.simulate(house, p1, tl, seed, ctx)
+            pred1 = {rid: _sensor_series(house, tl, rid, ser)
+                     for rid, ser in sim1["series"].items()}
 
-            for step in tl:
-                t = step["t"]
-                if t < w_start or t > w_end:
-                    continue                       # sla de warmup-aanloop over
-                iso = _iso_min(t)
-                if iso in seen_t:
-                    continue                       # venster-grens: één keer per tijdstip
-                seen_t.add(iso)
-                st = step["states"]
-                wx = step.get("weather", {})
-                direct = wx.get("direct") or 0.0
-                diffuse = wx.get("diffuse") or 0.0
-                ac_room = st.get(am.AC_STATE_KEY, "") or ""
-                paused = 1 if _openness(st.get(am.PAUSE_STATE_KEY), {}) >= 0.5 else 0
+        for step in tl:
+            t = step["t"]
+            if t < w_start or t > w_end:
+                continue                       # sla de warmup-aanloop over
+            iso = _iso_min(t)
+            if iso in seen_t:
+                continue                       # venster-grens: één keer per tijdstip
+            seen_t.add(iso)
+            st = step["states"]
+            wx = step.get("weather", {})
+            direct = wx.get("direct") or 0.0
+            diffuse = wx.get("diffuse") or 0.0
+            ac_room = st.get(vio.AC_STATE_KEY, "") or ""
+            paused = 1 if _openness(st.get(vio.PAUSE_STATE_KEY), {}) >= 0.5 else 0
 
-                shared = {
-                    "t": iso,
-                    "t_epoch": int(t.timestamp()),
-                    "t_out_c": _round(step.get("T_out")),
-                    "rh_out": _round(wx.get("rh"), 1),
-                    "wind_speed_ms": _round(wx.get("wind_speed"), 3),
-                    "wind_dir_deg": _round(wx.get("wind_dir"), 1),
-                    "gust_ms": _round(wx.get("gust"), 3),
-                    "precip_mm": _round(wx.get("precip"), 3),
-                    "solar_direct_wm2": _round(direct, 1),
-                    "solar_diffuse_wm2": _round(diffuse, 1),
-                    "solar_global_wm2": _round(direct + diffuse, 1),
-                    "sun_az_deg": _round(step.get("sun_az"), 2),
-                    "sun_el_deg": _round(step.get("sun_el"), 2),
-                    "neighbor_anchor_c": _round(a2.neighbor_anchor(rows_wx, t), 2),
-                    "paused": paused,
-                    "ac_room": ac_room,
-                }
-                for eid in element_ids:
-                    shared[f"open_{eid}"] = _round(
-                        _openness(st.get(eid), elem_meta.get(eid, {})), 3)
+            shared = {
+                "t": iso,
+                "t_epoch": int(t.timestamp()),
+                "t_out_c": _round(step.get("T_out")),
+                "rh_out": _round(wx.get("rh"), 1),
+                "wind_speed_ms": _round(wx.get("wind_speed"), 3),
+                "wind_dir_deg": _round(wx.get("wind_dir"), 1),
+                "gust_ms": _round(wx.get("gust"), 3),
+                "precip_mm": _round(wx.get("precip"), 3),
+                "solar_direct_wm2": _round(direct, 1),
+                "solar_diffuse_wm2": _round(diffuse, 1),
+                "solar_global_wm2": _round(direct + diffuse, 1),
+                "sun_az_deg": _round(step.get("sun_az"), 2),
+                "sun_el_deg": _round(step.get("sun_el"), 2),
+                # Dag-waarde van het gekapte buur-anker op dit tijdstip; de nachtcap
+                # wordt in de simulatie per tijdstap toegepast (vp.neighbor_at).
+                "neighbor_anchor_c": _round(
+                    min(vp.NEIGHBOR_SUMMER_CAP,
+                        vp.neighbor_temp_estimate(rows_wx, t)), 2),
+                "paused": paused,
+                "ac_room": ac_room,
+            }
+            for eid in element_ids:
+                shared[f"open_{eid}"] = _round(
+                    _openness(st.get(eid), elem_meta.get(eid, {})), 3)
 
-                for rid in room_ids:
-                    temp_hit = _nearest(actual.get(rid, []), t, tol_s)
-                    rh_hit = _nearest(actual_rh.get(rid, []), t, tol_s)
-                    temp_dt, temp_v = temp_hit
-                    heating = 1 if (temp_dt is not None
-                                    and temp_dt in heat_on.get(rid, set())) else 0
-                    row = dict(shared)
-                    row["room"] = rid
-                    row["ac_here"] = 1 if ac_room == rid else 0
-                    row["temp_c"] = _round(temp_v, 2)
-                    row["humidity"] = _round(rh_hit[1], 1)
-                    row["heating"] = heating
-                    row["solar_glass_w"] = _round((step.get("irr") or {}).get(rid), 1)
-                    row["roof_irr_w"] = _round((step.get("irr_roof") or {}).get(rid, 0.0), 1)
-                    if baseline:
-                        row["pred_twin1_c"] = pred1.get(rid, {}).get(iso)
-                        row["pred_twin2_c"] = pred2.get(rid, {}).get(iso)
-                    rows.append(row)
-    finally:
-        am._NEIGHBOR_TEMP, am._GROUND_TEMP = old_nb, old_gr
+            for rid in room_ids:
+                temp_hit = _nearest(actual.get(rid, []), t, tol_s)
+                rh_hit = _nearest(actual_rh.get(rid, []), t, tol_s)
+                temp_dt, temp_v = temp_hit
+                heating = 1 if (temp_dt is not None
+                                and temp_dt in heat_on.get(rid, set())) else 0
+                row = dict(shared)
+                row["room"] = rid
+                row["ac_here"] = 1 if ac_room == rid else 0
+                row["temp_c"] = _round(temp_v, 2)
+                row["humidity"] = _round(rh_hit[1], 1)
+                row["heating"] = heating
+                row["solar_glass_w"] = _round((step.get("irr") or {}).get(rid), 1)
+                row["roof_irr_w"] = _round((step.get("irr_roof") or {}).get(rid, 0.0), 1)
+                if baseline:
+                    row["pred_twin1_c"] = pred1.get(rid, {}).get(iso)
+                rows.append(row)
     rows.sort(key=lambda r: (r["t"], r["room"]))
     return rows, room_ids, element_ids
 
@@ -360,7 +425,8 @@ def build_schema(room_ids, element_ids, baseline: bool, elem_meta: dict):
         "solar_global_wm2": {"desc": "globaal = direct + diffuse", "unit": "W/m²"},
         "sun_az_deg": {"desc": "zon-azimut (met de klok mee vanaf noord)", "unit": "°"},
         "sun_el_deg": {"desc": "zon-elevatie boven de horizon", "unit": "°"},
-        "neighbor_anchor_c": {"desc": "party-muur-buur-anker (gekapt/nacht-verlaagd, tweeling 2)",
+        "neighbor_anchor_c": {"desc": "party-muur-buur-anker, dag-waarde (zomerplafond "
+                                      "toegepast; de nachtcap zit per tijdstap in de simulatie)",
                               "unit": "°C"},
     }
     for eid in element_ids:
@@ -378,12 +444,10 @@ def build_schema(room_ids, element_ids, baseline: bool, elem_meta: dict):
                     f"(0=dicht, 1=open, kier={e.get('tilt_frac', 0.3)})",
             "unit": "0..1", "kind": kind}
     if baseline:
-        d["pred_twin1_c"] = {"desc": "voorspelling grey-box tweeling 1 (2-knoops RC), "
-                                     "sensor-ruimte, hergeseed per 5-daags venster + 24u warmup — "
-                                     "ruwe fysica, GEEN online tarrering", "unit": "°C"}
-        d["pred_twin2_c"] = {"desc": "voorspelling grey-box tweeling 2 (3-knoops RC + vocht), "
-                                     "sensor-ruimte, idem — de baseline om te verslaan / "
-                                     "residu-doel", "unit": "°C"}
+        d["pred_twin1_c"] = {"desc": "voorspelling grey-box ventilatie-tweeling (2-knoops RC, "
+                                     "vent_physics), sensor-ruimte, hergeseed per 5-daags venster "
+                                     "+ 24u warmup — ruwe fysica, GEEN online geleerde nudge; "
+                                     "de baseline om te verslaan / residu-doel", "unit": "°C"}
     return {
         "generated_at": datetime.now(TZ).isoformat(),
         "rooms": room_ids,
@@ -393,7 +457,8 @@ def build_schema(room_ids, element_ids, baseline: bool, elem_meta: dict):
             "temp_c/humidity zijn de GEMETEN doelwaarden; leeg = geen sample binnen join-tol.",
             "Filter net als de tweeling: laat rijen met heating==1, ac_here==1 of paused==1 vallen "
             "wil je een schone fit op de ventilatie-fysica.",
-            "pred_twin*_c zijn optioneel (--baseline) en dienen als fysica-baseline / residu-doel.",
+            "pred_twin1_c is optioneel (--baseline) en dient als fysica-baseline / residu-doel.",
+            "pred_twin2_c is verwijderd (aug 2026): tweeling 2 is met pensioen.",
         ],
         "columns": d,
     }
@@ -404,7 +469,7 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(_ROOT, "data", "ml"),
                     help="uitvoermap (default data/ml)")
     ap.add_argument("--history-dir", default=None,
-                    help="shard-map (default airflow2_model.HISTORY_DIR / data/twin2_history)")
+                    help="shard-map (default vent_io.HISTORY_DIR / data/twin2_history)")
     ap.add_argument("--join-tol-min", type=float, default=10.0,
                     help="max. minuten tussen rooster-tijdstip en gemeten sample (default 10)")
     ap.add_argument("--window-days", type=float, default=None,
@@ -412,23 +477,20 @@ def main() -> int:
                          "(default 5; kleiner = vaker hergeseed, kortere-horizon-skill)")
     bl = ap.add_mutually_exclusive_group()
     bl.add_argument("--baseline", dest="baseline", action="store_true", default=True,
-                    help="voeg tweeling-1/2-voorspellingen toe (default aan)")
+                    help="voeg de fysica-baseline (pred_twin1_c) toe (default aan)")
     bl.add_argument("--no-baseline", dest="baseline", action="store_false",
                     help="alleen data, geen fysica-baseline (sneller)")
     args = ap.parse_args()
 
     if args.history_dir:
-        a2.HISTORY_DIR = args.history_dir
+        vio.HISTORY_DIR = args.history_dir
 
-    house = am.load_house()
-    loc = house.get("location", {})
-    am._LAT = loc.get("lat", am._LAT)
-    am._LON = loc.get("lon", am._LON)
+    house = vio.load_house()
 
-    ds = a2.load_dataset(house)
+    ds = vio.load_dataset(house)
     n_samples = sum(len(s) for s in ds["actual"].values())
     print(f"[export] {n_samples} tado-samples, {len(ds['weather_rows'])} weer-uren, "
-          f"{len(ds['log'])} log-snapshots uit {a2.HISTORY_DIR}.")
+          f"{len(ds['log'])} log-snapshots uit {vio.HISTORY_DIR}.")
     if not n_samples:
         print("[export] geen data in de shards — niets te exporteren.")
         return 1

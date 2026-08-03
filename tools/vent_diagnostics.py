@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Read-only diagnostiek voor de ventilatie-tweeling (Project 8).
+"""Read-only diagnostiek voor de ventilatie-tweeling (Project 13, de herbouw).
 
-Consumeert de gecommitte artefacten — `docs/airflow_learned.json` (leercurve + params +
-checkpoint) en `docs/airflow_data.json` (huidige per-kamer-toestand) — en print een
+Consumeert de gecommitte artefacten — `docs/vent_learned.json` (leercurve + params)
+en `docs/vent_data.json` (huidige per-kamer-toestand) — en print een
 markdown-rapport dat de assessment onderbouwt:
 
   1. Regime-curve   — RMSE & skill vs. dag-max/zon, uit `rmse_history` (wanneer faalt het?).
@@ -15,8 +15,8 @@ markdown-rapport dat de assessment onderbouwt:
                         ventilatie (vroege ochtend → niet-gemelde nachtventilatie).
   4. Airco          — gerapporteerde AC-kamer + uit-de-fit-gelaten samples.
 
-Géén model-mutatie, géén netwerk, géén third-party deps. Draai:  python tools/airflow_diagnostics.py
-Optioneel:  python tools/airflow_diagnostics.py --out AIRFLOW_ASSESSMENT_DATA.md
+Géén model-mutatie, géén netwerk, géén third-party deps. Draai:  python tools/vent_diagnostics.py
+Optioneel:  python tools/vent_diagnostics.py --out VENT_ASSESSMENT_DATA.md
 """
 from __future__ import annotations
 
@@ -32,12 +32,13 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from airflow_model import (  # noqa: E402
-    BOUNDS, GLOBAL_PARAMS, PER_ROOM_PARAMS, PRIORS, reg_weight,
+from vent_fit import reg_weight  # noqa: E402
+from vent_physics import (  # noqa: E402
+    BOUNDS, GLOBAL_PARAMS, PER_ROOM_PARAMS, PRIORS,
 )
 
-LEARNED_PATH = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
-DATA_PATH = os.getenv("AIRFLOW_DATA_PATH", "docs/airflow_data.json")
+LEARNED_PATH = os.getenv("VENT_LEARNED_PATH", "docs/vent_learned.json")
+DATA_PATH = os.getenv("VENT_DATA_PATH", "docs/vent_data.json")
 
 RAIL_TOL = 0.02   # binnen deze fractie van de band-breedte → 'geraild' op die grens
 ENERGY_KEYS = ["solar_w", "env_w", "vent_w", "party_w", "ground_w", "internal_w"]
@@ -73,7 +74,7 @@ def interp(series: list[dict], ts: datetime) -> float | None:
 
 
 def room_residuals(r: dict) -> list[tuple[datetime, float]]:
-    """(t, voorspeld − werkelijk) per actual-sample van één kamer-rij uit airflow_data.json
+    """(t, voorspeld − werkelijk) per actual-sample van één kamer-rij uit vent_data.json
     (voorspeld lineair geïnterpoleerd). Gedeeld door de residu-ontleding en de zon-decompositie."""
     pred = r.get("predicted_series", [])
     res = []
@@ -137,7 +138,9 @@ def _regime_table(hist: list[dict], title: str) -> list[str]:
 
 def regime_report(learned: dict, since: datetime | None = None) -> str:
     # `fell_back`-punten vallen áltijd uit de bins: op zo'n run zijn de checkpoint-params
-    # teruggezet en meet het punt de fallback, niet het lopende leren.
+    # teruggezet en meet het punt de fallback, niet het lopende leren. (De herbouwde
+    # tweeling kent geen fallback meer en stempelt de vlag dus nooit; het filter blijft
+    # voor curves die nog uit de twin-1-artefacten stammen.)
     hist = [h for h in learned.get("rmse_history", [])
             if h.get("rmse") is not None and not h.get("held") and not h.get("fell_back")
             and h.get("rmse") == h.get("rmse")]
@@ -373,31 +376,31 @@ def solar_decomp_report(data: dict, room_id: str = "living") -> str:
     dít is de enige netwerk-afhankelijke sectie en draait alleen onder `--solar-decomp`.
     Benadering: de zonwering-standen zijn de HUIDIGE gerapporteerde standen (de log-historie
     vergt Gist-secrets); voor een welk-raam-drijft-het-residu-diagnose is dat ruim genoeg."""
-    from airflow_model import (
-        _LAT, _LON, _interp_hourly, fetch_weather, load_house, per_window_solar, sun_position,
-    )
+    import vent_io as vio
+    from vent_physics import per_window_solar, sun_position
     room = data.get("rooms", {}).get(room_id)
     if not room:
-        return f"### 5. Zon-decompositie\n\n_Kamer `{room_id}` niet in airflow_data.json._\n"
+        return f"### 5. Zon-decompositie\n\n_Kamer `{room_id}` niet in vent_data.json._\n"
     res = room_residuals(room)
     if len(res) < 8:
         return f"### 5. Zon-decompositie\n\n_Te weinig residu-samples voor `{room_id}`._\n"
-    house = load_house()
+    house = vio.load_house()
+    lat, lon = vio.house_location(house)   # expliciet — geen module-globals (RunContext-lijn)
     states = data.get("openings", {}) or {}
     windows = {wid: w for wid, w in house.get("windows", {}).items()
                if w.get("room") == room_id}
     if not windows:
         return f"### 5. Zon-decompositie\n\n_Geen ramen voor `{room_id}` in house_model.json._\n"
     try:
-        rows = fetch_weather()["hourly"]
+        rows = vio.fetch_weather(lat, lon)["hourly"]
     except Exception as e:                                    # noqa: BLE001 — diagnose, geen runner
         return ("### 5. Zon-decompositie\n\n_Open-Meteo niet bereikbaar "
                 f"({type(e).__name__}) — deze sectie vergt netwerk._\n")
     per_win: dict[str, list[float]] = {wid: [] for wid in windows}
     for ts, _ in res:
-        s_az, s_el = sun_position(_LAT, _LON, ts.astimezone(timezone.utc))
-        direct = _interp_hourly(rows, ts, "direct")
-        diffuse = _interp_hourly(rows, ts, "diffuse")
+        s_az, s_el = sun_position(lat, lon, ts.astimezone(timezone.utc))
+        direct = vio._interp_hourly(rows, ts, "direct")
+        diffuse = vio._interp_hourly(rows, ts, "diffuse")
         pw = per_window_solar(house, states, s_az, s_el, direct, diffuse, beam_iam=True)
         for wid in windows:
             per_win[wid].append(pw.get(wid, 0.0))
@@ -435,12 +438,14 @@ def build_report(learned: dict, data: dict, since: datetime | None = None,
                  solar_room: str | None = None) -> str:
     gen = data.get("generated_at", "?")
     wx = data.get("weather", {})
+    # Geen checkpoint-regel meer: het checkpoint/fallback-complex is bij de herbouw
+    # bewust weggelaten (Project 13); skill + eventuele seed-stempel zijn de context.
     head = [f"# Ventilatie-tweeling — diagnostiek ({gen})\n",
             f"- buiten: {_fmt(wx.get('outside_temp'))} °C ({wx.get('outside_source', '?')}), "
             f"buur-anker {_fmt(wx.get('neighbor_temp'))} °C",
             f"- huidige RMSE: {_fmt(learned.get('rmse'), 3)} °C; "
-            f"checkpoint: skill {learned.get('checkpoint', {}).get('skill')}, "
-            f"RMSE {learned.get('checkpoint', {}).get('rmse')}\n"]
+            f"skill: {learned.get('skill')}"
+            + (f"; seed: {learned['seed_src']}" if learned.get("seed_src") else "") + "\n"]
     # Zon-gemiddelde van het nieuwste leercurve-punt: `solar_gain`'s ridge is regime-bewust
     # (sterk anker op bewolkte vensters, zwak op zonnige), dus de rail-druk moet met hetzelfde
     # gewicht rekenen als de fit die de waarde produceerde.

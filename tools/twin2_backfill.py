@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Eenmalige (her-runbare) historie-backfill voor Ventilatie 2 (Project 12).
+"""Eenmalige (her-runbare) historie-backfill voor de maand-shards van de
+ventilatie-tweeling (geërfd van Ventilatie 2/Project 12; sinds de herbouw de
+evaluatie-/seed-dataset van Project 13 — shard-I/O leeft in vent_io).
 
 Reconstrueert de trainingsset `data/twin2_history/<YYYY-MM>.json` uit drie bronnen:
 
@@ -14,7 +16,7 @@ Reconstrueert de trainingsset `data/twin2_history/<YYYY-MM>.json` uit drie bronn
      snapshots gesynthetiseerd (alleen waar de stand verandert — veilig onder de
      voorwaartse accumulatie van openings_at).
   3. **weer**: het Open-Meteo-archief (Project 7-patroon) via
-     airflow2_model.fetch_weather_archive — geen git-mining nodig.
+     vent_io.fetch_weather_archive — geen git-mining nodig.
 
 LET OP: vereist een niet-shallow clone (`git fetch --unshallow` lokaal;
 `fetch-depth: 0` in de workflow) — een shallow checkout ziet alleen de laatste
@@ -37,15 +39,14 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-# Repo-root op het pad (zelfde patroon als airflow_diagnostics.py).
+# Repo-root op het pad (zelfde patroon als vent_diagnostics.py).
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import airflow_model as am          # noqa: E402
-import airflow2_model as a2         # noqa: E402
+import vent_io as vio               # noqa: E402
 
-TZ = am.TZ
+TZ = vio.TZ
 WINDOW_DATA_PATH = "docs/window_data.json"
 AIRFLOW_DATA_PATH = "docs/airflow_data.json"
 AIRFLOW_SAMPLE_MIN = 55             # minuten — bemonster airflow_data-commits ~1/uur
@@ -144,8 +145,8 @@ def airflow_snapshot_states(dash: dict) -> dict | None:
     if not isinstance(dash, dict) or "openings" not in dash:
         return None
     states = dict(dash.get("openings") or {})
-    states[am.PAUSE_STATE_KEY] = bool(dash.get("paused"))
-    states[am.AC_STATE_KEY] = (dash.get("ac") or {}).get("room") or ""
+    states[vio.PAUSE_STATE_KEY] = bool(dash.get("paused"))
+    states[vio.AC_STATE_KEY] = (dash.get("ac") or {}).get("room") or ""
     return states
 
 
@@ -189,7 +190,7 @@ def coverage_report(samples: dict[str, dict[int, tuple]]) -> list[str]:
     return lines
 
 
-# ── Shard-merge (schrijft via airflow2_model's shard-I/O) ─────────────────────────────
+# ── Shard-merge (schrijft via vent_io's shard-I/O) ────────────────────────────────────
 
 def merge_into_shards(samples: dict[str, dict[int, tuple]], openings: list[dict]) -> int:
     """Voeg de gedolven samples + log toe aan de maand-shards (dedupe op tijdstip;
@@ -198,7 +199,7 @@ def merge_into_shards(samples: dict[str, dict[int, tuple]], openings: list[dict]
 
     def shard_for(month: str) -> dict:
         if month not in by_month:
-            by_month[month] = a2._load_shard(month)
+            by_month[month] = vio._load_shard(month)
         return by_month[month]
 
     added = 0
@@ -235,7 +236,7 @@ def merge_into_shards(samples: dict[str, dict[int, tuple]], openings: list[dict]
             shard["openings"].append({"t": entry["t"], "states": entry.get("states", {}) or {}})
     for shard in by_month.values():
         shard["openings"].sort(key=lambda e: e.get("t") or "")
-        a2._write_shard(shard)
+        vio._write_shard(shard)
     return added
 
 
@@ -244,13 +245,13 @@ def merge_into_shards(samples: dict[str, dict[int, tuple]], openings: list[dict]
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ventilatie 2 — historie-backfill uit git")
     ap.add_argument("--since", default=None, help="vroegste datum (YYYY-MM-DD), default alles")
-    ap.add_argument("--out", default=None, help=f"shard-map (default {a2.HISTORY_DIR})")
+    ap.add_argument("--out", default=None, help=f"shard-map (default {vio.HISTORY_DIR})")
     ap.add_argument("--repo", default=".", help="pad naar de git-checkout")
     ap.add_argument("--skip-weather", action="store_true",
                     help="sla de Open-Meteo-archief-verversing over")
     args = ap.parse_args()
     if args.out:
-        a2.HISTORY_DIR = args.out
+        vio.HISTORY_DIR = args.out
 
     if is_shallow(args.repo):
         print("FOUT: shallow clone — de git-historie ontbreekt. Draai eerst\n"
@@ -258,10 +259,8 @@ def main() -> int:
               "of gebruik fetch-depth: 0 in de workflow-checkout.")
         return 1
 
-    house = am.load_house()
-    loc = house.get("location", {})
-    am._LAT = loc.get("lat", am._LAT)
-    am._LON = loc.get("lon", am._LON)
+    # Locatie expliciet uit het huismodel (RunContext-lijn: geen module-globals meer).
+    lat, lon = vio.house_location(vio.load_house())
 
     # 1. tado-samples uit de dagelijkse window_data-commits.
     commits = pick_daily(list_commits(WINDOW_DATA_PATH, args.repo, args.since))
@@ -276,7 +275,7 @@ def main() -> int:
             print(f"[backfill] … {i + 1}/{len(commits)} commits verwerkt.")
 
     # 2. Openingen: Gist-log primair, airflow_data-mining als gap-filler ervóór.
-    gist_log = am.load_openings_log()
+    gist_log = vio.load_openings_log()
     earliest_gist = min((e["t"] for e in gist_log if e.get("t")), default=None)
     all_epochs = [e for s in samples.values() for e in s]
     data_start = (datetime.fromtimestamp(min(all_epochs), TZ).isoformat()
@@ -298,15 +297,16 @@ def main() -> int:
           f"{len(log) - len(gist_log)} gesynthetiseerd uit airflow_data.")
 
     added = merge_into_shards(samples, log)
-    print(f"[backfill] {added} nieuwe samples naar {a2.HISTORY_DIR}.")
+    print(f"[backfill] {added} nieuwe samples naar {vio.HISTORY_DIR}.")
 
-    # 3. Weer over de volle spanwijdte (incl. batch-warmup-aanloop).
+    # 3. Weer over de volle spanwijdte (incl. de warmup-aanloop van een replay-venster —
+    # zelfde 48u-lead als voorheen: BATCH_WARMUP_H (24) + 24 == WARMUP_H + 24).
     if not args.skip_weather and all_epochs:
         t_min = datetime.fromtimestamp(min(all_epochs), TZ)
         t_max = datetime.fromtimestamp(max(all_epochs), TZ)
-        rows = a2.fetch_weather_archive(
-            (t_min - timedelta(hours=a2.BATCH_WARMUP_H + 24)).date(), t_max.date())
-        a2.refresh_shard_weather(rows)
+        rows = vio.fetch_weather_archive(
+            lat, lon, (t_min - timedelta(hours=vio.WARMUP_H + 24)).date(), t_max.date())
+        vio.refresh_shard_weather(rows)
         print(f"[backfill] weer ververst: {len(rows)} uur-rijen "
               f"({t_min.date()} → {t_max.date()}).")
 

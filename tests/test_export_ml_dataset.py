@@ -1,15 +1,15 @@
 """Checks voor de ML-dataset-export (`tools/export_ml_dataset.py`): de pure
 omzet-helpers (openingsfractie, nearest-join, kolom-dedup, long→wide-pivot) en
 één integratie-run tegen een synthetische shard — alles zónder netwerk of
-secrets, met de fysica-baseline uit (snel)."""
+secrets, met de fysica-baseline uit (snel). Sinds de tweeling-herbouw draait de
+export op vent_io/vent_physics; de twin-2-kolom `pred_twin2_c` bestaat niet meer."""
 import importlib
 import json
 import os
 import sys
 from datetime import datetime, timedelta
 
-import airflow_model as am
-import airflow2_model as a2
+import vent_io as vio
 
 
 def _ex():
@@ -20,7 +20,7 @@ def _ex():
 
 
 def _t(day, hour=12, minute=0):
-    return datetime(2026, 6, day, hour, minute, tzinfo=am.TZ)
+    return datetime(2026, 6, day, hour, minute, tzinfo=vio.TZ)
 
 
 # ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -53,7 +53,8 @@ def test_long_columns_dedup_and_baseline_toggle():
     cols = ex.long_columns(["a", "b"], baseline=True)
     assert len(cols) == len(set(cols))                # geen dubbelen
     assert cols[:3] == ["t", "t_epoch", "room"]
-    assert "temp_c" in cols and "pred_twin1_c" in cols and "pred_twin2_c" in cols
+    assert "temp_c" in cols and "pred_twin1_c" in cols
+    assert "pred_twin2_c" not in cols                 # tweeling 2 met pensioen
     assert "open_a" in cols and "open_b" in cols
     assert "pred_twin1_c" not in ex.long_columns(["a"], baseline=False)
 
@@ -112,11 +113,11 @@ def _write_synthetic_shard(path):
 
 def test_build_long_rows_end_to_end(tmp_path, monkeypatch):
     ex = _ex()
-    monkeypatch.setattr(a2, "HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr(vio, "HISTORY_DIR", str(tmp_path))
     _write_synthetic_shard(os.path.join(tmp_path, "2026-06.json"))
 
-    house = am.load_house()
-    ds = a2.load_dataset(house)
+    house = vio.load_house()
+    ds = vio.load_dataset(house)
     assert ds["actual"]                                # rooms herkend via from_window_data
 
     rows, room_ids, element_ids = ex.build_long_rows(

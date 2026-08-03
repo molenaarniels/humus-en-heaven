@@ -60,7 +60,8 @@ import math
 import os
 from datetime import datetime, timedelta
 
-import airflow_model as am
+import vent_io as vio
+import vent_physics as vp
 from notify import run_guarded, send_telegram
 from shared_const import TZ, format_date_nl
 
@@ -281,40 +282,39 @@ def main() -> None:
     now = datetime.now(TZ)
     print(f"[teds-nacht] Start — {now.isoformat()}")
 
-    house = am.load_house()
-    loc = house.get("location", {})
-    am._LAT = loc.get("lat", am._LAT)
-    am._LON = loc.get("lon", am._LON)
+    house = vio.load_house()
+    weather = vio.fetch_weather(*vio.house_location(house))
+    # Run-context: locatie + buur-/bodem-anker, expliciet doorgegeven (RunContext) — het
+    # module-global-rebinden waar dit bestand de naamgever van was ("de night_forecast-les")
+    # bestaat in de herbouw niet meer; vergeten is nu een TypeError. make_context legt óók
+    # het zomerplafond (NEIGHBOR_SUMMER_CAP) op het buur-anker — het oude rebinden hier
+    # deed dat niet, waardoor deze voorspelling op hittegolfdagen met een te warm anker
+    # rekende; nu exact dezelfde gekapte curve als de tweeling zelf (cap23_night).
+    ctx = vio.make_context(house, weather, now)
+    print(f"[buren] party-muur-anker = {ctx.neighbor_temp:.1f} °C · "
+          f"bodem-anker = {ctx.ground_temp:.1f} °C")
 
-    weather = am.fetch_weather()
-    # Buur- én bodem-anker rebinden — simulate() leest beide als module-global (main()-patroon);
-    # zonder deze regels blijven ze op hun statische default staan.
-    am._NEIGHBOR_TEMP = am.neighbor_temp_estimate(weather.get("hourly", []), now)
-    am._GROUND_TEMP = am.ground_temp_estimate(weather.get("hourly", []), now)
-    print(f"[buren] party-muur-anker = {am._NEIGHBOR_TEMP:.1f} °C · "
-          f"bodem-anker = {am._GROUND_TEMP:.1f} °C")
-
-    log = am.load_openings_log()
-    params = am.merged_params(house, am.load_learned())
-    wd = am.load_window_data()
+    log = vio.load_openings_log()
+    params = vio.merged_params(house, vio.load_learned())
+    wd = vio.load_window_data()
 
     # ── Fase 1: aanloop (nu−24u → nu), werkelijk weer + werkelijke log, geen scenario ──
     # Laat de massaknoop equilibreren en re-simuleert het etmaal tot nu; `end_h=0.0` zodat
     # het raster exact op `now` eindigt (start = now−WARMUP_H, stap 0.25u → altijd exact).
-    om_learned = am.om_learned_from(wd)
-    warmup_tl = am.build_timeline(house, weather, log, now, WARMUP_H,
-                                  beam_iam=True, end_h=0.0, om_learned=om_learned)
+    om_learned = vio.om_learned_from(wd)
+    warmup_tl = vio.build_timeline(house, weather, log, now, WARMUP_H, ctx,
+                                   beam_iam=True, end_h=0.0, om_learned=om_learned)
     if not warmup_tl:
         print("[teds-nacht] Geen weerdata → stop.")
         raise SystemExit(1)
     warmup_tl = apply_shade_routine(warmup_tl)
 
-    actual = am.collect_actual(house, wd, now - timedelta(hours=WARMUP_H))
+    actual = vio.collect_actual(house, wd, now - timedelta(hours=WARMUP_H))
     warmup_seed = {rid: s[0][1] for rid, s in actual.items() if s}   # oudste meting in het venster
     for rid in house.get("rooms", {}):
         warmup_seed.setdefault(rid, warmup_tl[0]["T_out"])
 
-    warmup_sim = am.simulate(house, params, warmup_tl, warmup_seed, snapshot_t=now)
+    warmup_sim = vp.simulate(house, params, warmup_tl, warmup_seed, ctx, snapshot_t=now)
     ta_now = dict(warmup_sim.get("Ta_now", warmup_sim["Ta"]))
     tm_now = warmup_sim.get("Tm_now", warmup_sim["Tm"])
 
@@ -339,8 +339,8 @@ def main() -> None:
 
     # ── Fase 2: forecast (nu → morgen 08:00), scenario-geforceerd, geseed op het anker ──
     end_h = hours_until_morning(now)
-    fcst_tl = am.build_timeline(house, weather, log, now, 0.0,
-                                beam_iam=True, end_h=end_h, om_learned=om_learned)
+    fcst_tl = vio.build_timeline(house, weather, log, now, 0.0, ctx,
+                                 beam_iam=True, end_h=end_h, om_learned=om_learned)
     if not fcst_tl:
         print("[teds-nacht] Geen forecast-data → stop.")
         raise SystemExit(1)
@@ -349,11 +349,11 @@ def main() -> None:
 
     stats = {}
     for state in ("open", "dicht"):
-        sim = am.simulate(house, params, scenario_timeline(fcst_tl, now, state),
-                          ta_now, tm_seed=tm_now)
+        sim = vp.simulate(house, params, scenario_timeline(fcst_tl, now, state),
+                          ta_now, ctx, tm_seed=tm_now)
         stats[state] = night_stats(sim["series"].get(ROOM_ID, []), now)
-    sim_all = am.simulate(house, params, all_open_timeline(fcst_tl, house, now),
-                          ta_now, tm_seed=tm_now)
+    sim_all = vp.simulate(house, params, all_open_timeline(fcst_tl, house, now),
+                          ta_now, ctx, tm_seed=tm_now)
     stats["all_open"] = night_stats(sim_all["series"].get(ROOM_ID, []), now)
     if not stats["open"] or not stats["dicht"] or not stats["all_open"]:
         print("[teds-nacht] Geen nachtvenster in de sim-serie → stop.")
@@ -365,8 +365,8 @@ def main() -> None:
 
     # Huidige gemelde raampje-stand (voor de afwijking-kopregel).
     w = house["windows"][WINDOW_ID]
-    rep = am.openings_at(log, now).get(WINDOW_ID)
-    frac = am._open_frac(rep, w) if rep is not None else am._default_frac(w, "window")
+    rep = vio.openings_at(log, now).get(WINDOW_ID)
+    frac = vp._open_frac(rep, w) if rep is not None else vp._default_frac(w, "window")
     reported_open = frac > 0.0
 
     inside_now = (wd.get("rooms", {}).get(WD_KEY, {}) or {}).get("inside")

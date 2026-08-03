@@ -26,7 +26,7 @@ from shared_const import TZ, format_date_nl, parse_date
 
 SOIL_DATA_PATH = os.getenv("SOIL_DATA_PATH", "docs/data.json")
 MOWING_DATA_PATH = os.getenv("MOWING_DATA_PATH", "docs/mowing_data.json")
-LEARNED_PATH = os.getenv("AIRFLOW_LEARNED_PATH", "docs/airflow_learned.json")
+LEARNED_PATH = os.getenv("VENT_LEARNED_PATH", "docs/vent_learned.json")
 ACCURACY_DATA_PATH = os.getenv("ACCURACY_DATA_PATH", "docs/accuracy_data.json")
 
 WEEK_DAYS = 7            # het venster: vandaag −6 t/m vandaag

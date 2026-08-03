@@ -26,7 +26,8 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-import airflow_model as am
+import vent_io as vio
+import vent_physics as vp
 from notify import run_guarded, sanitize_error, send_telegram
 from shared_const import TZ, format_date_nl
 
@@ -82,12 +83,12 @@ def avoidable_series(house: dict, rows: list[dict], states_now: dict,
     step = timedelta(minutes=GRID_MIN)
     for t in day_grid:
         ts = t + step / 2   # stap-midden, zoals de tweeling-timeline
-        s_az, s_el = am.sun_position(lat, lon, ts.astimezone(timezone.utc))
-        direct = am._interp_hourly(rows, ts, "direct")
-        diffuse = am._interp_hourly(rows, ts, "diffuse")
-        pw_cur = am.per_window_solar(house, states_now, s_az, s_el, direct, diffuse,
+        s_az, s_el = vp.sun_position(lat, lon, ts.astimezone(timezone.utc))
+        direct = vio._interp_hourly(rows, ts, "direct")
+        diffuse = vio._interp_hourly(rows, ts, "diffuse")
+        pw_cur = vp.per_window_solar(house, states_now, s_az, s_el, direct, diffuse,
                                      beam_iam=True)
-        pw_closed = am.per_window_solar(house, st_closed, s_az, s_el, direct, diffuse,
+        pw_closed = vp.per_window_solar(house, st_closed, s_az, s_el, direct, diffuse,
                                         beam_iam=True)
         for wid in shades:
             out[wid].append((t, max(0.0, pw_cur[wid] - pw_closed[wid])))
@@ -211,15 +212,12 @@ def _send(msg: str) -> None:
 # ── Standen ───────────────────────────────────────────────────────────────────────────
 
 def run_plan(now: datetime) -> None:
-    house = am.load_house()
-    loc = house.get("location", {})
-    lat = loc.get("lat", am._LAT)
-    lon = loc.get("lon", am._LON)
-    am._LAT, am._LON = lat, lon   # fetch_weather leest de module-globals (main()-patroon)
+    house = vio.load_house()
+    lat, lon = vio.house_location(house)   # expliciet — geen module-globals meer
 
-    weather = am.fetch_weather()
-    log = am.load_openings_log()
-    states_now = am.openings_at(log, now)
+    weather = vio.fetch_weather(lat, lon)
+    log = vio.load_openings_log()
+    states_now = vio.openings_at(log, now)
 
     plan = build_plan(house, weather["hourly"], states_now, now, lat, lon)
     state = {"date": plan["date"], "plan_sent": False, "reminder_at": None,
@@ -238,11 +236,11 @@ def run_plan(now: datetime) -> None:
 def _instant_delta(house: dict, states_now: dict, wid: str, now: datetime,
                    lat: float, lon: float, direct: float, diffuse: float) -> float:
     """Momentane vermijdbare ΔW voor één raam op de actuele instraling."""
-    s_az, s_el = am.sun_position(lat, lon, now.astimezone(timezone.utc))
+    s_az, s_el = vp.sun_position(lat, lon, now.astimezone(timezone.utc))
     shades = operable_shade_windows(house)
-    pw_cur = am.per_window_solar(house, states_now, s_az, s_el, direct, diffuse,
+    pw_cur = vp.per_window_solar(house, states_now, s_az, s_el, direct, diffuse,
                                  beam_iam=True)
-    pw_closed = am.per_window_solar(house, closed_states(states_now, shades),
+    pw_closed = vp.per_window_solar(house, closed_states(states_now, shades),
                                     s_az, s_el, direct, diffuse, beam_iam=True)
     return max(0.0, pw_cur[wid] - pw_closed[wid])
 
@@ -259,10 +257,8 @@ def run_reminder(now: datetime) -> None:
         return
 
     entry = state["windows"][0]
-    house = am.load_house()
-    loc = house.get("location", {})
-    lat = loc.get("lat", am._LAT)
-    lon = loc.get("lon", am._LON)
+    house = vio.load_house()
+    lat, lon = vio.house_location(house)
 
     # Na het geplande open-moment heeft herinneren geen zin meer → stil opgeven.
     oh, om_ = entry["open"].split(":")
@@ -274,15 +270,14 @@ def run_reminder(now: datetime) -> None:
 
     # Materialisatie-check: is de voorspelde zonlast er nu ook echt? De actuele
     # Open-Meteo-instraling levert direct; diffuus = globaal − direct (beide horizontaal).
-    am._LAT, am._LON = lat, lon
     dw_now = None
     try:
-        cur = am.fetch_weather().get("current", {}) or {}
+        cur = vio.fetch_weather(lat, lon).get("current", {}) or {}
         direct = cur.get("direct_radiation")
         sw = cur.get("shortwave_radiation")
         if direct is not None and sw is not None:
-            log = am.load_openings_log()
-            states_now = am.openings_at(log, now)
+            log = vio.load_openings_log()
+            states_now = vio.openings_at(log, now)
             dw_now = _instant_delta(house, states_now, entry["id"], now, lat, lon,
                                     direct, max(0.0, sw - direct))
     except Exception as e:  # transient — volgende dispatch probeert opnieuw

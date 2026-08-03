@@ -589,11 +589,26 @@ ventilatie-project (Fase C: volledige CLAUDE.md-herschrijving).
   additief schema (herbouwplan §4). `weekjournaal.py` schakelt in Fase B om naar
   `vent_learned.json`.
 
+### Bewijsstatus eenzijdige ventilatie (§6.2-verplichting — afgerond aug 2026)
+De open meetverplichting uit `AIRFLOW2_ASSESSMENT.md` §6.2 is met `tools/vent_experiment.py`
+ingelost (3 rotaties × 13 held-out 5d-vensters, replay van de productie-onlinefit, A/A-ruisvloer
+0.005 °C): **de term blijft.** Getraind kost verwijdering +0.25 °C op 5d-vrijloop en +0.30 op de
+zon-plak (≈50× de ruisvloer; office 1.11→1.63, hotties 1.36→1.73), en het kern-railen ontspant
+níet bij verwijdering — `office.f_air@floor` railt in álle armen, en zonder de term grijpt de fit
+gewoon een andere compensatie (`hotties.solar_gain@floor` i.p.v. `vent_eff@floor`). Nuance die
+beide eerdere waarnemingen verzoent: op kale priors overschat de term de koppeling fors (−0.35 °C
+bíj verwijdering, ongetraind gemeten), en het geleerde `vent_eff@floor` is precies de fit die dat
+op maat snoeit — het samenspel (term × geleerde vent_eff) wint held-out ruim. Open vraagje voor
+later: de de Gids & Phaff-C-constanten ~halveren en `vent_eff` daarmee van zijn vloer halen is
+een tuning-kandidaat, geen blokkade; `office.f_air@floor` in alle armen is het overgebleven
+er-ontbreekt-nog-iets-signaal (dak-kamer, zon-naar-massa-split).
+
 ### Relation to other projects
 Zelfde voetafdruk als Project 8: leest `docs/window_data.json` + de openingen-Gist read-only,
 WU/Telegram/Gist-secrets hergebruikt, geen tado-auth, geen nieuwe secrets. Deelt de
-kwartierloop (`airflow-notify.yml`) met Project 8 zolang de parallel-run loopt. P9/P10 migreren
-in Fase B van `airflow_model`-imports naar `vent_physics`/`vent_io` (ctx-prologue van 3 regels).
+kwartierloop (`airflow-notify.yml`) met Project 8 zolang de parallel-run loopt. P9/P10/P11 en de
+offline tools zijn in Fase B gemigreerd (ctx-prologue van 3 regels; `tools/vent_experiment.py`
+is het campagneharnas, `tools/vent_diagnostics.py` de artefact-diagnose).
 Volledige plan-/meetgeschiedenis: het herbouwplan + `AIRFLOW_ASSESSMENT.md`/`AIRFLOW2_ASSESSMENT.md`.
 
 ---

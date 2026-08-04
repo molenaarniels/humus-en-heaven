@@ -123,14 +123,19 @@ GROUND_SOIL_ANCHOR  = 11.0   # °C — NL jaargemiddelde luchttemp ≈ diepe bod
 # Herijken zodra er stookseizoen-data is.
 GROUND_AIR_COUPLING = 1.0    # aandeel waarmee de kruipruimte het gedempte buiten volgt
 
-# Klemmen tegen een absurd anker bij korte/rare historie. **Let op:** ze zijn gekozen toen
+# Klemmen tegen een absurd anker bij korte/rare historie. Ze zijn gekozen toen
 # `GROUND_AIR_COUPLING` 0.5 was, en dan bond GROUND_TEMP_MAX pas op een 30-daags
 # buitengemiddelde van 29 °C — in Nederland nooit. Bij koppeling 1.0 bindt hij al op 20 °C, dus
 # op een gewone warme zomermaand: over het record mei–aug 2026 kneep hij het anker af in 86 van
-# de 265 backtest-oorsprongen, juist in de warme periodes. De gemeten winst van de
-# koppelings-correctie is daarmee een ONDERgrens. Verruimen is een tweede fysica-wijziging en
-# hoort dezelfde behandeling te krijgen (her-seeden + tools/horizon_backtest.py) — zie
-# AIRFLOW3_ASSESSMENT.md §6 en de waakhond in tests/test_vent_physics.py.
+# de 265 backtest-oorsprongen (grootste afknijping 1.87 °C), juist in de warme periodes.
+#
+# Dat zag eruit als een half toegepaste correctie, dus is het GEMETEN (her-seeden + backtest, de
+# klem op 26 °C = voor dit record volledig los): gepoold 0.660 → 0.662, dus GEEN winst, en zonder
+# per-kamer-handtekening. Verklaring: `ua_ground` is een geleerde per-kamer parameter, dus bij een
+# warmer anker verlaagt de fit gewoon de conductantie en blijft de netto vloerwarmtestroom vrijwel
+# gelijk — het niveau van het anker wordt geabsorbeerd, de VORM (∝ ground_m2, en de dagelijkse
+# timing) niet. Daarom blijft de klem staan. Zie AIRFLOW3_ASSESSMENT.md §6 + de waakhond in
+# tests/test_vent_physics.py: verhoog je de koppeling verder, meet dan opnieuw.
 GROUND_TEMP_MIN     = 6.0    # °C — knijpt 's winters bij koppeling 1.0 (onbeproefd terrein)
 
 GROUND_TEMP_MAX     = 20.0

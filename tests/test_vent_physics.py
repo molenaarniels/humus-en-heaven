@@ -560,13 +560,16 @@ def test_ground_temp_max_is_een_vangrail_geen_zomerplafond():
     `GROUND_TEMP_MAX` is bedoeld als vangrail tegen een absurd anker bij korte/rare historie.
     Bij koppeling 0.5 bond hij pas op een 30-daags buitengemiddelde van 29 °C — in Nederland
     nooit. Bij koppeling 1.0 bindt hij al op 20 °C, oftewel een doodgewone warme zomermaand:
-    over het record 2026-05→08 kneep hij het bodemanker in **86 van de 265** oorsprongen af,
-    juist tijdens de warme periodes waar de correctie het meest doet. De correctie is daar dus
-    maar half toegepast.
+    over het record 2026-05→08 kneep hij het bodemanker in **86 van de 265** oorsprongen af.
 
-    Deze test faalt zodra iemand de koppeling verhoogt zónder de vangrail mee te schalen —
-    dan hoort er eerst een meting bij (tools/horizon_backtest.py), niet stilzwijgend een
-    strakkere klem. Zie AIRFLOW3_ASSESSMENT.md §6."""
+    Dat is gemeten in plaats van aangenomen: met de klem los (26 °C) gaat de 12u-fout van 0.660
+    naar 0.662 gepoold — geen winst, en zonder per-kamer-handtekening, omdat het geleerde
+    `ua_ground` het niveau van het anker gewoon absorbeert. De klem blijft dus staan.
+
+    Deze test faalt zodra iemand de koppeling verder verhoogt zónder de vangrail mee te schalen:
+    dan verschuift het bindpunt naar een nóg gewoner buitengemiddelde en is de meting hierboven
+    niet meer van toepassing — er hoort dan eerst een nieuwe bij (tools/horizon_backtest.py).
+    Zie AIRFLOW3_ASSESSMENT.md §6."""
     binding_mean = ((vp.GROUND_TEMP_MAX - vp.GROUND_SOIL_ANCHOR) / vp.GROUND_AIR_COUPLING
                     + vp.GROUND_SOIL_ANCHOR)
     assert binding_mean >= 20.0, (

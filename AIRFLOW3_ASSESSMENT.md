@@ -237,20 +237,40 @@ minder gevoelig voor (end-to-end 0,008 °C), maar de speeltuin tóónt ACH, dus 
 
 ## 6. Wat open blijft
 
-* **`GROUND_TEMP_MAX` is bij koppeling 1,0 een zomerplafond geworden, geen vangrail — en dat
-  is de eerstvolgende meting.** De klem staat op 20 °C en is er "tegen een absurd anker bij
-  korte/rare historie". Bij koppeling 0,5 bond hij pas op een 30-daags buitengemiddelde van
-  29 °C (in Nederland nooit); bij 1,0 bindt hij al op 20 °C. Over dit record kneep hij het
-  bodemanker af in **86 van de 265** oorsprongen — een derde van de tijd, en juist tijdens de
-  warme periodes waar de correctie het meest doet. De **−14 % op living hierboven is dus met een
-  half toegepaste correctie gemeten**, niet met de volle.
+* **`GROUND_TEMP_MAX`: gemeten, en er ligt niets op tafel.** De klem staat op 20 °C en is er
+  "tegen een absurd anker bij korte/rare historie". Bij koppeling 0,5 bond hij pas op een
+  30-daags buitengemiddelde van 29 °C (in Nederland nooit); bij 1,0 bindt hij al op 20 °C, en
+  over dit record kneep hij het bodemanker af in **86 van de 265** oorsprongen — een derde van
+  de tijd, met een grootste afknijping van 1,87 °C, juist tijdens de warme periodes. Dat zag er
+  uit als een half toegepaste correctie, dus is hij op dezelfde manier gemeten als de rest:
+  her-seeden + backtest, met de klem op 26 °C (voor dit record volledig los — het ongeklemde
+  anker piekt op 21,9 °C — en nog steeds een echte vangrail, want de warmste Nederlandse maand
+  ooit gemeten deed ~22 °C).
 
-  Bewust niet in deze ronde meegenomen: de klem verruimen is een tweede fysica-wijziging en die
-  hoort dezelfde behandeling te krijgen als de eerste (her-seeden + backtest, ~50 min), niet een
-  aanname erbovenop. `tests/test_vent_physics.py::test_ground_temp_max_is_een_vangrail_geen_zomerplafond`
-  legt de redenering vast en faalt zodra iemand de koppeling verder verhoogt zonder de vangrail
-  mee te schalen. De winterkant (`GROUND_TEMP_MIN` 6 °C) knijpt bij koppeling 1,0 net zo goed —
-  daar is het waarschijnlijk juist wenselijk, maar even onbeproefd.
+  | kamer | klem 20 °C | klem 26 °C |
+  |---|---|---|
+  | living | **0,573** | 0,582 |
+  | ted | **0,523** | 0,526 |
+  | hotties | **0,883** | 0,889 |
+  | office | 0,735 | **0,728** |
+  | bath | 0,363 | **0,362** |
+  | **gepoold** | **0,660** | 0,662 |
+
+  **Geen winst — 0,002 °C slechter, en zonder handtekening** (living slechter, office beter).
+  Ter kalibratie: de kruipruimte-correctie zelf verschoof 0,022 gepoold *mét* een schone
+  `ground_m2`-handtekening. Dit is ruis.
+
+  De verklaring is leerzaam en past bij de rest van dit document: `ua_ground` is een **geleerde**
+  per-kamer parameter, dus zodra het anker warmer wordt verlaagt de fit gewoon de conductantie en
+  blijft het netto vloerwarmtestroompje bijna gelijk. Wat de kruipruimte-correctie deed werken
+  was haar **vorm** — ze schaalt met `ground_m2` en verschuift de dagelijkse timing — niet het
+  absolute niveau van het anker. Een vrije schaal ervoor absorbeert het niveau.
+
+  **Besluit: klem blijft 20 °C.** De waakhond
+  (`tests/test_vent_physics.py::test_ground_temp_max_is_een_vangrail_geen_zomerplafond`) blijft
+  staan, maar nu als "verhoog je de koppeling verder, meet dan opnieuw" in plaats van als
+  openstaand punt. De winterkant (`GROUND_TEMP_MIN` 6 °C) knijpt bij koppeling 1,0 net zo goed
+  en is niet meetbaar zonder stookseizoendata.
 * **De weersvoorspellingsfout is ongemeten.** Zie §1. Grootste openstaande onzekerheid.
 * **Geen stookseizoendata.** Het record loopt 2026-05-29 → 08-04, buiten 9,2–36,3 °C, en
   `heating==1`-samples zitten sowieso niet in de kalibratie. Winter is extrapolatie — en

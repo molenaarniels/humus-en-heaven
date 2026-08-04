@@ -143,8 +143,9 @@ jobs:
               dispatch sandbox-notify.yml -f mode=evening
             fi
 
-            # Verwarming — 21:00
-            if [ "$nowm" -ge 1260 ] && ! handled_since heating-temp-notify.yml "$day_start"; then
+            # Verwarmingsexperiment — maandag 21:00 (arm van de week)
+            if [ "$(TZ=Europe/Amsterdam date +%u)" = "1" ] && [ "$nowm" -ge 1260 ] \
+               && ! handled_since heating-temp-notify.yml "$day_start"; then
               dispatch heating-temp-notify.yml
             fi
 

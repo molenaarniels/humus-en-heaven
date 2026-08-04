@@ -23,6 +23,8 @@ permissions:
 # Serialize runs: exactly one loop alive at a time, so the committed dashboard artefacts
 # never race. A restart kick waits for the running loop to finish, then takes over.
 concurrency:
+  # Bewust de oude groepsnaam: serialiseert tegen een eventueel nog lopende
+  # pre-rename loop-run, zodat de artefact-commits nooit racen.
   group: airflow-advisor
   cancel-in-progress: false
 
@@ -41,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run airflow twin (quarter-hourly loop)
+      - name: Run vent twin (quarter-hourly loop)
         env:
           GIST_ID:       ${{ secrets.GIST_ID }}
           GIST_TOKEN:    ${{ secrets.GIST_TOKEN }}
@@ -61,23 +63,17 @@ jobs:
           # One twin cycle: run the model, then commit/push the dashboard + learned
           # params if they changed. A transient failure (network, Open-Meteo hiccup)
           # must not kill the loop — log it and let the next iteration retry.
-          # De herbouwde tweeling (Project 13, vent_twin.py) draait in dezelfde iteratie
-          # als parallel-run-benchmark naast twin 1; hij nam de plek van Project 12 in
-          # (dat is met pensioen) en schrijft eigen artefacten + de trainings-shards.
           run_once () {
-            python airflow_model.py || echo "::warning::airflow_model.py failed this iteration, continuing"
             python vent_twin.py || echo "::warning::vent_twin.py failed this iteration, continuing"
-            # Per pad guarden: op een allereerste run bestaan de vent-artefacten/shards
-            # nog niet en zou één missende pathspec de hele git add — dus ook twin 1's
-            # commit — laten falen.
-            for p in docs/airflow_data.json docs/airflow_learned.json \
-                     docs/vent_data.json docs/vent_learned.json data/twin2_history; do
+            # Per pad guarden: op een allereerste run bestaan artefacten/shards mogelijk
+            # nog niet en zou één missende pathspec de hele git add laten falen.
+            for p in docs/vent_data.json docs/vent_learned.json data/twin2_history; do
               [ -e "$p" ] && git add "$p"
             done
             if git diff --staged --quiet; then
               echo "No changes to commit"
             else
-              git commit -m "data: airflow twin refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
+              git commit -m "data: vent twin refresh $(date -u +%Y-%m-%dT%H:%M) [skip ci]"
               # Other workflows may have pushed in the same window — the JSON is fully
               # regenerated each run, so prefer our freshly generated version on conflict.
               git rebase --abort 2>/dev/null || true

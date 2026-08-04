@@ -144,7 +144,7 @@ HUBER_DELTA         = 1.5   # °C — residuen hierboven worden lineair (i.p.v. 
 # hooguit elke ANOMALY_NUDGE_COOLDOWN_H herhaald zolang de anomalie aanhoudt; herstelt het leren,
 # dan wordt de stempel gewist zodat een vólgende episode meteen weer nudget. De handmatige
 # huis-brede pauze nudget bewust níét (die is zelf gekozen — je weet het al). Stempel
-# `anomaly_nudge_at` leeft in airflow_learned.json (additief; de artefact-commit is de state).
+# De nudge-stempel leeft als `anomaly.nudged_at` in vent_learned.json (de artefact-commit is de state).
 ANOMALY_NUDGE_COOLDOWN_H = 6.0
 
 def should_nudge_anomaly(last_nudge_iso: str | None, now: datetime) -> bool:

@@ -170,7 +170,7 @@ def anchor_mass_now(tm_now: dict, actual: dict, now: datetime,
 
     Schatting = **exponentieel gewogen gemiddelde van de gemeten luchttemp** over het
     warmup-venster (tijdconstante `tau_h`): de trage massaknoop ís fysisch een gedempt
-    gemiddelde van de kamerlucht (dezelfde motivatie waarmee `airflow_model.main()` zijn
+    gemiddelde van de kamerlucht (dezelfde motivatie waarmee `vent_twin.main()` zijn
     `tm_seed` uit de metingen haalt), en recent weegt zwaarder dan de rand van het venster.
 
     Bewust **niet** simpelweg `tm = ta` (de instantane geijkte lucht). Dat past op de

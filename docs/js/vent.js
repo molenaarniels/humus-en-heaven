@@ -365,7 +365,7 @@ async function fetchOpeningsLog() {
 async function saveOpeningsLog(log) {
   await gistWriteFile(OPENINGS_FILE, JSON.stringify({ log }, null, 2));
 }
-const triggerWorkflow = () => dispatchWorkflow("airflow-notify.yml");
+const triggerWorkflow = () => dispatchWorkflow("vent-notify.yml");
 
 // ===================== HELPERS =====================
 function num(v) { return v==null ? "—" : (+v).toFixed(2); }

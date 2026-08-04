@@ -48,7 +48,7 @@ import vent_io as vio               # noqa: E402
 
 TZ = vio.TZ
 WINDOW_DATA_PATH = "docs/window_data.json"
-AIRFLOW_DATA_PATH = "docs/airflow_data.json"
+AIRFLOW_DATA_PATH = "docs/airflow_data.json"   # historisch pad: bestaat alleen nog in de git-historie (t/m de herbouw-cutover, aug 2026); mining van latere gaten zou docs/vent_data.json-commits nodig hebben
 AIRFLOW_SAMPLE_MIN = 55             # minuten — bemonster airflow_data-commits ~1/uur
 GAP_WARN_H = 2.0                    # dekking-rapport: gat groter dan dit uur melden
 

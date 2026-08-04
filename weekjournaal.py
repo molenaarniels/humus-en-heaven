@@ -6,7 +6,7 @@ nieuwe datavergaring:
 
 - 🌱 tuinwater  — regen vs. beregening vs. verdamping + actuele uitputting (data.json)
 - 🌾 maaien     — maaibeurten deze week, groei vs. drempel, volgende maaidag (mowing_data.json)
-- 🧠 tweeling   — RMSE nu vs. een week terug + skill (airflow_learned.json)
+- 🧠 tweeling   — RMSE nu vs. een week terug + skill (vent_learned.json)
 - 🌤️ weer       — Tmax-range, weekneerslag, warmste dag (data.json)
 - 📡 station    — bias-samenvatting, alleen als de accuracy-check vers genoeg is
 

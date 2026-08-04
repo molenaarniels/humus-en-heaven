@@ -1,15 +1,13 @@
-// ===================== SPEELTUIN — gedeelde wat-als-simulator + plattegrond =====================
-// Gedeeld door het Ventilatie-dashboard (tweeling 1, airflow.js) en Ventilatie (stabiel)
-// (tweeling 2, airflow2.js). Laad dit script vóór het pagina-script; alles is bewust
-// globaal (geen modules — CSP 'self', geen build step). Bevat:
+// ===================== SPEELTUIN — wat-als-simulator + plattegrond =====================
+// Gebruikt door het Ventilatie-dashboard (vent.js). Laad dit script vóór het pagina-
+// script; alles is bewust globaal (geen modules — CSP 'self', geen build step). Bevat:
 //   1. de plattegrond-renderer (floorPlanSVG + teken-/trend-helpers),
-//   2. de JS-port van het luchtstroomnetwerk (orifice-flow + Newton-druksolver),
+//   2. de JS-port van het luchtstroomnetwerk (orifice-flow + Newton-druksolver,
+//      mirror van vent_physics.py),
 //   3. de speeltuin-UI (sliders/toggles/tabel) + één-knoops thermiek-schatting,
-//   4. de wind-Cp-strategie per tweeling: tweeling 1 = twee-cosinus + één cp_shelter;
-//      tweeling 2 = Swami–Chandra + dak-menging + cp_shelter_front/back (kies met
-//      speeltuinStrategy("twin2") vóór renderSandbox()).
-// Kleine gedeelde helpers (fmt/dirName/beaufort/normState) wonen hier omdat beide
-// pagina's ze nodig hebben; een pagina-eigen definitie (later geladen) wint gewoon.
+//   4. de wind-Cp-strategie (twee-cosinus + één cp_shelter).
+// Kleine gedeelde helpers (fmt/dirName/beaufort/normState) wonen hier; een pagina-eigen
+// definitie (later geladen) wint gewoon.
 
 function sandboxCardHTML() {
 
@@ -851,37 +849,14 @@ function sandboxRecompute() {
 }
 
 
-// — Wind-Cp-strategie per tweeling (mirror van airflow_model.py resp. airflow2_model.py) —
-function cpSwamiChandra(thetaDeg) {   // Swami & Chandra (1988), zijverhouding 1 (G = 0)
-  const t = Math.abs((((thetaDeg + 180) % 360) - 180)) * Math.PI / 180;
-  const val = 1.248 - 0.703*Math.sin(t/2) - 1.175*Math.pow(Math.sin(t), 2)
-            + 0.769*Math.cos(t/2) + 0.717*Math.pow(Math.cos(t/2), 2);
-  return 0.6 * Math.log(Math.max(1e-3, val));   // CP_SC_REF = 0.6
-}
-function cpRoofJS(thetaDeg) { return -0.6 + 0.1*Math.cos(thetaDeg*Math.PI/180); }
+// — Wind-Cp-strategie (mirror van vent_physics.py). Sinds de aflossing (Project 13) is er
+//   één tweeling; de twin-2-strategie (Swami–Chandra + voor/achter-beschutting) verdween
+//   met Project 12 — zie git-historie als die ooit terug moet. —
 const SB_TWIN1 = {
   cp: (theta, el) => cpCoeff(theta),
   shelterFor: (el, params, meta) => params.cp_shelter ?? 0.5,
 };
-const SB_TWIN2 = {
-  // Swami–Chandra-muurcurve, plat(achtig) dak houdt de alom-zuiging (== cp_tilted2).
-  cp: (theta, el) => {
-    const wWall = Math.max(0, Math.min(1, (el.tilt_deg ?? 90) / 90));
-    return wWall * cpSwamiChandra(theta) + (1 - wWall) * cpRoofJS(theta);
-  },
-  // voor/achter-beschutting via exposure-override of ±90° van de voorgevel (== element_exposure).
-  shelterFor: (el, params, meta) => {
-    const front = (meta && meta.front_azimuth_deg != null) ? meta.front_azimuth_deg : 309;
-    let exp = el.exposure;
-    if (exp !== "front" && exp !== "back") {
-      const daz = Math.abs(((((el.facade_azimuth_deg || 0) - front + 180) % 360) + 360) % 360 - 180);
-      exp = daz <= 90 ? "front" : "back";
-    }
-    return (exp === "front" ? params.cp_shelter_front : params.cp_shelter_back) ?? 0.5;
-  },
-};
-let SB_STRATEGY = SB_TWIN1;
-function speeltuinStrategy(name) { SB_STRATEGY = (name === "twin2") ? SB_TWIN2 : SB_TWIN1; }
+const SB_STRATEGY = SB_TWIN1;
 
 
 // — Gedeelde kleine helpers (verhuisd uit airflow.js) —

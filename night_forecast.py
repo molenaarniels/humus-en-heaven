@@ -9,16 +9,18 @@ de nacht doorkomt:
    equilibreren en re-simuleert het etmaal tot nu met de échte gerapporteerde
    log + het échte weer (geen scenario). Op "nu" wordt de luchtknoop-toestand
    gecorrigeerd met de meest recente échte tado-meting per kamer (mits vers
-   genoeg — zie `ANCHOR_MAX_STALENESS_MIN`); de massaknoop wordt tegelijk op de
-   gemeten kamerlucht geijkt (`anchor_mass_now` — gedempt gemiddelde, tau
+   genoeg — zie `ANCHOR_MAX_STALENESS_MIN`); de massaknoop schuift in dezelfde
+   stap mee (`anchor_mass_now`: dezelfde starre δ als de lucht waar het
+   luchtanker vuurde, anders een gedempt gemiddelde van de metingen met tau
    `MASS_ANCHOR_TAU_H`). Dat laatste is niet cosmetisch: de massa draagt veruit
-   de meeste capaciteit, dus zolang die de warmup-drift vasthield trok hij de
-   zojuist geijkte lucht er binnen een paar uur weer doorheen (9 held-out
-   nachten: RMSE 1,46 → 0,86 °C). Pas dán start
-   de *forecast*-sim (nu → morgen 08:00) — zo draagt de nacht-voorspelling
-   geen ongecorrigeerde 24u-drift meer mee. De `end_h`-parameter van
-   build_timeline rekt die tweede fase op; fetch_weather's forecast_days=2
-   dekt de horizon ruim.
+   de meeste capaciteit, dus zolang die de warmup-drift vasthield trok hij via
+   H_am de zojuist geijkte lucht er binnen een paar uur weer doorheen (66
+   held-out nachten, alle kamers gepoold: RMSE 1,45 zonder massa-anker → 1,14
+   met alleen het gedempte gemiddelde → 1,04 met de meeschuivende variant).
+   Pas dán start de *forecast*-sim (nu → morgen 08:00) — zo draagt de
+   nacht-voorspelling geen ongecorrigeerde 24u-drift meer mee. De
+   `end_h`-parameter van build_timeline rekt die tweede fase op;
+   fetch_weather's forecast_days=2 dekt de horizon ruim.
 2. **Raam-scenario's** — drie forecast-sims vanaf nu: (a) `ted_small_window`
    dicht, `ted_stair` dicht (rooster blijft in alle scenario's ongemoeid
    open) — **dit is de aanname voor de échte nacht** — deur én raampje gaan
@@ -157,32 +159,72 @@ def anchor_now(ta_now: dict, actual: dict, now: datetime,
     return corrected
 
 
+def anchor_delta(ta_sim: dict, ta_anchored: dict, eps: float = 1e-9) -> dict:
+    """De correctie die `anchor_now` per kamer daadwerkelijk aanbracht:
+    {kamer: gemeten − gesimuleerd}, uitsluitend voor de kamers waar het luchtanker
+    écht vuurde (een verse meting). Kamers zonder (verse) meting laat `anchor_now`
+    ongemoeid en komen hier dus **niet** in voor — dat onderscheid is precies wat
+    `anchor_mass_now` nodig heeft om te weten of het de schuif mág toepassen."""
+    return {rid: v - ta_sim[rid] for rid, v in (ta_anchored or {}).items()
+            if rid in ta_sim and abs(v - ta_sim[rid]) > eps}
+
+
 def anchor_mass_now(tm_now: dict, actual: dict, now: datetime,
+                    air_delta: dict | None = None,
                     tau_h: float = MASS_ANCHOR_TAU_H) -> dict:
-    """Ijk de massaknoop op de gemeten kamerlucht, net zoals `anchor_now` dat voor de
-    luchtknoop doet.
+    """Ijk de massaknoop mee, zodat hij consistent blijft met de zojuist geijkte lucht.
 
     De 24u-warmup is een blinde simulatie en drijft weg (gemeten: de luchtknoop stond er
     bij aankomst gemiddeld 0,83 °C naast). `anchor_now` repareert de lucht, maar de massa
     hield die drift vast — en omdat de massaknoop veruit de meeste capaciteit heeft, trok
-    hij de geijkte lucht er binnen een paar uur weer doorheen. Dat maakte de fout een
-    bijna zuivere offset over de hele nacht.
+    hij via de H_am-koppeling de geijkte lucht er binnen een paar uur weer doorheen. Dat
+    maakte de fout een bijna zuivere offset over de hele nacht.
 
-    Schatting = **exponentieel gewogen gemiddelde van de gemeten luchttemp** over het
-    warmup-venster (tijdconstante `tau_h`): de trage massaknoop ís fysisch een gedempt
-    gemiddelde van de kamerlucht (dezelfde motivatie waarmee `vent_twin.main()` zijn
-    `tm_seed` uit de metingen haalt), en recent weegt zwaarder dan de rand van het venster.
+    Twee schatters, en welke geldt hangt af van of het luchtanker vuurde:
+
+    1. **Starre schuif over `air_delta` (voorkeur).** Vuurde het luchtanker voor een kamer,
+       dan is de drift een *gemeenschappelijke* fout van beide knopen: lucht en massa zijn
+       via H_am gekoppeld en drijven samen weg. Beide knopen over dezelfde δ opschuiven
+       corrigeert die drift zónder het gemodelleerde Tm−Ta-verschil weg te gooien — en dát
+       verschil is echte fysica (om 18:45 loopt de massa ~0,2 °C áchter op de lucht na een
+       warme dag). Alleen de lucht ijken laat de massa ~0,6 °C inconsistent achter, waarna
+       de koppeling de lucht meteen weer van de meting af trekt.
+    2. **Gedempt gemiddelde van de gemeten kamerlucht (terugval).** Vuurde het luchtanker
+       níet (meting ontbreekt of is ouder dan `ANCHOR_MAX_STALENESS_MIN`), dan is er geen
+       betrouwbare δ en zou een schuif van 0 de massa gewoon op zijn weggedreven
+       warmup-waarde laten staan — vrijloop, de slechtste optie. Dan schat een exponentieel
+       gewogen gemiddelde (tijdconstante `tau_h`) over het warmup-venster de massa direct
+       uit de metingen: de trage massaknoop ís fysisch een gedempt gemiddelde van de
+       kamerlucht (dezelfde motivatie waarmee `vent_twin.main()` zijn `tm_seed` uit de
+       metingen haalt), en recent weegt zwaarder dan de rand van het venster.
+
+    Gemeten over 66 held-out nachten uit de shards (`tools/night_anchor_experiment.py`:
+    replay van het productiepad, gescoord tegen de echte tado-samples; alle kamers
+    gepoold, RMSE °C): geen massa-anker 1,45 · alleen het gedempte gemiddelde 1,14 ·
+    alleen de starre schuif 1,05 · deze combinatie **1,04**. Op de kamer-nachten waar het
+    luchtanker vuurde wint de schuif duidelijk (0,97 vs 1,09); waar het níet vuurde stort
+    de kále schuif juist in (1,51 vs 1,42) — vandaar dat de terugval blijft staan. Per
+    nacht gepaard: −0,100 ± 0,018 °C (t = −5,5) t.o.v. het gedempte gemiddelde alleen.
+    Voor Teds kamer zelf 0,97 → 0,95. Het scherpst op korte horizon, waar de
+    inconsistentie het hardst aankomt: op h≈1u 1,19 (alleen lucht) → 0,73 (gedempt
+    gemiddelde) → **0,52**, en dat is daar de béste arm — ook beter dan `tm = ta`.
 
     Bewust **niet** simpelweg `tm = ta` (de instantane geijkte lucht). Dat past op de
-    held-out nachten nóg beter (RMSE 0,64 vs 0,86), maar het is fysisch een overschatting:
-    om 18:45 loopt de massa juist áchter op de lucht na een warme dag. Dat het beter past,
+    volle nacht nóg iets beter (0,99 gepoold, 0,93 voor ted), maar het is fysisch een
+    overschatting: om 18:45 loopt de massa juist áchter op de lucht. Dat het beter past,
     komt doordat een te warme massa de resterende koud-bias van het model wegstreept — en
-    twee fouten tegen elkaar wegstrepen is precies wat we hier aan het opruimen zijn.
+    twee fouten tegen elkaar wegstrepen is precies wat we hier aan het opruimen zijn. De
+    starre schuif haalt die winst wél zuiver: hij laat het Tm−Ta-verschil staan zoals de
+    fysica het berekende (en wint op korte horizon dus ook gewoon).
 
-    Kamers zonder metingen houden hun gesimuleerde waarde (fail open, zoals `anchor_now`).
+    `air_delta` = uitvoer van `anchor_delta` ({kamer: δ}); `None`/leeg → puur de terugval,
+    bit-voor-bit het oude gedrag. Kamers zonder metingen én zonder δ houden hun
+    gesimuleerde waarde (fail open, zoals `anchor_now`).
     Kopie — `tm_now` wordt niet gemuteerd."""
     out = dict(tm_now or {})
     for rid, samples in (actual or {}).items():
+        if rid in (air_delta or {}):
+            continue                       # kamer krijgt de starre schuif hieronder
         num = den = 0.0
         for ts, temp in samples:
             age_h = (now - ts).total_seconds() / 3600.0
@@ -193,6 +235,9 @@ def anchor_mass_now(tm_now: dict, actual: dict, now: datetime,
             den += w
         if den > 0:
             out[rid] = num / den
+    for rid, d in (air_delta or {}).items():
+        if rid in (tm_now or {}):
+            out[rid] = tm_now[rid] + d
     return out
 
 
@@ -322,20 +367,27 @@ def main() -> None:
     # recente échte tado-meting per kamer, mits vers genoeg — anders (stale/ontbrekend)
     # blijft de gesimuleerde waarde staan (fail open, zoals elders in de repo).
     corrected = anchor_now(ta_now, actual, now)
-    deltas = {rid: round(v - ta_now[rid], 2) for rid, v in corrected.items()
-             if abs(v - ta_now[rid]) > 0.01}
-    if deltas:
-        print(f"[teds-nacht] anker-correctie (sim → actueel): {deltas}")
+    air_delta = anchor_delta(ta_now, corrected)
+    if air_delta:
+        toon = {rid: round(d, 2) for rid, d in air_delta.items()}
+        print(f"[teds-nacht] anker-correctie (sim → actueel): {toon}")
     ta_now = corrected
 
     # …en dezelfde behandeling voor de MASSAknoop. Zonder dit ijkten we alleen de lucht,
     # terwijl de massa 24u aan warmup-drift meedroeg — en de massa heeft veruit de meeste
     # capaciteit, dus die trok de zojuist geijkte lucht binnen een paar uur weer mee omlaag.
-    # Dat was veruit de grootste foutbron in deze voorspelling: op 9 held-out nachten
-    # RMSE 1,46 → 0,86 °C en de nachtbias van −1,43 naar −0,83. Het verklaart ook waarom
-    # de fysica-parameters niets uithaalden (c_mass ×4 verschoof de bias 0,08°): het verlies
-    # ging niet naar buiten maar naar een te koude interne massa.
-    tm_now = anchor_mass_now(tm_now, actual, now)
+    # Dat was veruit de grootste foutbron in deze voorspelling: op 66 held-out nachten
+    # RMSE 1,45 → 1,04 °C (alle kamers gepoold). Het verklaart ook waarom de fysica-
+    # parameters niets uithaalden (c_mass ×4 verschoof de bias 0,08°): het verlies ging
+    # niet naar buiten maar naar een te koude interne massa.
+    #
+    # De schuif krijgt `air_delta` mee, zodat de massa exact dezelfde correctie ondergaat
+    # als de lucht wáár het luchtanker vuurde: lucht en massa zijn via H_am gekoppeld en
+    # drijven dus sámen weg, en alléén de lucht ijken laat de massa ~0,6 °C inconsistent
+    # achter — waarna diezelfde koppeling de lucht weer van de meting af trekt. Waar het
+    # luchtanker niét vuurde valt anchor_mass_now terug op het gedempte gemiddelde van de
+    # metingen (zie daar).
+    tm_now = anchor_mass_now(tm_now, actual, now, air_delta=air_delta)
 
     # ── Fase 2: forecast (nu → morgen 08:00), scenario-geforceerd, geseed op het anker ──
     end_h = hours_until_morning(now)

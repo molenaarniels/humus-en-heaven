@@ -405,6 +405,64 @@ def test_anchor_mass_now_leeg_is_een_no_op():
     assert nf.anchor_mass_now({"ted": 19.0}, {"ted": []}, now) == {"ted": 19.0}
 
 
+# ── anchor_delta + de meeschuivende massaknoop ─────────────────────────────────
+
+def test_anchor_delta_alleen_waar_het_luchtanker_vuurde():
+    # Verse meting → δ; stale meting → anchor_now liet 'm staan → géén δ (en dus
+    # straks de gedempt-gemiddelde-terugval i.p.v. een schuif van 0).
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    ta_sim = {"ted": 20.0, "office": 21.0, "stair": 19.0}
+    actual = {"ted": [(now - timedelta(minutes=5), 23.0)],
+              "office": [(now - timedelta(hours=3), 25.0)]}
+    delta = nf.anchor_delta(ta_sim, nf.anchor_now(ta_sim, actual, now))
+    assert delta == pytest.approx({"ted": 3.0})
+
+
+def test_anchor_mass_now_schuift_star_mee_en_behoudt_het_tm_ta_verschil():
+    # De kern van de fix: lucht en massa drijven via H_am sámen weg, dus beide over
+    # dezelfde δ opschuiven corrigeert de drift zónder het gemodelleerde Tm−Ta-verschil
+    # (echte fysica: de massa loopt 's avonds áchter op de lucht) weg te gooien.
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    ta_sim, tm_sim = {"ted": 20.0}, {"ted": 19.0}          # sim-verschil −1.0
+    actual = {"ted": [(now - timedelta(hours=h), 21.0) for h in range(24, 0, -1)]
+                     + [(now - timedelta(minutes=5), 23.0)]}
+    ta = nf.anchor_now(ta_sim, actual, now)
+    tm = nf.anchor_mass_now(tm_sim, actual, now,
+                            air_delta=nf.anchor_delta(ta_sim, ta))
+    assert ta["ted"] == pytest.approx(23.0)
+    assert tm["ted"] == pytest.approx(22.0), "massa moet dezelfde δ=+3 krijgen"
+    assert tm["ted"] - ta["ted"] == pytest.approx(tm_sim["ted"] - ta_sim["ted"])
+    # …en nadrukkelijk niet het gedempte gemiddelde van de metingen (~21°), dat het
+    # Tm−Ta-verschil zou platslaan.
+    assert nf.anchor_mass_now(tm_sim, actual, now)["ted"] < 22.0
+
+
+def test_anchor_mass_now_valt_terug_op_het_gedempte_gemiddelde_zonder_delta():
+    # Kamer zonder verse meting: géén δ, dus géén schuif van 0 (dat zou de massa op zijn
+    # weggedreven warmup-waarde laten staan — vrijloop, de slechtste optie) maar de
+    # metingen-schatter. Kamers mét δ in dezelfde aanroep krijgen wél de schuif.
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    actual = {"ted": [(now - timedelta(minutes=5), 23.0)],
+              "office": [(now - timedelta(hours=h), 22.0) for h in range(6, 0, -1)]}
+    out = nf.anchor_mass_now({"ted": 19.0, "office": 15.0}, actual, now,
+                             air_delta={"ted": 3.0})
+    assert out["ted"] == pytest.approx(22.0)
+    assert out["office"] == pytest.approx(22.0, abs=0.05)
+
+
+def test_anchor_mass_now_zonder_air_delta_is_bit_voor_bit_het_oude_gedrag():
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    actual = {"ted": [(now - timedelta(hours=h), 20.0 + h * 0.1) for h in range(24, 0, -1)]}
+    assert (nf.anchor_mass_now({"ted": 19.0}, actual, now, air_delta=None)
+            == nf.anchor_mass_now({"ted": 19.0}, actual, now, air_delta={}))
+
+
+def test_anchor_mass_now_schuift_geen_kamer_die_de_sim_niet_kent():
+    now = datetime(2026, 7, 20, 18, 45, tzinfo=TZ)
+    out = nf.anchor_mass_now({"ted": 19.0}, {}, now, air_delta={"ted": 2.0, "weg": 5.0})
+    assert out == pytest.approx({"ted": 21.0})
+
+
 def test_main_ijkt_de_massaknoop_mee(monkeypatch):
     """Wiring-test in het ctx-ankers-patroon: vergeten de massaknoop te ijken is
     stil en onzichtbaar — de voorspelling blijft draaien, alleen structureel te koud."""
@@ -436,3 +494,46 @@ def test_main_ijkt_de_massaknoop_mee(monkeypatch):
     assert fcst[0].get("ted") == pytest.approx(23.0, abs=0.3), (
         f"massaknoop niet op de metingen geijkt (kreeg {fcst[0].get('ted')}) — "
         "de warmup-drift lekt de forecast in")
+
+
+def test_main_schuift_de_massaknoop_met_het_luchtanker_mee(monkeypatch):
+    """Wiring-test voor de starre schuif: met een vérse meting moet main() de massaknoop
+    over dezelfde δ verplaatsen als de lucht, niet op het gedempte gemiddelde van de
+    historie zetten. Dat verschil is precies waar de fix over gaat, en het is stil: beide
+    varianten draaien gewoon door, de ene alleen structureel te koud."""
+    rows = _rows(datetime.now(TZ))
+    gezien = []
+    orig = vp.simulate
+
+    def spy(house, params, timeline, seed, ctx, **kw):
+        out = orig(house, params, timeline, seed, ctx, **kw)
+        gezien.append({"tm_seed": kw.get("tm_seed"), "seed": dict(seed),
+                       "Tm_now": dict(out.get("Tm_now") or {}),
+                       "Ta_now": dict(out.get("Ta_now") or {})})
+        return out
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr(vio, "load_house", lambda: HOUSE)
+    monkeypatch.setattr(vio, "fetch_weather", lambda lat, lon: {"hourly": rows, "current": {}})
+    monkeypatch.setattr(vio, "load_openings_log", lambda: [])
+    monkeypatch.setattr(vio, "load_learned", dict)
+    # Koele historie met een vérse, véél warmere slotmeting: het gedempte gemiddelde ligt
+    # dicht bij 18°, de starre schuif landt op (warmup-massa + δ) — ver daarboven.
+    t0 = datetime.now(TZ)
+    hist = [{"t": (t0 - timedelta(hours=h)).isoformat(), "temp": 18.0}
+            for h in range(int(nf.WARMUP_H), 0, -1)]
+    hist.append({"t": (t0 - timedelta(minutes=5)).isoformat(), "temp": 26.0})
+    monkeypatch.setattr(vio, "load_window_data", lambda: {"rooms": {"Ted": {"history": hist}}})
+    monkeypatch.setattr(vp, "simulate", spy)
+    nf.main()
+
+    warmup = gezien[0]
+    fcst = [g for g in gezien[1:] if g["tm_seed"]]
+    assert fcst, "forecast-sim kreeg geen massaknoop mee"
+    delta = 26.0 - warmup["Ta_now"]["ted"]          # wat anchor_now aanbracht
+    verwacht = warmup["Tm_now"]["ted"] + delta
+    assert fcst[0]["seed"]["ted"] == pytest.approx(26.0), "luchtknoop niet op de meting"
+    assert fcst[0]["tm_seed"]["ted"] == pytest.approx(verwacht, abs=0.01), (
+        f"massaknoop niet met δ={delta:.2f} meegeschoven (kreeg "
+        f"{fcst[0]['tm_seed']['ted']:.2f}, verwacht {verwacht:.2f}) — het gedempte "
+        "gemiddelde van de historie zou hier ~18° geven en het Tm−Ta-verschil platslaan")

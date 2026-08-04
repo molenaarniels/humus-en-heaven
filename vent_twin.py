@@ -28,13 +28,15 @@ from notify import run_guarded, send_telegram
 from shared_const import utc_now_iso
 
 import vent_fit as vf
+import vent_forecast
+from vent_forecast import FORECAST_H, PLAYGROUND_PAST_H, latest_actual
 from vent_fit import (
     anomaly_step, calibrate, filter_ac_samples, filter_heating_samples,
     filter_paused_samples, naive_rmse, railed_params, rmse, should_nudge_anomaly,
     skill_score, thin_rmse_history, _residuals,
 )
 from vent_io import (
-    CALIB_WINDOW_H, DASHBOARD_FILE, LEARNED_FILE, PHYSICS_REV, TZ, WARMUP_H,
+    CALIB_WINDOW_H, DASHBOARD_FILE, FORECAST_FILE, LEARNED_FILE, PHYSICS_REV, TZ, WARMUP_H,
     _timedelta_h, ac_changes, ac_room_at, append_history_shard,
     append_shard_weather, build_timeline, collect_actual, collect_heating_on,
     fetch_weather, heating_now, house_location, load_house, load_learned,
@@ -140,7 +142,12 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
             env_w = round(ua_env * (t_out_now - ta_now), 0)
             vent_w = round(bundle["rho_cp"] * bundle["veff"] * fresh_m3s * (t_out_now - ta_now), 0)
     sens_series = _to_sensor_series(house, timeline, rid, pred_series)
-    trend = _series_trend(sens_series, since=now)
+    # Vooruitblik: de op "nu" geherankerde 12u-voorspelling (vent_forecast). De trend komt
+    # daar vandaan en niet meer uit de staart van de kalibratie-sim — die staart begint op
+    # een gesimuleerde toestand, de vooruitblik op de gemeten. Geen vooruitblik (te weinig
+    # weerdata) → terugval op de oude staart-trend, zodat de kaart nooit leeg valt.
+    fc_series = bundle.get("forecast", {}).get(rid, [])
+    trend = _series_trend(fc_series or sens_series, since=now)
     # Verticale-koker-stratificatie: additieve top/onder-temp + gradiënt voor de weergave
     # (de koker blijft één knoop; `predicted_air_temp` is het koker-gemiddelde). Alleen bij "stratify".
     strat_extra = {}
@@ -222,11 +229,21 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         "ac": (rid == bundle.get("ac_room")),
         "heating": bool(bundle.get("heat_now", {}).get(rid)),
         "paused": bool(bundle.get("paused_now")),
-        # Toon alleen het residu-venster (de WARMUP_H aanloop is sim-only opwarming van de
-        # massaknoop, niet bedoeld als zichtbare voorspelling) + de 2u-vooruitblik.
+        # Verleden: het volle residu-venster van de kalibratie-sim (de WARMUP_H aanloop is
+        # sim-only opwarming van de massaknoop, niet bedoeld als zichtbare voorspelling).
+        # Snijdt af op `now`: de toekomst zit in `forecast_series`, dat op de meting geankerd
+        # is en dus een ándere (betere) reeks is dan de doorlopende sim-staart. Het venster
+        # blijft bewust CALIB_WINDOW_H en niet de 24u die de grafiek toont — tools/
+        # vent_diagnostics.py paart deze reeks met `actual_series` voor zijn residu-ontleding,
+        # en die zou op een half venster de helft van zijn signaal kwijt zijn. De grafiek
+        # klemt zelf op DASHBOARD_PAST_H.
         "predicted_series": [{"t": t.isoformat(), "temp": round(v, 2)}
                              for t, v in sens_series
-                             if t >= now - _timedelta_h(CALIB_WINDOW_H)],
+                             if now - _timedelta_h(CALIB_WINDOW_H) <= t <= now],
+        # 12u vooruit vanaf de op de tado-meting geankerde toestand (vent_forecast.forecast).
+        # Additief veld; leeg als er geen weer-vooruitblik was.
+        "forecast_series": [{"t": t.isoformat(), "temp": round(v, 2)}
+                            for t, v in fc_series],
         "actual_series": [{"t": t.isoformat(), "temp": v} for t, v in actual.get(rid, [])],
         "params": params.get(rid, {}),
         **strat_extra,
@@ -238,7 +255,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, learned,
                     learning_held=False, skill=None, rmse_baseline=None,
                     ac_room=None, heat_now=None,
                     paused_now=False, paused_since=None,
-                    gamma_measured=None, wx=None) -> dict:
+                    gamma_measured=None, wx=None, forecast=None) -> dict:
     """Stel docs/vent_data.json samen — het slanke schema uit het herbouwplan (§4):
     precies de velden die de vijf dashboard-features lezen, additief vanaf dag één."""
     cur = weather["current"]
@@ -278,6 +295,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, learned,
         "strat": _stratify_zones(house),   # verticale-koker-metadata voor de top/onder-weergave
         "gamma_measured": gamma_measured,  # zelfde γ-basis als de sim (zie _gamma_temps)
         "pw_now": pw_now,
+        "forecast": (forecast or {}).get("series", {}),
     }
     rooms_out = {rid: _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
                                           actual, now, ctx, bundle)
@@ -343,7 +361,7 @@ def build_dashboard(house, params, weather, wd, timeline, sim, learned,
                     "rmse_naive": round(rmse_baseline, 3)
                     if (rmse_baseline is not None and rmse_baseline == rmse_baseline) else None,
                     "skill": skill,
-                    "railed": railed_params(params),
+                    "railed": railed_params(params, house=house),
                     "rmse_history": rmse_hist,
                     "held": bool(learning_held),
                     "paused": bool(paused_now)},
@@ -577,7 +595,7 @@ def main():
                                          solar_mean=wx_summary.get("solar_mean"),
                                          tm_seed=tm_seed_src, measured=gamma_measured)
             print(f"[leren] RMSE na kalibratie: {rmse_now:.3f} °C")
-            rails = railed_params(params)
+            rails = railed_params(params, house=house)
             if rails:
                 print(f"[saturatie] params op hun grens: {', '.join(rails)}")
     else:
@@ -599,22 +617,64 @@ def main():
         print(f"[sim] {sim['solver_failures']} substap(pen) met een bijna-singulier thermisch "
               "stelsel — Ta/Tm die stap bevroren.")
 
+    # Vooruitblik: 12u vanaf de op de tado-meting geherankerde toestand. Bewust een TWEEDE
+    # sim naast de kalibratie-run — die laatste moet de ongestoorde model-vs-meting-reeks
+    # blijven (dat is wat de leercurve scoort), terwijl de voorspelling juist wél mag weten
+    # wat er nú op de thermostaat staat. Anker uit de ÓNGEFILTERDE metingen (gamma_measured):
+    # een gestookte of gekoelde kamer hoort uit de FIT te blijven, maar zijn actuele
+    # temperatuur is en blijft de beste startwaarde die we hebben.
+    #
+    # De vooruitblik krijgt een EIGEN tijdlijn (`window_h=0` → hij begint op nu). Hem aan de
+    # kalibratie-tijdlijn plakken zou goedkoper lijken, maar dan draait élke Gauss-Newton-
+    # evaluatie 12 uur extra mee — ~14 % duurder, en `calibrate` heeft een tijdsbudget, dus dat
+    # betaal je in gemiste iteraties. De fit hoort niets te merken van een grafiek.
+    fore_tl = build_timeline(house, weather, log, now, 0.0, ctx,
+                             wu_solar_scale=wu_solar_scale, beam_iam=True,
+                             om_learned=om_learned, end_h=FORECAST_H)
+    measured_now = latest_actual(gamma_measured, now)
+    fc = vent_forecast.forecast(house, params, fore_tl, sim, now, ctx, measured_now,
+                                measured=gamma_measured)
+    print(f"[vooruitblik] {len(fc['steps'])} stappen tot "
+          f"+{FORECAST_H:.0f}u, {fc['anchored']} kamer(s) op de meting geankerd.")
+    if fc.get("solver_failures"):
+        print(f"[vooruitblik] {fc['solver_failures']} substap(pen) met een bijna-singulier "
+              "stelsel — Ta/Tm die stap bevroren.")
+
     dash = build_dashboard(house, params, weather, wd, timeline, sim, learned,
                            actual, now, rmse_now, ctx, log,
                            learning_held=learning_held, skill=skill,
                            rmse_baseline=rmse_baseline,
                            ac_room=ac_room_now, heat_now=heat_now,
                            paused_now=paused_now, paused_since=paused_since,
-                           gamma_measured=gamma_measured, wx=wx_summary)
+                           gamma_measured=gamma_measured, wx=wx_summary, forecast=fc)
     os.makedirs(os.path.dirname(DASHBOARD_FILE), exist_ok=True)
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dash, f, ensure_ascii=False, indent=2)
+
+    # Browser-payload voor de speeltuin: de weer-only drivers over de vooruitblik + de
+    # thermische params + het geankerde zaad, zodat de JS-kern een raamstand-scenario lokaal
+    # kan doorrekenen. Apart bestand: vent_data.json is bewust een slank dashboard-schema en
+    # dit is een andere consument met een andere levensduur.
+    if fc["steps"]:
+        past_cut = now - _timedelta_h(PLAYGROUND_PAST_H)
+        drivers = vent_forecast.driver_export(
+            house, params, ctx, fc["steps"], fc["seed_Ta"], fc["seed_Tm"], now=now,
+            past_steps=[s for s in timeline if past_cut <= s["t"] <= now],
+            actual_series={rid: [(t, v) for t, v in s if t >= past_cut]
+                           for rid, s in (gamma_measured or {}).items()})
+        drivers["generated_at"] = utc_now_iso()
+        drivers["model_version"] = model_version()
+        drivers["physics_rev"] = PHYSICS_REV
+        with open(FORECAST_FILE, "w", encoding="utf-8") as f:
+            json.dump(drivers, f, ensure_ascii=False)
+        print(f"[vooruitblik] {FORECAST_FILE} geschreven "
+              f"({os.path.getsize(FORECAST_FILE) / 1000:.0f} kB).")
     learned_out = {"updated_at": now.isoformat(), "model_version": model_version(),
                    "physics_rev": PHYSICS_REV,
                    "params": params,
                    "rmse": round(rmse_now, 3) if rmse_now == rmse_now else None,
                    "skill": skill,
-                   "railed": railed_params(params),
+                   "railed": railed_params(params, house=house),
                    "rmse_history": dash["learned"]["rmse_history"],
                    # Anomalie-poort-state (held_since/cooloff_until/nudged_at/escaped_at).
                    "anomaly": anomaly_state}

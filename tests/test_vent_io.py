@@ -214,8 +214,10 @@ def test_load_learned_graceful(tmp_path, monkeypatch):
 def test_physics_rev_migration_resets_everything():
     # Geleerde staat van een oudere fysica-revisie → ÁLLES terug naar de priors, globalen
     # én kamer-params (de oude waren compensaties voor precies de fysica die veranderde).
-    # Rev 6 = de startlijn van de herbouw (airflow_model rev 5-lijn).
-    assert vio.PHYSICS_REV == 6
+    # Rev 7 = de kruipruimte-verankering + de per-kamer parametervloer (aug 2026); de
+    # geleerde params absorbeerden de te koude kruipruimte, dus die compensaties mogen de
+    # nieuwe fysica niet in.
+    assert vio.PHYSICS_REV == 7
     house = {"rooms": {"a": {}}}
     old = {"params": {"cp_shelter": 0.1, "vent_eff": 0.43, "a": {"c_air": 1.2}},
            "physics_rev": vio.PHYSICS_REV - 1}
@@ -352,13 +354,21 @@ def test_build_timeline_end_h_default_unchanged():
 
 
 def test_wu_solar_scale_factor_decays_to_one():
-    # Op nu (age 0) → vol k; ouder dan het venster → 1.0 (pure OM); vooruitblik (age<0) → vol k.
+    # Op nu (age 0) → vol k; buiten het venster → 1.0 (pure OM). De uitdoving is SYMMETRISCH:
+    # `k` is een momentopname van de WU/OM-zonverhouding en veroudert vooruit net zo hard als
+    # achteruit — met een 12-uurs voorspelling zou de bewolkingsverhouding van nú anders de hele
+    # nacht blijven gelden.
+    D = vio.WU_SOLAR_SCALE_DECAY_H
     assert vio.wu_solar_scale_factor(1.4, 0.0) == pytest.approx(1.4)
-    assert vio.wu_solar_scale_factor(1.4, vio.WU_SOLAR_SCALE_DECAY_H) == pytest.approx(1.0)
-    assert vio.wu_solar_scale_factor(1.4, 2 * vio.WU_SOLAR_SCALE_DECAY_H) == pytest.approx(1.0)
-    assert vio.wu_solar_scale_factor(1.4, -1.0) == pytest.approx(1.4)          # vooruitblik
-    mid = vio.wu_solar_scale_factor(1.4, vio.WU_SOLAR_SCALE_DECAY_H / 2)
-    assert 1.0 < mid < 1.4
+    assert vio.wu_solar_scale_factor(1.4, D) == pytest.approx(1.0)
+    assert vio.wu_solar_scale_factor(1.4, 2 * D) == pytest.approx(1.0)
+    assert vio.wu_solar_scale_factor(1.4, -D) == pytest.approx(1.0)             # ver vooruit
+    assert vio.wu_solar_scale_factor(1.4, -2 * D) == pytest.approx(1.0)
+    for age in (D / 2, -D / 2):
+        assert 1.0 < vio.wu_solar_scale_factor(1.4, age) < 1.4
+    # Spiegelsymmetrie expliciet: even ver terug en vooruit weegt gelijk.
+    assert (vio.wu_solar_scale_factor(1.4, 1.0)
+            == pytest.approx(vio.wu_solar_scale_factor(1.4, -1.0)))
     assert vio.wu_solar_scale_factor(None, 0.0) == 1.0                          # WU ontbrak → no-op
 
 

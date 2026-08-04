@@ -524,17 +524,54 @@ def test_room_base_capacitances_extra_mass_is_additive():
     assert vp.room_base_capacitances(rich)[2] == vp.room_base_capacitances(plain)[2]
 
 
+def _ground_raw(mean_out: float) -> float:
+    """De ongeklemde blend, uitgedrukt in de constanten — zodat deze test niet opnieuw
+    breekt als de koppeling herijkt wordt, maar de VORM wél blijft vastliggen."""
+    return vp.GROUND_SOIL_ANCHOR + vp.GROUND_AIR_COUPLING * (mean_out - vp.GROUND_SOIL_ANCHOR)
+
+
 def test_ground_temp_estimate_blends_soil_and_damped_outside():
     now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)
-    hot = [{"dt": now - timedelta(hours=h), "T_out": 21.0} for h in range(720)]
-    # Bodemanker 11.0 + 0.5·(21 − 11) = 16.0 — duidelijk kóéler dan buiten, wat het punt is.
-    assert vp.ground_temp_estimate(hot, now) == pytest.approx(16.0)
-    cold = [{"dt": now - timedelta(hours=h), "T_out": 3.0} for h in range(720)]
-    assert vp.ground_temp_estimate(cold, now) == pytest.approx(11.0 + 0.5 * (3.0 - 11.0))
+    mild = [{"dt": now - timedelta(hours=h), "T_out": 17.0} for h in range(720)]
+    assert vp.ground_temp_estimate(mild, now) == pytest.approx(_ground_raw(17.0))
+    koel = [{"dt": now - timedelta(hours=h), "T_out": 9.0} for h in range(720)]
+    assert vp.ground_temp_estimate(koel, now) == pytest.approx(_ground_raw(9.0))
+    # De kruipruimte volgt het gedempte buiten maar loopt er nooit vóórbij: bij koppeling ≤ 1
+    # blijft hij tussen het bodemanker en het buitengemiddelde in (binnen de klemmen).
+    for mean_out in (9.0, 12.0, 17.0):
+        g = vp.ground_temp_estimate(
+            [{"dt": now - timedelta(hours=h), "T_out": mean_out} for h in range(720)], now)
+        lo, hi = sorted((vp.GROUND_SOIL_ANCHOR, mean_out))
+        assert max(lo, vp.GROUND_TEMP_MIN) - 1e-9 <= g <= min(hi, vp.GROUND_TEMP_MAX) + 1e-9
+    # Winterkant van dezelfde vangrail: bij koppeling 1.0 zou het anker een 30-daags
+    # buitengemiddelde van 3 °C helemaal volgen; GROUND_TEMP_MIN houdt 'm op 6 °C. Dat is
+    # onbeproefd terrein (geen stookseizoendata) — zie het winter-voorbehoud bij de constante.
+    ijskoud = [{"dt": now - timedelta(hours=h), "T_out": 3.0} for h in range(720)]
+    assert vp.ground_temp_estimate(ijskoud, now) == pytest.approx(vp.GROUND_TEMP_MIN)
     # Klemmen + terugval zonder historie.
     absurd = [{"dt": now - timedelta(hours=h), "T_out": 60.0} for h in range(720)]
     assert vp.ground_temp_estimate(absurd, now) == pytest.approx(vp.GROUND_TEMP_MAX)
     assert vp.ground_temp_estimate([], now) == pytest.approx(vp.GROUND_TEMP)
+
+
+def test_ground_temp_max_is_een_vangrail_geen_zomerplafond():
+    """Waakhond op een gemeten neveneffect van `GROUND_AIR_COUPLING` 0.5 → 1.0.
+
+    `GROUND_TEMP_MAX` is bedoeld als vangrail tegen een absurd anker bij korte/rare historie.
+    Bij koppeling 0.5 bond hij pas op een 30-daags buitengemiddelde van 29 °C — in Nederland
+    nooit. Bij koppeling 1.0 bindt hij al op 20 °C, oftewel een doodgewone warme zomermaand:
+    over het record 2026-05→08 kneep hij het bodemanker in **86 van de 265** oorsprongen af,
+    juist tijdens de warme periodes waar de correctie het meest doet. De correctie is daar dus
+    maar half toegepast.
+
+    Deze test faalt zodra iemand de koppeling verhoogt zónder de vangrail mee te schalen —
+    dan hoort er eerst een meting bij (tools/horizon_backtest.py), niet stilzwijgend een
+    strakkere klem. Zie AIRFLOW3_ASSESSMENT.md §6."""
+    binding_mean = ((vp.GROUND_TEMP_MAX - vp.GROUND_SOIL_ANCHOR) / vp.GROUND_AIR_COUPLING
+                    + vp.GROUND_SOIL_ANCHOR)
+    assert binding_mean >= 20.0, (
+        f"de klem bindt al bij een 30-daags buitengemiddelde van {binding_mean:.1f} °C — "
+        "dat is een zomerplafond, geen vangrail")
 
 
 def test_ground_term_is_inert_without_ground_m2():

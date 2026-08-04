@@ -36,13 +36,17 @@ from vent_physics import (
     SOLAR_SUBSTEPS, WU_SOLAR_SCALE_DECAY_H,
     WU_SOLAR_SCALE_MIN, WU_SOLAR_SCALE_MAX, WU_SOLAR_MIN_WM2,
     PRIORS, PER_ROOM_PARAMS, GLOBAL_PARAMS,
-    facade_irradiance, per_window_solar, sun_position,
+    clamp_model_bounds, facade_irradiance, per_window_solar, sun_position,
 )
 
 HOUSE_FILE     = os.getenv("HOUSE_MODEL_PATH", "house_model.json")
 WINDOW_DATA    = os.getenv("WINDOW_DATA_PATH", "docs/window_data.json")
 DASHBOARD_FILE = os.getenv("VENT_DATA_PATH", "docs/vent_data.json")
 LEARNED_FILE   = os.getenv("VENT_LEARNED_PATH", "docs/vent_learned.json")
+# Browser-payload van de 12u-vooruitblik (weer-only drivers + thermische params + het
+# geankerde zaad) — de speeltuin rekent daarmee raamstand-scenario's lokaal door. Apart van
+# vent_data.json: dát is een slank dashboard-schema en dit is een andere consument.
+FORECAST_FILE  = os.getenv("VENT_FORECAST_PATH", "docs/vent_forecast.json")
 OPENINGS_FILE  = "house_openings.json"
 
 # Fysica-revisie van de tweeling. Bij een mismatch met de opgeslagen learned-staat reset
@@ -51,7 +55,13 @@ OPENINGS_FILE  = "house_openings.json"
 # tools/vent_seed.py zodat de reset niet live vanaf priors hoeft te leren. Rev 6 = de
 # lijn van airflow_model rev 5 (eenzijdige ventilatie + DNI-conventie + binnengordijn-
 # factor), voortgezet als startpunt van de herbouw (Project 13).
-PHYSICS_REV = 6
+# Rev 7 (aug 2026): de kruipruimte-verankering (`GROUND_AIR_COUPLING` 0.5 → 1.0) + de
+# per-kamer parametervloer (`param_bounds`, living.c_mass ≥ 0.595). De geleerde params
+# absorbeerden de te koude kruipruimte — een staande put van ~250 W onder living — dus ze
+# moeten terug naar hun priors i.p.v. die compensatie de nieuwe fysica in te dragen. Zie
+# tools/horizon_backtest.py voor de meting en AIRFLOW3_ASSESSMENT.md voor de motivering;
+# her-seed na deploy met tools/vent_seed.py.
+PHYSICS_REV = 7
 
 TZ = shared_const.TZ
 
@@ -328,6 +338,12 @@ def merged_params(house: dict, learned: dict) -> dict:
         params.setdefault(rid, base[rid])
         for k in PER_ROOM_PARAMS:
             params[rid].setdefault(k, PRIORS[k])
+            # Klem op de per-kamer versmalde band uit house_model.json (`param_bounds`).
+            # Dit is de poort waar een huismodel-vloer daadwerkelijk landt: de fit klemt
+            # zelf al, maar geleerde staat van vóór de vloer (of een seed uit
+            # tools/vent_seed.py) komt hier binnen en moet meteen worden opgetild —
+            # anders draait de eerste run nog op de oude, te lage waarde.
+            params[rid][k] = clamp_model_bounds(house, rid, k, params[rid][k])
     return params
 
 def load_openings_log() -> list[dict]:
@@ -385,11 +401,18 @@ def _get(h: dict, key: str, i: int):
 def wu_solar_scale_factor(k: float | None, age_h: float,
                           decay_h: float = WU_SOLAR_SCALE_DECAY_H) -> float:
     """Per-stap herschaalfactor voor de instraling: blend tussen de WU/OM-zon-ratio `k` (geldig op
-    nu) en 1.0 (pure OM) naar sample-leeftijd. `age_h` = uren vóór nu (negatief = de 2u-vooruitblik,
-    krijgt vol `k`). `k`=None → 1.0 (WU ontbrak; no-op)."""
+    nu) en 1.0 (pure OM) naar sample-leeftijd. `age_h` = uren vóór nu; **negatief = vooruit**.
+    `k`=None → 1.0 (WU ontbrak; no-op).
+
+    De uitdoving is SYMMETRISCH (`abs(age_h)`): `k` is een momentopname van de verhouding tussen
+    wat de eigen pyranometer meet en wat het grid modelleert, en die verhouding veroudert
+    vooruit net zo hard als achteruit. Zolang de vooruitblik 2 uur was, was dit cosmetisch (hij
+    voedde alleen de trendpijl); met een 12-uurs voorspelling zou de bewolkingsverhouding van dít
+    moment anders de hele nacht en de ochtend erna blijven gelden. Voor het verleden verandert er
+    niets."""
     if k is None:
         return 1.0
-    w = 1.0 if decay_h <= 0 else 1.0 - age_h / decay_h
+    w = 1.0 if decay_h <= 0 else 1.0 - abs(age_h) / decay_h
     w = min(1.0, max(0.0, w))
     return 1.0 + (k - 1.0) * w
 

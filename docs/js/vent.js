@@ -5,7 +5,7 @@
 const OPENINGS_FILE = "house_openings.json";
 const AC_STATE_KEY = "ac_room";   // sleutel in de snapshot: kamer met de mobiele airco (of "")
 const PAUSE_STATE_KEY = "paused"; // sleutel in de snapshot: huis-breed gepauzeerd? (bool)
-const state = { data: null, tempChart: null, rmseChart: null, pending: {} };
+const state = { data: null, forecast: null, tempChart: null, rmseChart: null, pending: {} };
 
 document.getElementById("folio-mark").textContent = `Terroir de Utrecht · Est. ${new Date().getFullYear()} · Ventilatie`;
 document.getElementById("today-date").textContent = new Date().toLocaleDateString("nl-NL", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
@@ -38,6 +38,20 @@ async function loadData() {
     document.getElementById("content").innerHTML = "";
     return;
   }
+  // Vooruitblik-payload (weer-drivers + thermische params + het geankerde zaad). Apart
+  // bestand met een eigen levensduur, en de pagina moet zónder ook werken: ontbreekt of
+  // faalt hij, dan verliezen we de speeltuin-scenario's en de buitenlijn — niet meer.
+  try {
+    const res = await fetch(bust("vent_forecast.json"));
+    state.forecast = res.ok ? await res.json() : null;
+  } catch (e) {
+    console.warn("vent_forecast.json niet geladen:", e);
+    state.forecast = null;
+  }
+  // De VentCore-instantie draagt de zojuist vervangen drivers in zich — weggooien, anders
+  // rekent een refresh met het vorige kwartier door. Het surrogaat zelf (0.4 MB, verandert
+  // niet tussen runs) blijft wél gecachet.
+  state.ventCore = null;
   // Renderfouten gescheiden van laadfouten: een chart-/render-exceptie mag de al
   // opgebouwde pagina (plattegrond, kaarten, speeltuin) niet wegvagen of zich als
   // "kon niet laden" vermommen.
@@ -117,7 +131,11 @@ function render() {
     <div class="corner-mark">Afgeleide temperaturen vs. werkelijkheid</div>
     <div class="card-title">Voorspeld (model) vs. gemeten (tado)</div>
     <div class="chart-box"><canvas id="temp-chart"></canvas></div>
-    <div class="chips" style="margin-top:8px;"><span>— doorgetrokken: model</span><span>· · gestippeld: tado-meting</span></div>
+    <div class="chips" style="margin-top:8px;">
+      <span>— doorgetrokken: model</span><span>· · gestippeld: tado-meting</span>
+      <span>24u terug · 12u vooruit</span>
+      <span class="ctl-sub">rechts van "nu": voorspelling, geankerd op de laatste tado-meting</span>
+    </div>
   </div></div>`;
 
   // — Kamerkaarten —
@@ -171,23 +189,103 @@ function render() {
 }
 
 // ===================== CHARTS =====================
+const ROOM_PALETTE = [COLORS.moss, COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight, COLORS.dry];
+const HOUR_MS = 3600e3;
+
+function nowMs() {
+  const t = state.data && state.data.as_of_local;
+  const v = t ? new Date(t).getTime() : NaN;
+  return isNaN(v) ? Date.now() : v;
+}
+
+// Gedeelde tijd-as voor beide temperatuurgrafieken: middernacht krijgt een sterke lijn +
+// datumlabel, 06/12/18u een zwakke + "HH:00". Zonder die dag-ankers is een venster dat de
+// nacht overspant nauwelijks te lezen.
+const DAY_FMT = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+const FULL_FMT = new Intl.DateTimeFormat("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function isMidnight(v) { const d = new Date(v); return d.getHours() === 0 && d.getMinutes() === 0; }
+function ventTimeScale(xMin, xMax) {
+  return {
+    type: "time", min: xMin, max: xMax,
+    time: { unit: "hour", stepSize: 3, displayFormats: { hour: "HH:mm" } },
+    grid: { color: (c) => isMidnight(c.tick.value) ? "#2a241b40" : "#2a241b14",
+            lineWidth: (c) => isMidnight(c.tick.value) ? 1.5 : 1 },
+    ticks: { autoSkip: true, maxRotation: 0, font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft,
+             callback: (v) => isMidnight(v) ? DAY_FMT.format(new Date(v))
+                                            : new Date(v).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }) },
+  };
+}
+function ventTooltip() {
+  return {
+    backgroundColor: COLORS.parchment, titleColor: COLORS.ink, bodyColor: COLORS.ink,
+    borderColor: COLORS.ink, borderWidth: 1,
+    titleFont: { family: "JetBrains Mono", weight: 600, size: 11 },
+    bodyFont: { family: "JetBrains Mono", size: 11 }, padding: 10,
+    callbacks: {
+      title: (items) => items.length ? FULL_FMT.format(new Date(items[0].parsed.x)) : "",
+      label: (c) => c.parsed.y == null ? null : `${c.dataset.label}: ${c.parsed.y.toFixed(1)}°`,
+    },
+  };
+}
+// Het toekomstvlak + de "nu"-lijn. Alles rechts van de lijn is voorspelling; dát is de
+// enige visuele scheiding die de grafiek nodig heeft, dus de modellijn loopt gewoon door
+// (een andere streepjesstijl per helft botst met de gestippelde meetlijn).
+function futureAnnotations(now, xMax) {
+  return {
+    future: { type: "box", xMin: now, xMax: xMax, backgroundColor: "#2a241b08",
+              borderWidth: 0, drawTime: "beforeDatasetsDraw" },
+    now: { type: "line", xMin: now, xMax: now, borderColor: COLORS.ink, borderWidth: 1, borderDash: [2, 4],
+           label: { content: "nu · vooruitblik →", display: true, position: "start",
+                    font: { family: "JetBrains Mono", size: 9 }, color: COLORS.ink,
+                    backgroundColor: "transparent" } },
+  };
+}
+
+// Buitentemperatuur uit de vooruitblik-payload: verleden (`past`) + toekomst (`steps`).
+// Puur context achter de kamerlijnen — de kamers zijn de boodschap.
+function outsideSeries() {
+  const f = state.forecast;
+  if (!f) return [];
+  return [...(f.past || []), ...(f.steps || [])]
+    .filter(s => s.T_out != null)
+    .map(s => ({ x: new Date(s.t).getTime(), y: s.T_out }));
+}
+
 function drawTempChart() {
   const c = document.getElementById("temp-chart"); if (!c) return;
   if (state.tempChart) state.tempChart.destroy();
-  const palette = [COLORS.moss, COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight, COLORS.dry];
-  const ds = []; let i=0;
-  Object.entries(state.data.rooms||{}).forEach(([rid,r]) => {
-    const col = palette[i%palette.length]; i++;
-    if (r.predicted_series && r.predicted_series.length)
-      ds.push({ label:`${r.label||rid} (model)`, data:r.predicted_series.map(p=>({x:p.t,y:p.temp})), borderColor:col, backgroundColor:col, borderWidth:2, pointRadius:0, tension:0.25 });
+  const now = nowMs();
+  const xMin = now - 24 * HOUR_MS, xMax = now + 12 * HOUR_MS;
+  const ds = [];
+  const out = outsideSeries();
+  if (out.length)
+    ds.push({ label: "buiten", data: out, borderColor: COLORS.sand, borderWidth: 1.2,
+              borderDash: [2, 3], pointRadius: 0, tension: 0.3, spanGaps: true, order: 9 });
+  let i = 0;
+  Object.entries(state.data.rooms || {}).forEach(([rid, r]) => {
+    const col = ROOM_PALETTE[i % ROOM_PALETTE.length]; i++;
+    // Eén doorlopende modellijn: het gekalibreerde verleden plus de op de tado-meting
+    // geankerde 12u-vooruitblik. Dat zijn twee verschillende simulaties (zie
+    // vent_forecast.py) maar één verhaal, en ze sluiten per constructie op elkaar aan.
+    const model = [...(r.predicted_series || []), ...(r.forecast_series || [])]
+      .map(p => ({ x: new Date(p.t).getTime(), y: p.temp }));
+    if (model.length)
+      ds.push({ label: `${r.label || rid} (model)`, data: model, borderColor: col,
+                backgroundColor: col, borderWidth: 2, pointRadius: 0, tension: 0.25 });
     if (r.actual_series && r.actual_series.length)
-      ds.push({ label:`${r.label||rid} (tado)`, data:r.actual_series.map(p=>({x:p.t,y:p.temp})), borderColor:col, borderDash:[3,3], borderWidth:1.5, pointRadius:0, tension:0.25 });
+      ds.push({ label: `${r.label || rid} (tado)`,
+                data: r.actual_series.map(p => ({ x: new Date(p.t).getTime(), y: p.temp })),
+                borderColor: col, borderDash: [3, 3], borderWidth: 1.5, pointRadius: 0, tension: 0.25 });
   });
-  state.tempChart = new Chart(c, { type:"line", data:{datasets:ds}, options:{
-    responsive:true, maintainAspectRatio:false, interaction:{mode:"nearest",intersect:false},
-    scales:{ x:{type:"time", time:{unit:"hour", displayFormats:{hour:"HH:mm"}}, grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:10}, color:COLORS.inkSoft}},
-             y:{grid:{color:"#2a241b11"}, ticks:{font:{family:"JetBrains Mono",size:10}, color:COLORS.inkSoft, callback:v=>v+"°"}} },
-    plugins:{ legend:{labels:{font:{family:"JetBrains Mono",size:9}, color:COLORS.inkSoft, boxWidth:18}} }
+  state.tempChart = new Chart(c, { type: "line", data: { datasets: ds }, options: {
+    responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+    scales: { x: ventTimeScale(xMin, xMax),
+              y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 10 }, color: COLORS.inkSoft, callback: v => v + "°" } } },
+    plugins: {
+      legend: { labels: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, boxWidth: 18 } },
+      tooltip: ventTooltip(),
+      annotation: { annotations: futureAnnotations(now, xMax) },
+    },
   }});
 }
 function drawRmseChart() {

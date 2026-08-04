@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from vent_io import CALIB_WINDOW_H, _timedelta_h, ac_room_at
 from vent_physics import (
     BOUNDS, GLOBAL_PARAMS, PER_ROOM_PARAMS, PRIORS, RAIL_TOL, RunContext,
-    _interp, _to_sensor_series, simulate, solve_linear,
+    _interp, _to_sensor_series, clamp_param, param_bounds, simulate, solve_linear,
 )
 
 RMSE_HISTORY_KEEP = 1000  # hard vangnet op het aantal leercurve-punten (na uitdunning ~384)
@@ -86,25 +86,34 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
         w += frac * (REG_WEIGHT - w)   # 6.0 (frac=0) → REG_WEIGHT (frac=1)
     return w
 
-def railed_params(params: dict, tol: float = RAIL_TOL) -> list[str]:
-    """Welke geleerde params op (≈) hun BOUNDS-grens zitten — de 'saturatie-tell' dat een
-    fysisch kanaal naar zijn extreem geduwd wordt (vaak een structureel tekort of een te-warme
-    prior). Geeft een lijst `'scope.param@floor|ceil'` voor logging/dashboard. Massaal floor-railen
-    op de warmte-in-kanalen = de optimizer komt niet koel genoeg. Puur diagnostisch, geen mutatie."""
+def railed_params(params: dict, tol: float = RAIL_TOL,
+                  house: dict | None = None) -> list[str]:
+    """Welke geleerde params op (≈) hun grens zitten — de 'saturatie-tell' dat een fysisch
+    kanaal naar zijn extreem geduwd wordt (vaak een structureel tekort of een te-warme prior).
+    Geeft een lijst `'scope.param@floor|ceil'` voor logging/dashboard. Massaal floor-railen op
+    de warmte-in-kanalen = de optimizer komt niet koel genoeg. Puur diagnostisch, geen mutatie.
+
+    `house` (optioneel) laat de per-kamer versmalde band meetellen (zie `param_bounds`), zodat
+    een parameter die op zijn HUISMODEL-vloer zit óók zichtbaar wordt i.p.v. ruim binnen de
+    globale `BOUNDS` te lijken. Zo'n grens krijgt het achtervoegsel `(model)` —
+    `living.c_mass@floor(model)` — want hij betekent iets ánders: een `BOUNDS`-rail is een
+    saturatie-KLACHT (de fysica wil ergens heen waar ze niet mag), een huismodel-rail is de
+    constraint die dóét waarvoor hij is aangebracht. `is_model_rail` scheidt de twee voor
+    poorten die alleen op het eerste mogen afgaan (tools/vent_seed.py)."""
     out = []
 
     def _flag(scope: str, name: str, value) -> None:
-        b = BOUNDS.get(name)
-        if b is None or not isinstance(value, (int, float)):
+        if name not in BOUNDS or not isinstance(value, (int, float)):
             return
-        lo, hi = b
+        lo, hi = param_bounds(house, scope, name)
+        glo, ghi = BOUNDS[name]
         rng = hi - lo
         if rng <= 0:
             return
         if value - lo <= tol * rng:
-            out.append(f"{scope}.{name}@floor")
+            out.append(f"{scope}.{name}@floor" + ("" if lo <= glo else "(model)"))
         elif hi - value <= tol * rng:
-            out.append(f"{scope}.{name}@ceil")
+            out.append(f"{scope}.{name}@ceil" + ("" if hi >= ghi else "(model)"))
 
     for name in GLOBAL_PARAMS:
         if name in params:
@@ -116,6 +125,10 @@ def railed_params(params: dict, tol: float = RAIL_TOL) -> list[str]:
             if name in rp:
                 _flag(rid, name, rp[name])
     return out
+
+def is_model_rail(flag: str) -> bool:
+    """Komt deze `railed_params`-vlag van een bewuste huismodel-grens (`param_bounds`)?"""
+    return flag.endswith("(model)")
 
 # ── Robuust leren: bescherming tegen niet-gerapporteerde raamwijzigingen ─────────────
 # Als de werkelijke openingen afwijken van de gerapporteerde log (b.v. iemand zet thuis
@@ -364,22 +377,24 @@ def params_to_vec(params: dict, keys: list[tuple]) -> list[float]:
         out.append(params[name] if scope == "global" else params[scope][name])
     return out
 
-def vec_to_params(vec: list[float], keys: list[tuple], base: dict) -> dict:
+def vec_to_params(vec: list[float], keys: list[tuple], base: dict,
+                  house: dict | None = None) -> dict:
     p = json.loads(json.dumps(base))   # diepe kopie
     for v, (scope, name) in zip(vec, keys):
-        lo, hi = BOUNDS[name]
-        v = max(lo, min(hi, v))
+        v = clamp_param(house, scope, name, v)
         if scope == "global":
             p[name] = v
         else:
             p.setdefault(scope, {})[name] = v
     return p
 
-def _clamp_to_bounds(vec: list[float], keys: list[tuple]) -> list[float]:
-    """Klem een solver-state-vector op de BOUNDS van zijn parameters. vec_to_params projecteert
-    al bij élke evaluatie, maar de Gauss-Newton-iterate zelf kon buiten de band accumuleren —
-    dan rekent de ridge-anker-term (x−prior) op een fantoompunt dat nooit geëvalueerd wordt."""
-    return [max(BOUNDS[name][0], min(BOUNDS[name][1], v)) for v, (_, name) in zip(vec, keys)]
+def _clamp_to_bounds(vec: list[float], keys: list[tuple],
+                     house: dict | None = None) -> list[float]:
+    """Klem een solver-state-vector op de BOUNDS van zijn parameters (incl. de per-kamer
+    versmalling uit house_model.json — zie `param_bounds`). vec_to_params projecteert al bij
+    élke evaluatie, maar de Gauss-Newton-iterate zelf kon buiten de band accumuleren — dan
+    rekent de ridge-anker-term (x−prior) op een fantoompunt dat nooit geëvalueerd wordt."""
+    return [clamp_param(house, scope, name, v) for v, (scope, name) in zip(vec, keys)]
 
 def _residuals_timed(house, params, timeline, seed, ctx: RunContext, actual, rooms_set,
                      tm_seed=None, measured=None) -> list[tuple]:
@@ -577,7 +592,7 @@ def calibrate(house, params, timeline, seed, ctx: RunContext, actual, max_iter: 
     for _ in range(max_iter):
         if time.time() - t_start > time_budget_s:
             break
-        p_cur = vec_to_params(x, keys, base)
+        p_cur = vec_to_params(x, keys, base, house)
         r = _residuals(house, p_cur, timeline, seed, ctx, actual, rooms_set, tm_seed=tm_seed,
                        measured=measured)
         if not r:
@@ -594,7 +609,7 @@ def calibrate(house, params, timeline, seed, ctx: RunContext, actual, max_iter: 
             dx = max(1e-3, abs(x[j]) * 0.05)
             xj = x[:]
             xj[j] += dx
-            rj = _residuals(house, vec_to_params(xj, keys, base), timeline, seed, ctx, actual, rooms_set,
+            rj = _residuals(house, vec_to_params(xj, keys, base, house), timeline, seed, ctx, actual, rooms_set,
                             tm_seed=tm_seed)
             if len(rj) != m:
                 continue
@@ -620,9 +635,9 @@ def calibrate(house, params, timeline, seed, ctx: RunContext, actual, max_iter: 
             break
         # Klem de iterate zélf op BOUNDS (niet alleen de vec_to_params-projectie): anders kan x
         # buiten de band zwerven terwijl de ridge-anker-term (x−prior) op dat fantoompunt rekent.
-        x_new = _clamp_to_bounds([x[j] + delta[j] for j in range(nk)], keys)
+        x_new = _clamp_to_bounds([x[j] + delta[j] for j in range(nk)], keys, house)
         new_cost = _total_cost(
-            _residuals(house, vec_to_params(x_new, keys, base), timeline, seed, ctx, actual, rooms_set,
+            _residuals(house, vec_to_params(x_new, keys, base, house), timeline, seed, ctx, actual, rooms_set,
                        tm_seed=tm_seed), x_new)
         if math.isnan(new_cost) or new_cost >= best_cost:
             lam *= 4.0                      # geen verbetering → meer demping
@@ -636,7 +651,7 @@ def calibrate(house, params, timeline, seed, ctx: RunContext, actual, max_iter: 
     # Online: schuif LEARN_RATE van oud → nieuw zodat één run niet wild uitslaat.
     x_old = params_to_vec(params, keys)
     x_blend = [x_old[j] + LEARN_RATE * (x[j] - x_old[j]) for j in range(len(keys))]
-    new_params = vec_to_params(x_blend, keys, base)
+    new_params = vec_to_params(x_blend, keys, base, house)
     final_rmse = rmse(_residuals(house, new_params, timeline, seed, ctx, actual, rooms_set, tm_seed=tm_seed))
     if final_rmse != final_rmse:   # NaN: vertrouw de geblende params niet — geef de oude terug
         return params, rmse(r0)   # (kan zelf NaN zijn → downstream vangt de niet-NaN-poort dat af)

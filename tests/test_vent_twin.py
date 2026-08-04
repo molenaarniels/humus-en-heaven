@@ -129,7 +129,8 @@ def test_dashboard_schema_kamers(setup, dash):
                  "sensor_outdoor_frac", "predicted_mass_temp", "error", "humidity",
                  "ach", "solar_w", "solar_by_window", "env_w", "vent_w",
                  "trend_c_per_h", "comfort_low", "comfort_high", "ac", "heating",
-                 "paused", "predicted_series", "actual_series", "params"}
+                 "paused", "predicted_series", "forecast_series", "actual_series",
+                 "params"}
     geschrapt = {"from_window_data", "party_w", "ground_w", "internal_w",
                  "ac_excluded_samples"}
     assert set(dash["rooms"]) == set(setup["house"]["rooms"])
@@ -148,6 +149,10 @@ def test_dashboard_schema_kamers(setup, dash):
             assert {"label", "w"} <= set(wentry)
         assert isinstance(room["predicted_series"], list) and room["predicted_series"]
         assert {"t", "temp"} <= set(room["predicted_series"][0])
+        # De kalibratielijn snijdt af op "nu": de toekomst hoort in forecast_series, dat op de
+        # meting geankerd is en dus een ándere (betere) reeks is dan de doorlopende sim-staart.
+        assert all(datetime.fromisoformat(pt["t"]) <= NOW for pt in room["predicted_series"])
+        assert isinstance(room["forecast_series"], list)
         assert isinstance(room["actual_series"], list)
         assert isinstance(room["params"], dict)
     # De chips volgen de doorgegeven staten.
@@ -162,6 +167,29 @@ def test_dashboard_schema_kamers(setup, dash):
     assert ted["comfort_low"] == pytest.approx(17.0)
     assert ted["comfort_high"] == pytest.approx(18.0)
     assert len(ted["actual_series"]) == 2
+
+
+def test_dashboard_draagt_de_vooruitblik_door(setup):
+    """`forecast_series` + de trend komen uit de geankerde vooruitblik, niet uit de sim-staart.
+    Zonder deze plumbing blijft het dashboard stil op de oude 2u-projectie draaien terwijl de
+    grafiek 12u belooft."""
+    import vent_forecast as vfc
+    house = setup["house"]
+    tl = vio.build_timeline(setup["house"], setup["weather"], [], NOW, 6.0, setup["ctx"],
+                            end_h=vfc.FORECAST_H)
+    sim12 = vp.simulate(house, setup["params"], tl, {rid: 23.0 for rid in house["rooms"]},
+                        setup["ctx"], calib_only_rooms=set(house["rooms"]), snapshot_t=NOW)
+    fc = vfc.forecast(house, setup["params"], tl, sim12, NOW, setup["ctx"],
+                      {"ted": sim12["Ta_now"]["ted"] + 1.0})
+    d = _dash(dict(setup, timeline=tl, sim=sim12), forecast=fc)
+    ted = d["rooms"]["ted"]
+    assert ted["forecast_series"], "geen vooruitblik doorgegeven"
+    assert all(datetime.fromisoformat(pt["t"]) >= NOW for pt in ted["forecast_series"])
+    span_h = (datetime.fromisoformat(ted["forecast_series"][-1]["t"]) - NOW).total_seconds() / 3600
+    assert span_h == pytest.approx(vfc.FORECAST_H, abs=0.3)
+    # Zonder vooruitblik blijft het veld leeg — additief, nooit een crash.
+    leeg = _dash(dict(setup, timeline=tl, sim=sim12))
+    assert leeg["rooms"]["ted"]["forecast_series"] == []
 
 
 def test_dashboard_schema_koker_stratificatie(dash):

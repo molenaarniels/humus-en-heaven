@@ -116,7 +116,7 @@ def replay(house: dict, dataset: dict, days: float, step_h: float,
             params, step_rmse = vf.calibrate(house, params, timeline, seed, ctx, actual,
                                              solar_mean=solar_mean,
                                              tm_seed=tm_seed, measured=gamma_measured)
-        rails = vf.railed_params(params)
+        rails = vf.railed_params(params, house=house)
         n = sum(len(s) for s in actual.values())
         steps.append({"t": vnow.isoformat(), "rmse": round(step_rmse, 3),
                       "samples": n, "railed": rails})
@@ -165,9 +165,17 @@ def main() -> None:
         raise SystemExit("[seed] geen enkele replay-stap gelukt — shards te dun?")
 
     final = steps[-1]
-    ok = final["rmse"] <= MAX_SEED_RMSE and not final["railed"]
+    # De poort kijkt alleen naar échte BOUNDS-saturatie. Een parameter die op een BEWUSTE
+    # huismodel-grens ligt (`param_bounds`, achtervoegsel "(model)") is geen klacht maar de
+    # constraint die doet wat hij moet doen — `living.c_mass` hoort daar te liggen, want de
+    # nowcast-doelfunctie waar de fit op draait wíl daar juist onderdoor (zie house_model.json).
+    hard_rails = [r for r in final["railed"] if not vf.is_model_rail(r)]
+    model_rails = [r for r in final["railed"] if vf.is_model_rail(r)]
+    ok = final["rmse"] <= MAX_SEED_RMSE and not hard_rails
     print(f"[seed] eind-RMSE {final['rmse']:.3f} °C (poort ≤ {MAX_SEED_RMSE}), "
-          f"gerailed: {final['railed'] or 'geen'} → {'GESLAAGD' if ok else 'AFGEKEURD'}")
+          f"gerailed: {hard_rails or 'geen'}"
+          + (f" (+ huismodel-grens: {', '.join(model_rails)})" if model_rails else "")
+          + f" → {'GESLAAGD' if ok else 'AFGEKEURD'}")
     if not ok:
         raise SystemExit(1)
 
@@ -182,7 +190,7 @@ def main() -> None:
            "params": params,
            "rmse": final["rmse"],
            "skill": None,
-           "railed": [],
+           "railed": model_rails,
            "rmse_history": [],     # leercurve toont alléén echte productieruns
            "anomaly": {},
            "seed_src": f"shard-replay {span}" + (" (eval-only)" if args.eval_only else "")}

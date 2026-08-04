@@ -67,7 +67,7 @@ jobs:
             python vent_twin.py || echo "::warning::vent_twin.py failed this iteration, continuing"
             # Per pad guarden: op een allereerste run bestaan artefacten/shards mogelijk
             # nog niet en zou één missende pathspec de hele git add laten falen.
-            for p in docs/vent_data.json docs/vent_learned.json data/twin2_history; do
+            for p in docs/vent_data.json docs/vent_learned.json docs/vent_forecast.json data/twin2_history; do
               [ -e "$p" ] && git add "$p"
             done
             if git diff --staged --quiet; then

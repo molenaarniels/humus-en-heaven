@@ -419,6 +419,64 @@ def test_railed_params_flags_bounds():
     assert not any(f.startswith("a.ua_env") for f in flags)
 
 
+# ── 8b. Per-kamer parametergrenzen uit het huismodel (`param_bounds`) ────────────────
+
+def test_param_bounds_versmalt_alleen_per_kamer():
+    house = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": 0.6}}}, "b": {}}}
+    glo, ghi = vp.BOUNDS["c_mass"]
+    assert vp.param_bounds(house, "a", "c_mass") == (0.6, ghi)
+    assert vp.param_bounds(house, "b", "c_mass") == (glo, ghi)   # andere kamer: onaangeroerd
+    assert vp.param_bounds(house, "a", "c_air") == vp.BOUNDS["c_air"]   # andere param: idem
+    assert vp.param_bounds(house, "global", "vent_eff") == vp.BOUNDS["vent_eff"]
+    assert vp.param_bounds(None, "a", "c_mass") == (glo, ghi)    # geen huis → globaal
+
+
+def test_param_bounds_kan_nooit_buiten_de_fysieke_band_stappen():
+    """Een override VERSMALT; hij mag de band niet oprekken en niet omkeren — anders zou een
+    typefout in house_model.json de fysieke klem stilzwijgend uitschakelen."""
+    glo, ghi = vp.BOUNDS["c_mass"]
+    ruim = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": -99, "max": 999}}}}}
+    assert vp.param_bounds(ruim, "a", "c_mass") == (glo, ghi)
+    omgekeerd = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": 5.0, "max": 1.0}}}}}
+    assert vp.param_bounds(omgekeerd, "a", "c_mass") == (glo, ghi)   # onzin → val terug
+
+
+def test_clamp_model_bounds_raakt_de_globale_band_niet():
+    """merged_params gebruikt deze variant: de bewuste kamer-vloer moet meteen gelden, maar
+    een geleerde waarde mag verder ongemoeid doorgegeven worden."""
+    house = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": 0.6}}}}}
+    assert vp.clamp_model_bounds(house, "a", "c_mass", 0.3) == pytest.approx(0.6)
+    assert vp.clamp_model_bounds(house, "a", "c_mass", 1.4) == pytest.approx(1.4)
+    # Buiten de globale BOUNDS blijft het getal staan — dat is de taak van de fit.
+    boven = vp.BOUNDS["c_mass"][1] + 5.0
+    assert vp.clamp_model_bounds(house, "a", "c_mass", boven) == pytest.approx(boven)
+
+
+def test_railed_params_onderscheidt_huismodel_grens_van_saturatie():
+    """Twee heel verschillende signalen, en poorten mogen alleen op het eerste afgaan: een
+    BOUNDS-rail is een klacht (de fysica wil ergens heen waar ze niet mag), een
+    huismodel-rail is de constraint die precies doet waarvoor hij is aangebracht."""
+    house = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": 0.6}}}}}
+    params = {"a": {"c_mass": 0.6, "solar_gain": vp.BOUNDS["solar_gain"][0]}}
+    flags = vf.railed_params(params, house=house)
+    assert "a.c_mass@floor(model)" in flags
+    assert "a.solar_gain@floor" in flags
+    assert vf.is_model_rail("a.c_mass@floor(model)")
+    assert not vf.is_model_rail("a.solar_gain@floor")
+
+
+def test_huismodel_draagt_de_living_c_mass_vloer():
+    """Vangnet tegen stil verlies: zonder deze vloer leert de nowcast-fit living's
+    thermische massa terug naar de globale ondergrens en groeit de voorspelde dagcyclus
+    weer — zie de motivering in house_model.json."""
+    house = vio.load_house()
+    lo, _hi = vp.param_bounds(house, "living", "c_mass")
+    assert lo == pytest.approx(0.595)
+    # De vloer moet ook echt in de ingelezen params landen (merged_params-poort).
+    learned = {"params": {"living": {"c_mass": 0.30}}, "physics_rev": vio.PHYSICS_REV}
+    assert vio.merged_params(house, learned)["living"]["c_mass"] == pytest.approx(0.595)
+
+
 def _strat_house():
     return {
         "rooms": {

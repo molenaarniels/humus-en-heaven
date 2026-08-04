@@ -107,7 +107,10 @@
   de invoer (winddruk-coëfficiënten, exacte openingsgeometrie, deurstanden) is benaderd en wordt al lerend bijgesteld.
   Een relatieve rangschikker, geen liter-per-seconde-orakel.
   Deze pagina leest <code>vent_data.json</code> (elk kwartier ververst); de tado-grondwaarheid
-  komt read-only uit <code>window_data.json</code>.
+  komt read-only uit <code>window_data.json</code>. De 12-uurs vooruitblik draait op
+  <code>vent_forecast.json</code> — dezelfde fysica, geankerd op de laatste tado-meting, en in de
+  speeltuin lokaal herrekend met jouw raamstanden. Elk getal daar gaat uit van een perfecte
+  weersvoorspelling: de weersfout zit er niet in.
 </footer>
 
 <!-- ── Rapportage-modal ───────────────────────────────────────────────────────── -->
@@ -154,7 +157,8 @@
 
 <script src="js/theme.js"></script>
 <script src="js/shared.js"></script>
-<script src="js/speeltuin.js?v=3"></script>
-<script src="js/vent.js?v=3"></script>
+<script src="js/vent_core.js?v=1"></script>
+<script src="js/speeltuin.js?v=4"></script>
+<script src="js/vent.js?v=4"></script>
 </body>
 </html>

@@ -112,7 +112,7 @@ def apply_config(cfg: dict) -> None:
         vp.single_sided_fresh = _no_single_sided
 
 
-def jitter_params(params: dict, j: float) -> dict:
+def jitter_params(params: dict, j: float, house: dict | None = None) -> dict:
     """Deterministische start-jitter (geen RNG): elke parameter ±`j` fractioneel,
     alternerend van teken per param-index — het twin-2-campagnepatroon. Geklemd op
     BOUNDS. De A/A-armen meten hiermee de gevoeligheid van de hele campagne voor de
@@ -121,7 +121,7 @@ def jitter_params(params: dict, j: float) -> dict:
     keys = vf._param_keys(rooms)
     vec = vf.params_to_vec(params, keys)
     vec = [v * (1.0 + j * (1 if i % 2 == 0 else -1)) for i, v in enumerate(vec)]
-    return vf.vec_to_params(vf._clamp_to_bounds(vec, keys), keys, params)
+    return vf.vec_to_params(vf._clamp_to_bounds(vec, keys, house), keys, params, house)
 
 
 def start_params_for(house: dict, cfg: dict) -> dict:
@@ -129,7 +129,7 @@ def start_params_for(house: dict, cfg: dict) -> dict:
     de replay ís de productie-leerroute), met de A/A-jitter erbovenop."""
     start = vio.default_params(house)
     j = cfg.get("jitter")
-    return jitter_params(start, j) if j else start
+    return jitter_params(start, j, house) if j else start
 
 
 # ── Venster-geometrie ────────────────────────────────────────────────────────────────
@@ -403,7 +403,7 @@ def run_arm(arm: str, days: float, step_h: float, rotations: int) -> dict:
         params, steps = train_replay(house, dataset, actual_f, train, step_h,
                                      om_learned, params)
         ev = evaluate(house, dataset, actual_f, held, params, om_learned)
-        rails = vf.railed_params(params)
+        rails = vf.railed_params(params, house=house)
         print(f"[{arm}] rotatie {r}: held {held_idx}, {steps} fit-stappen → "
               f"5d {ev['rmse_5d']}°C · 48u {ev['rmse_48h']}°C · zon {ev['rmse_sunny']}°C"
               + (f"; gerailed: {', '.join(rails)}" if rails else ""))

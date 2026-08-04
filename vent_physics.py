@@ -100,9 +100,38 @@ GROUND_LOOKBACK_H   = 720.0  # uur (~30 dagen) — dempingsvenster van het buite
 
 GROUND_SOIL_ANCHOR  = 11.0   # °C — NL jaargemiddelde luchttemp ≈ diepe bodemtemp
 
-GROUND_AIR_COUPLING = 0.5    # aandeel waarmee de kruipruimte het gedempte buiten volgt
+# Aandeel waarmee de kruipruimte het gedempte buiten volgt. **0.5 → 1.0 (aug 2026).**
+# Met `GROUND_SOIL_ANCHOR` 11 °C zette 0.5 de kruipruimte in juli op 15.8 °C, terwijl een
+# gevéntileerde kruipruimte onder een bewoond huis in een zomer die gemiddeld 19.7 °C buiten
+# doet veel dichter op het gedempte buitengemiddelde zit (~20.6 °C bij koppeling 1.0). De
+# 11 °C-bodemwaarde is een STOOKSEIZOEN-aanname die het hele jaar door werd toegepast: met
+# living op 23.0 °C over 55 m² vloer is dat een staande put van ~250 W — overdag gemaskeerd
+# door de zon, dominant om 05:00, en precies de "over-koelt 's nachts"-handtekening die de
+# 12u-voorspelling het meest kostte.
+#
+# Geïdentificeerd door per-kamer-GEOMETRIE, niet door fitten — en dát is het bewijs: de term
+# schaalt met `ground_m2`, dus hij hóórt exact de drie grond-gekoppelde kamers te verbeteren
+# en de twee zónder grondkoppeling onaangeroerd te laten. Dat is wat er gebeurt (living −19 %,
+# ted −19 %, bath −13 %; hotties 0.863 → 0.870, office 0.712 → 0.711). Een alternatief dat
+# gepoold béter scoorde (`INTERNAL_NIGHT_FRACTION` 1.8) is juist daarom verworpen: dat kocht
+# living's winst door hotties van +0.27 naar +0.73 te duwen — de aggregatie repareren door de
+# ene kamer die al klopte te breken. Zie tools/horizon_backtest.py + AIRFLOW3_ASSESSMENT.md §2.
+#
+# WINTER-VOORBEHOUD: gevalideerd op zomerdata (buiten 9.2–36.3 °C). Koppeling 1.0 betekent dat
+# de kruipruimte het gedempte buitengemiddelde vólgt, dus 's winters wordt hij KOUDER dan de
+# oude 11 °C-verankering. De richting is fysisch juist, de grootte is onder 9.2 °C onbeproefd.
+# Herijken zodra er stookseizoen-data is.
+GROUND_AIR_COUPLING = 1.0    # aandeel waarmee de kruipruimte het gedempte buiten volgt
 
-GROUND_TEMP_MIN     = 6.0    # °C — klem, tegen een absurd anker bij korte/rare historie
+# Klemmen tegen een absurd anker bij korte/rare historie. **Let op:** ze zijn gekozen toen
+# `GROUND_AIR_COUPLING` 0.5 was, en dan bond GROUND_TEMP_MAX pas op een 30-daags
+# buitengemiddelde van 29 °C — in Nederland nooit. Bij koppeling 1.0 bindt hij al op 20 °C, dus
+# op een gewone warme zomermaand: over het record mei–aug 2026 kneep hij het anker af in 86 van
+# de 265 backtest-oorsprongen, juist in de warme periodes. De gemeten winst van de
+# koppelings-correctie is daarmee een ONDERgrens. Verruimen is een tweede fysica-wijziging en
+# hoort dezelfde behandeling te krijgen (her-seeden + tools/horizon_backtest.py) — zie
+# AIRFLOW3_ASSESSMENT.md §6 en de waakhond in tests/test_vent_physics.py.
+GROUND_TEMP_MIN     = 6.0    # °C — knijpt 's winters bij koppeling 1.0 (onbeproefd terrein)
 
 GROUND_TEMP_MAX     = 20.0
 
@@ -396,6 +425,59 @@ GLOBAL_PARAMS   = ["cp_shelter", "vent_eff", "ua_inter"]
 CD = PRIORS["cd"]   # vaste ontladingscoëfficiënt (niet geleerd)
 
 RAIL_TOL = 0.02   # binnen deze fractie van de band-breedte → de param zit 'op zijn grens'
+
+def param_bounds(house: dict | None, scope: str, name: str) -> tuple[float, float]:
+    """De clamp-band voor parameter `name` in `scope` ("global" of een kamer-id), inclusief
+    de per-kamer VERSMALLING uit `house_model.json` (`rooms.<id>.param_bounds.<naam>.min/max`).
+
+    Waarom een override in het HUISMODEL en niet in `BOUNDS`: de rechtvaardiging is
+    geometrisch, niet numeriek. `living.c_mass` railde op zijn vloer (0.372, de láágste van
+    alle kamers) terwijl living veruit de grootste is — 150 m³ met 55 m² vloer. Dat is fysisch
+    onmogelijk, en het kostte precies wat je verwacht van een te lage traagheid: een té grote
+    voorspelde dagcyclus (living −0.91 °C om 06:00 vs +0.54 om 16:00, ~1.45 °C piek-tot-piek).
+    Zo'n grens hoort dus náást de geometrie te staan die hem rechtvaardigt, per kamer.
+    Een GLOBALE `c_mass`-vloer is getest en verworpen: die hielp living maar duwde hotties'
+    amplitude 0.883 → 1.468 — dezelfde ruil-de-ene-kamer-voor-de-andere die ook
+    `INTERNAL_NIGHT_FRACTION`=1.8 en de rollout-refit deed sneuvelen.
+
+    De band VERSMALT alleen (max van de vloeren, min van de plafonds), zodat een override
+    nooit buiten de fysisch bedoelde `BOUNDS` kan stappen. De fit blijft vrij bóven de vloer;
+    dit is een constraint-wijziging, geen vastgepinde waarde.
+    """
+    lo, hi = BOUNDS[name]
+    if scope == "global" or not house:
+        return lo, hi
+    ov = ((house.get("rooms", {}).get(scope) or {}).get("param_bounds") or {}).get(name)
+    if isinstance(ov, dict):
+        if ov.get("min") is not None:
+            lo = max(lo, float(ov["min"]))
+        if ov.get("max") is not None:
+            hi = min(hi, float(ov["max"]))
+    return (lo, hi) if lo <= hi else BOUNDS[name]
+
+def clamp_param(house: dict | None, scope: str, name: str, value: float) -> float:
+    """`value` geklemd op `param_bounds(house, scope, name)`."""
+    lo, hi = param_bounds(house, scope, name)
+    return max(lo, min(hi, value))
+
+def clamp_model_bounds(house: dict | None, scope: str, name: str, value: float) -> float:
+    """Als `clamp_param`, maar past ALLEEN de huismodel-versmalling toe — de globale
+    `BOUNDS` blijven buiten beschouwing.
+
+    Voor het inlezen van geleerde staat (`vent_io.merged_params`). Daar wil je de bewuste
+    per-kamer vloer wél meteen laten gelden (anders draait de eerste run na een deploy nog
+    op de oude, te lage waarde), maar níét stilzwijgend elke geleerde waarde op de globale
+    band trekken: dat is de taak van de fit, en merged_params hoort geleerde getallen door
+    te geven, niet te herschrijven."""
+    if name not in BOUNDS:
+        return value
+    lo, hi = param_bounds(house, scope, name)
+    glo, ghi = BOUNDS[name]
+    if lo > glo:
+        value = max(lo, value)
+    if hi < ghi:
+        value = min(hi, value)
+    return value
 
 def solve_linear(A: list[list[float]], b: list[float]) -> list[float] | None:
     """Los A·x = b op met partieel pivoteren. None bij (bijna-)singulier."""
@@ -1337,6 +1419,22 @@ def _sensor_temp(ta: float | None, t_out: float | None, frac: float) -> float | 
     if ta is None or not frac or t_out is None:
         return ta
     return (1.0 - frac) * ta + frac * t_out
+
+def air_from_sensor(house: dict, rid: str, t_sensor: float | None,
+                    t_out: float | None) -> float | None:
+    """De omkering van `_sensor_temp`: haal de LUCHTKNOOP-temp terug uit wat de tado-sensor
+    leest. Nodig zodra je de sim op een MÉTING zaait i.p.v. andersom.
+
+    Zonder deze inversie pas je de blend twéé keer toe — de luchtknoop krijgt een al-gebiasde
+    waarde, en de uitvoer gaat er in `_to_sensor_series` nóg eens doorheen. Dat kost
+    ~frac·(Ta − T_out), ruim 1 °C op een koude nacht voor de twee kamers met
+    `sensor_outdoor_frac` 0.15 (hotties, office), en valt op als een grote fout op h=1 —
+    precies waar een op de meting geankerde voorspelling per constructie bijna exact hoort
+    te zijn. frac=0 → ongewijzigd."""
+    frac = house.get("rooms", {}).get(rid, {}).get("sensor_outdoor_frac", 0.0)
+    if t_sensor is None or not frac or t_out is None:
+        return t_sensor
+    return (t_sensor - frac * t_out) / (1.0 - frac)
 
 def _to_sensor_series(house, timeline, rid, pred: list[tuple]) -> list[tuple]:
     """Map een voorspelde luchttemp-reeks (t, Ta) naar wat de sensor van die kamer zou

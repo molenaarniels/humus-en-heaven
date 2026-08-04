@@ -1,0 +1,18 @@
+# Offline gereedschap onder tools/ — BEWUST geen runtime-afhankelijkheid.
+#
+# De pipelines zelf draaien op stdlib + requests (requirements.txt) en de CI installeert
+# alleen requirements.txt + requirements-dev.txt. Alles hier is handwerk dat je één keer
+# per fysica-revisie draait, niet elk kwartier:
+#
+#   numpy   tools/surrogate_runtime.py + surrogate_backtest.py + test_invariants.py +
+#           export_driver_timeline.py + airflow_distill.py — de Python-kant van het
+#           luchtstroom-surrogaat (de browser heeft niets nodig: docs/js/vent_core.js doet
+#           dezelfde rekensom in kaal JS).
+#   torch   alléén tools/train_surrogate.py, dus alléén nodig om het surrogaat opnieuw te
+#           distilleren. Dat hoeft pas als de geometrie in house_model.json verandert —
+#           surrogate_runtime weigert dan te starten in plaats van stil verschoven kolommen
+#           te gebruiken.
+#
+# Installeer met:  pip install -r requirements-tools.txt
+numpy>=1.26
+torch>=2.2

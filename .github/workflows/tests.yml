@@ -27,3 +27,23 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+  # De golden-vector: bewijst dat docs/js/vent_core.js exact reproduceert wat
+  # vent_physics.simulate doet. Zonder deze poort kan een portfout in de browserkern
+  # ongemerkt binnen het foutbudget van het luchtstroom-surrogaat blijven zitten — en dán
+  # toont de speeltuin een andere fysica dan de backtest gevalideerd heeft. Node only:
+  # de vector zelf staat in tools/golden/ en wordt met tools/export_driver_timeline.py
+  # ververst (handmatig, na een fysica-wijziging).
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Golden-vector (JS-kern vs vent_physics)
+        run: node tools/test_golden.js

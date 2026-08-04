@@ -48,7 +48,11 @@
       ],
       "plan_h": 2,
       "label": "Woonkamer + keuken",
-      "_sensor": "midden in de kamer → goede proxy voor kamergemiddelde"
+      "_sensor": "midden in de kamer → goede proxy voor kamergemiddelde",
+      "_param_bounds": "c_mass-vloer 0.595: living railde op de globale vloer (0.372, de LAAGSTE van alle kamers) terwijl het veruit de grootste kamer is — 150 m3, 55 m2 vloer. Te lage traagheid gaf een te grote voorspelde dagcyclus (-0.91 gradC om 06:00 vs +0.54 om 16:00, ~1.45 gradC piek-tot-piek). Een GLOBALE vloer is getest en verworpen (hotties-amplitude 0.883 -> 1.468); living-only geeft living 0.663 -> 0.576 op 401 oorsprongen met <2% beweging elders. Rechtvaardiging is geometrisch, dus de grens staat hier naast de geometrie i.p.v. in vent_physics.BOUNDS.",
+      "param_bounds": {
+        "c_mass": { "min": 0.595 }
+      }
     },
     "ted": {
       "from_window_data": "Ted",

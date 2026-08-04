@@ -5,9 +5,16 @@
 //   2. de JS-port van het luchtstroomnetwerk (orifice-flow + Newton-druksolver,
 //      mirror van vent_physics.py),
 //   3. de speeltuin-UI (sliders/toggles/tabel) + één-knoops thermiek-schatting,
-//   4. de wind-Cp-strategie (twee-cosinus + één cp_shelter).
+//   4. de wind-Cp-strategie (twee-cosinus + één cp_shelter),
+//   5. de 12-uurs scenario-vooruitblik (de échte 2-knoops kern uit js/vent_core.js over de
+//      door Python geëxporteerde drivers).
 // Kleine gedeelde helpers (fmt/dirName/beaufort/normState) wonen hier; een pagina-eigen
 // definitie (later geladen) wint gewoon.
+//
+// LEESRICHTING: dit script wordt vóór vent.js geladen maar draait erná — alles hier start bij
+// renderSandbox(), dat vent.js' render() aanroept. Daarom mag het gerust vent.js' globals
+// gebruiken (`state`, `ventTimeScale`, `ventTooltip`, `futureAnnotations`) en shared.js' `bust`;
+// op laadmoment bestaat daar nog niets van. Dit bestand hoort dan ook alléén op vent.html.
 
 function sandboxCardHTML() {
 
@@ -40,7 +47,21 @@ function sandboxCardHTML() {
         </div>
       </div>
     </div>
+    <div id="sandbox-forecast" style="margin-top:22px;"></div>
   </div></div>`;
+}
+
+// De 12-uurs vooruitblik ín de speeltuin: dezelfde fysica als het dashboard, maar met de
+// standen die jíj hier zet. Alleen de markup — `sandboxForecast()` vult 'm.
+function sandboxForecastHTML() {
+  return `<div style="border-top:1px dashed #2a241b33;margin-bottom:14px;"></div>
+    <div class="grp-title" style="margin-top:0;">Vooruitblik · 3u terug, 12u vooruit</div>
+    <p style="font-style:italic;color:var(--ink-soft);font-size:14px;margin:2px 0 6px;">
+      Wat doet deze raamstand de komende 12 uur? Dit is niet de één-knoops schatting uit de tabel
+      hierboven maar het <em>volledige</em> 2-knoops model, lokaal doorgerekend: doorgetrokken =
+      jouw scenario, gestreept = de gemelde stand. De vooruitblik start op de laatste tado-meting.</p>
+    <div class="chart-box" style="height:300px;"><canvas id="sandbox-chart"></canvas></div>
+    <div id="sandbox-fc-out" style="margin-top:10px;"></div>`;
 }
 
 // ===================== FLOOR PLAN =====================
@@ -845,7 +866,235 @@ function sandboxRecompute() {
        <th>ΔT/u</th><th>over 1u</th><th>over 2u</th></tr></thead>
      <tbody>${rows}</tbody></table></div>
      <p class="ctl-sub" style="margin:6px 0 0;">ΔT/u + projectie: simpele één-knoops schatting (ventilatie + schil
-       verstoren de live modeltrend; zon/buren/interne winst constant) — een wat-als-richting voor ~1–2u, geen exacte voorspelling.</p>`;
+       verstoren de live modeltrend; zon/buren/interne winst constant) — een wat-als-richting voor ~1–2u, geen exacte voorspelling.
+       Voor de 12-uurs blik hieronder draait het volledige 2-knoops model.</p>`;
+  sandboxForecast();
+}
+
+
+// ===================== SPEELTUIN: 12-UURS VOORUITBLIK =====================
+// De tabel hierboven is een één-knoops schátting die ~1–2u meegaat. Voor 12 uur is dat te
+// grof: over een nacht doen de massaknoop, de trap-stratificatie en de koppeling tussen
+// kamers het meeste werk, en die zitten alleen in het volledige model. Dus draaien we hier
+// de échte 2-knoops kern (js/vent_core.js) over de door Python geëxporteerde drivers
+// (vent_forecast.json) — twee keer: één keer met de gemelde standen, één keer met de jouwe.
+// Het verschil tússen die twee is de hele vraag die de speeltuin stelt, en omdat beide armen
+// door exact dezelfde code lopen valt elke systematische modelafwijking eruit weg.
+
+const FC_PALETTE = [COLORS.moss, COLORS.clay, COLORS.rain, COLORS.sun, COLORS.mossLight, COLORS.dry];
+
+// Het surrogaat is ~0.4 MB, dus pas ophalen als de speeltuin echt getoond wordt — en maar
+// één keer per pagina-instantie (de promise zelf wordt gecachet, zodat twee snelle toggles
+// niet twee downloads starten).
+function loadSurrogate() {
+  if (!state.surrogatePromise) {
+    state.surrogatePromise = fetch(bust("js/surrogate.json"))
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+  }
+  return state.surrogatePromise;
+}
+
+// De onzekerheidsband + het validatie-envelop (tools/export_uncertainty.py). Bewust NIET per
+// run ververst: het is een eigenschap van het model, niet van vanavond. Ontbreekt het bestand,
+// dan valt alleen de bandkolom + de OOD-waarschuwing weg.
+function loadUncertainty() {
+  if (!state.uncertaintyPromise) {
+    state.uncertaintyPromise = fetch(bust("js/uncertainty.json"))
+      .then(r => r.ok ? r.json() : null)
+      .catch(() => null);
+  }
+  return state.uncertaintyPromise;
+}
+
+/** p10/p90 van (voorspeld − gemeten) voor deze kamer op `hours` vooruit, of null. */
+function bandAt(unc, rid, hours) {
+  const b = unc && unc.bands && unc.bands[rid];
+  if (!b) return null;
+  const h = Math.max(1, Math.ceil(hours));
+  const cell = b[String(h)] || b[String(Object.keys(b).map(Number).sort((a, c) => a - c).pop())];
+  return cell && cell.trusted ? cell : null;
+}
+
+/** Hoeveel voorspelstappen buiten het gevalideerde envelop vallen — het stookseizoen valt daar
+ *  per definitie helemaal buiten, en dan is elke °C hier extrapolatie. */
+function oodCount(unc, steps) {
+  const e = unc && unc.envelope;
+  if (!e) return null;
+  let n = 0;
+  for (const s of steps) {
+    if (s.T_out < e.t_out_min || s.T_out > e.t_out_max) { n++; continue; }
+    if (e.wind_max != null && (s.wind_speed || 0) > e.wind_max) n++;
+  }
+  return { n, total: steps.length, env: e };
+}
+
+/** Pas de weer-sliders toe op de geëxporteerde drivers: het verschil t.o.v. de live waarde
+ *  schuift elke stap mee op. Zo blijft de tijdvariatie (dag/nacht, een front) intact en
+ *  betekent de slider "wat als het overal X warmer / Y harder waaide". De dak-sol-air-temp
+ *  schuift met dezelfde delta mee — die is per definitie T_out plus zon-min-hemel. */
+function shiftSteps(steps, dTout, dWind, dDir) {
+  if (!dTout && !dWind && !dDir) return steps;
+  return steps.map(s => {
+    const t = { ...s };
+    if (dTout) {
+      t.T_out = s.T_out + dTout;
+      t.t_solair = {};
+      for (const z in s.t_solair) t.t_solair[z] = s.t_solair[z] + dTout;
+    }
+    if (dWind) t.wind_speed = Math.max(0, s.wind_speed + dWind);
+    if (dDir) t.wind_dir = ((s.wind_dir + dDir) % 360 + 360) % 360;
+    return t;
+  });
+}
+
+/** Minimum van een reeks + het moment waarop. */
+function seriesMin(times, values) {
+  let bi = -1;
+  for (let i = 0; i < values.length; i++) if (bi < 0 || values[i] < values[bi]) bi = i;
+  return bi < 0 ? null : { t: times[bi], v: values[bi] };
+}
+
+// Twee volle 12u-rollouts kosten enkele tientallen ms; een slider vuurt tijdens het slepen
+// tientallen `input`-events. Ontkoppel dus: de ógenblikkelijke tabel hierboven blijft live,
+// de vooruitblik wacht tot je even stilzit. `fcToken` laat een verlate rollout zien dat er
+// intussen een nieuwere gestart is, zodat een trage run nooit een verse grafiek overschrijft.
+const FC_DEBOUNCE_MS = 140;
+
+function sandboxForecast() {
+  const host = document.getElementById("sandbox-forecast");
+  const f = state.forecast;
+  if (!host) return;
+  if (!f || !(f.steps || []).length) {
+    host.innerHTML = `<p class="ctl-sub" style="margin:14px 0 0;">Geen vooruitblik beschikbaar —
+      <code>vent_forecast.json</code> ontbreekt of is leeg. De speeltuin hierboven werkt gewoon.</p>`;
+    return;
+  }
+  if (!host.dataset.ready) { host.innerHTML = sandboxForecastHTML(); host.dataset.ready = "1"; }
+  clearTimeout(state.fcTimer);
+  const token = (state.fcToken = (state.fcToken || 0) + 1);
+  state.fcTimer = setTimeout(() => {
+    loadSurrogate()
+      .then(w => {
+        if (!state.ventCore) state.ventCore = new VentCore(f, new Surrogate(w, f));
+        return state.ventCore;
+      })
+      .then(core => Promise.all([core, loadUncertainty()]))
+      .then(([core, unc]) => { if (token === state.fcToken) runSandboxForecast(core, unc); })
+      .catch(e => {
+        console.warn("vooruitblik mislukt:", e);
+        const out = document.getElementById("sandbox-fc-out");
+        if (out) out.innerHTML = `<p class="ctl-sub">Vooruitblik kon niet rekenen (${e.message}).</p>`;
+      });
+  }, FC_DEBOUNCE_MS);
+}
+
+function runSandboxForecast(core, unc) {
+  const f = state.forecast, sb = state.sandbox, d = state.data;
+  const steps = shiftSteps(f.steps, sb.outside_temp - sb.base_outside_temp,
+                           sb.wind_speed - sb.base_wind_speed,
+                           sb.wind_dir - sb.base_wind_dir);
+  // Basis = de gemelde standen zoals ze in de tijdlijn staan; scenario = die standen met
+  // jouw keuzes eroverheen. Zonder de merge zou een element dat de speeltuin niet toont
+  // (zonwering) uit het scenario verdwijnen en zou het verschil ook díé wijziging bevatten.
+  const scenarioStates = (step) => ({ ...step.states, ...sb.states });
+  const base = core.run(steps, f.seed_Ta, f.seed_Tm, null);
+  const scen = core.run(steps, f.seed_Ta, f.seed_Tm, scenarioStates);
+  const times = steps.map(s => new Date(s.t).getTime());
+  drawSandboxChart(times, steps, base, scen);
+
+  // Samenvatting: waar staat elke kamer aan het eind van de horizon, wat is het minimum
+  // onderweg (de vraag bij "kan ik de nacht doorkoelen?"), en wat scheelt jouw scenario.
+  const horizonH = (times[times.length - 1] - times[0]) / 36e5;
+  let rows = "";
+  (f.sensor_rooms || []).forEach(rid => {
+    const bs = base.sensor[rid] || [], ss = scen.sensor[rid] || [];
+    if (!ss.length) return;
+    const bMin = seriesMin(times, bs), sMin = seriesMin(times, ss);
+    const end = ss[ss.length - 1];
+    const dEnd = end - bs[bs.length - 1];
+    const dMin = sMin && bMin ? sMin.v - bMin.v : null;
+    const achArr = scen.ach[rid] || [];
+    const achMean = achArr.length ? achArr.reduce((a, b) => a + b, 0) / achArr.length : null;
+    const sign = (v) => v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}°`;
+    const cls = (v) => v == null ? "" : (v < -0.05 ? "err-neg" : (v > 0.05 ? "err-pos" : ""));
+    // De band is de empirische p10/p90 van (voorspeld − gemeten) op deze horizon, dus het
+    // aannemelijke interval loopt van voorspeld−p90 tot voorspeld−p10.
+    const bd = bandAt(unc, rid, horizonH);
+    const bandTxt = bd ? `${(end - bd.p90).toFixed(1)}–${(end - bd.p10).toFixed(1)}°` : "—";
+    rows += `<tr><td>${(f.room_labels || {})[rid] || rid}</td>
+      <td class="num">${end.toFixed(1)}°</td>
+      <td class="num">${bandTxt}</td>
+      <td class="num ${cls(dEnd)}">${sign(dEnd)}</td>
+      <td class="num">${sMin ? sMin.v.toFixed(1) + "°" : "—"}</td>
+      <td class="num">${sMin ? new Date(sMin.t).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+      <td class="num ${cls(dMin)}">${sign(dMin)}</td>
+      <td class="num">${achMean == null ? "—" : achMean.toFixed(2)}</td></tr>`;
+  });
+  const horizonTxt = new Date(times[times.length - 1])
+    .toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  const ood = oodCount(unc, steps);
+  const oodHtml = !ood ? "" : (ood.n
+    ? `<div class="banner banner-warn" style="margin:0 0 10px;">⚠ ${ood.n} van de ${ood.total}
+        voorspelstappen ligt <b>buiten</b> het gevalideerde bereik (buiten
+        ${ood.env.t_out_min}–${ood.env.t_out_max}°C, wind ≤ ${ood.env.wind_max} m/s, geen
+        stookseizoen in het record). Daar is dit extrapolatie, geen voorspelling.</div>`
+    : `<p class="ctl-sub" style="margin:0 0 8px;">Binnen het gevalideerde bereik
+        (${ood.env.t_out_min}–${ood.env.t_out_max}°C buiten, ${ood.env.days} dagen zomerdata,
+        <b>geen stookseizoen</b>).</p>`);
+  document.getElementById("sandbox-fc-out").innerHTML = oodHtml + `<div style="overflow-x:auto;">
+    <table><thead><tr><th>kamer</th><th>om ${horizonTxt}</th><th>aannemelijk</th>
+      <th>Δ t.o.v. gemeld</th>
+      <th>laagste</th><th>om</th><th>Δ laagste</th><th>gem. ACH</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <p class="ctl-sub" style="margin:8px 0 0;">"Aannemelijk" = de empirische p10–p90 van
+      (voorspeld − gemeten) op deze horizon, over alle backtest-oorsprongen. Het is een
+      <b>ondergrens</b>: modelfout alleen, gemeten op raamstanden die het huis werkelijk had —
+      op een scenario toepassen is een aanname. Perfecte-weersvoorspelling-aanname: de weersfout
+      zit er niet in. ACH blijft een relatieve rangschikker — de browser gebruikt een gedistilleerde
+      benadering van de druksolver, die bij wijd-open standen per kamer tot ~20% kan afwijken
+      (het doorstroom-door-deuren-regime; een dicht huis en de eenzijdig-gedomineerde kamers zijn
+      exact). De temperaturen zijn daar veel minder gevoelig voor — end-to-end ~0,01 °C.
+      Zonwering en airco zitten niet in het scenario: de zoninval is met de gemelde zonweringstand
+      vooraf uitgerekend${d && d.paused ? ", en het huis staat op pauze" : ""}.</p>`;
+}
+
+function drawSandboxChart(times, steps, base, scen) {
+  const c = document.getElementById("sandbox-chart");
+  if (!c || typeof Chart === "undefined") return;
+  if (state.sandboxChart) state.sandboxChart.destroy();
+  const f = state.forecast;
+  const now = times[0];
+  const past = (f.past || []).map(p => ({ x: new Date(p.t).getTime(), y: p.T_out }))
+    .filter(p => p.y != null);
+  const ds = [];
+  const outFuture = steps.map((s, i) => ({ x: times[i], y: s.T_out }));
+  ds.push({ label: "buiten", data: [...past, ...outFuture], borderColor: COLORS.sand,
+            borderWidth: 1.2, borderDash: [2, 3], pointRadius: 0, tension: 0.3, spanGaps: true, order: 9 });
+  let i = 0;
+  (f.sensor_rooms || []).forEach(rid => {
+    const col = FC_PALETTE[i % FC_PALETTE.length]; i++;
+    const label = (f.room_labels || {})[rid] || rid;
+    const meas = (f.actual || {})[rid] || [];
+    if (meas.length)
+      ds.push({ label: `${label} (gemeten)`, data: meas.map(p => ({ x: new Date(p.t).getTime(), y: p.temp })),
+                borderColor: col, borderWidth: 1.2, pointRadius: 0, tension: 0.3, order: 8 });
+    if (scen.sensor[rid])
+      ds.push({ label: `${label} (scenario)`, data: scen.sensor[rid].map((v, k) => ({ x: times[k], y: v })),
+                borderColor: col, borderWidth: 2, pointRadius: 0, tension: 0.25 });
+    if (base.sensor[rid])
+      ds.push({ label: `${label} (gemeld)`, data: base.sensor[rid].map((v, k) => ({ x: times[k], y: v })),
+                borderColor: col, borderWidth: 1.4, borderDash: [5, 4], pointRadius: 0, tension: 0.25 });
+  });
+  state.sandboxChart = new Chart(c, { type: "line", data: { datasets: ds }, options: {
+    responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+    scales: { x: ventTimeScale(past.length ? past[0].x : now, times[times.length - 1]),
+              y: { grid: { color: "#2a241b11" }, ticks: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, callback: v => v + "°" } } },
+    plugins: {
+      legend: { labels: { font: { family: "JetBrains Mono", size: 9 }, color: COLORS.inkSoft, boxWidth: 18 } },
+      tooltip: ventTooltip(),
+      annotation: { annotations: futureAnnotations(now, times[times.length - 1]) },
+    },
+  }});
 }
 
 

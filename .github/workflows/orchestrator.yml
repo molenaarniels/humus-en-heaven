@@ -7,7 +7,7 @@ name: Timing Orchestrator
 # betrouwbare timing draaiden. Deze workflow bezit ALLEEN de timing — niet de
 # logica: elke job houdt zijn eigen workflow, permissions, retries en run_guarded.
 #
-# Zelfde beproefde patroon als window/airflow: de cron is enkel een *restart-kick*.
+# Zelfde beproefde patroon als window/vent: de cron is enkel een *restart-kick*.
 # Elke run is een zelf-sturende ~5u-loop die op elke :00/:15/:30/:45-mark wakker
 # wordt; de concurrency-guard hieronder houdt exact één klok levend en start de
 # volgende loop zodra de huidige eindigt → effectief 24/7 dekking.
@@ -18,7 +18,7 @@ name: Timing Orchestrator
 # notificeert wanneer de orchestrator de job al deed.
 on:
   schedule:
-    # Offset t.o.v. window (:07/:27/:47) en airflow (:09/:29/:49).
+    # Offset t.o.v. window (:07/:27/:47) en vent (:09/:29/:49).
     - cron: "3,23,43 * * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 # Exact één klok tegelijk; een kick die tijdens een loop binnenkomt wacht en
-# neemt over zodra de huidige loop eindigt (zoals window/airflow).
+# neemt over zodra de huidige loop eindigt (zoals window/vent).
 concurrency:
   group: orchestrator
   cancel-in-progress: false

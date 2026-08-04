@@ -1,5 +1,7 @@
 # Ventilatie-tweeling (Project 8) — assessment juli 2026 (derde)
 
+> **Historisch document (aug 2026):** beschrijft de in de herbouw vervangen tweelingen (Projects 8/12). Het huidige ventilatie-project is Project 13 (vent_*.py) — zie CLAUDE.md. De meetresultaten hieronder blijven de onderbouwing van de geporteerde fysica.
+
 _Datum: 2026-07-10. Derde assessment — opvolger van 7 juli (`62d84c59`-lijn; kernbevindingen
 hieronder in §3 met status) en 19 juni. Databron: `docs/airflow_learned.json` (248-punts
 leercurve, stand 10 jul 13:15 lokaal), `docs/airflow_data.json`, `tools/airflow_diagnostics.py`,

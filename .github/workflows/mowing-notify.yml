@@ -90,7 +90,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "data: mowing advisor refresh $(date -u +%Y-%m-%d) [skip ci]"
-            # De soil-run (08:00) en de window/airflow-loops committen de hele
+            # De soil-run (08:00) en de window/vent-loops committen de hele
             # dag door naar main — rebase vóór push. De artefacten worden elke
             # run volledig opnieuw gegenereerd, dus bij conflict wint onze
             # verse versie (-X theirs). Dit draait één keer per dag: falen

@@ -1,5 +1,7 @@
 # Code Quality Audit — Humus & Heaven
 
+> **Historische noot (aug 2026):** de bevindingen over `airflow_model.py` (Project 8, de "airflow twin") beschrijven een gepensioneerd bestand — de tweeling is herbouwd als Project 13 (`vent_*.py`), zie CLAUDE.md.
+
 **Date:** 2026-07-01 · **Scope:** all 8 pipelines, shared modules, workflows, frontend (docs/), tests.
 **Dimensions:** maintainability · security · reliability · duplication/inefficiency.
 

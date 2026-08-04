@@ -53,15 +53,15 @@ Volledige beschrijving + eenheden staan in `schema.json`. Hoofdgroepen:
   handmatig gepauzeerd). De tweeling **laat deze samples uit de kalibratie
   vallen** omdat de fysica geen actieve verwarming/koeling kent — reproduceer
   dat door ze te filteren (zie hieronder).
-- **Fysica-baseline** (optioneel, `--baseline`): `pred_twin1_c` (2-knoops RC),
-  `pred_twin2_c` (3-knoops RC + vocht). De rúwe fysica-voorspelling in
-  sensor-ruimte, hergeseed per niet-overlappend 5-daags venster met 24 u warmup
-  (dezelfde manier waarop het dashboard scoort), **zonder** de online
-  bias-correctie ("tarrering"). Dit is je lat om te verslaan, of het doel voor
-  residu-leren.
+- **Fysica-baseline** (optioneel, `--baseline`): `pred_twin1_c` — de grey-box
+  voorspelling van de vent-tweeling (2-knoops RC, `vent_physics`, Project 13).
+  De rúwe fysica-voorspelling in sensor-ruimte, hergeseed per niet-overlappend
+  5-daags venster met 24 u warmup (dezelfde manier waarop het dashboard
+  scoort). Dit is je lat om te verslaan, of het doel voor residu-leren.
+  (`pred_twin2_c` is verwijderd, aug 2026: tweeling 2 is met pensioen.)
 
 In het **wide**-formaat krijgen de per-kamer-kolommen een `__<kamer>`-suffix
-(bv. `temp_c__office`, `pred_twin2_c__ted`); de weer-/stand-kolommen staan er
+(bv. `temp_c__office`, `pred_twin1_c__ted`); de weer-/stand-kolommen staan er
 één keer.
 
 ## Snel starten (pandas)
@@ -81,8 +81,8 @@ clean = df[
 ].copy()
 
 # Hoe goed doet de bestaande grey-box het al? (de lat)
-mae_twin2 = (clean["temp_c"] - clean["pred_twin2_c"]).abs().mean()
-print(f"twin2 MAE = {mae_twin2:.2f} °C")
+mae_twin = (clean["temp_c"] - clean["pred_twin1_c"]).abs().mean()
+print(f"vent-twin MAE = {mae_twin:.2f} °C")
 ```
 
 ### Je eigen model trainen
@@ -110,10 +110,10 @@ Vaak sterker dan from-scratch: laat het ML-model enkel de systematische
 afwijking van de grey-box corrigeren.
 
 ```python
-d = clean[clean["pred_twin2_c"].notna()].copy()
-d["residual"] = d["temp_c"] - d["pred_twin2_c"]          # doel = de fysica-fout
+d = clean[clean["pred_twin1_c"].notna()].copy()
+d["residual"] = d["temp_c"] - d["pred_twin1_c"]          # doel = de fysica-fout
 # ... train op d[feat] → d["residual"], en tel de voorspelde residu bij
-#     pred_twin2_c op. Meet weer tegen temp_c.
+#     pred_twin1_c op. Meet weer tegen temp_c.
 ```
 
 ## Belangrijk
@@ -134,24 +134,26 @@ d["residual"] = d["temp_c"] - d["pred_twin2_c"]          # doel = de fysica-fout
 
 Draai `python tools/export_ml_dataset.py` vanaf de repo-root (`--no-baseline`
 voor een snelle data-only build in seconden, of laat 'm aan voor de ~1-min-run
-die de tweeling-1/2-fysica-baselines toevoegt; eerst `pip install pandas
-pyarrow` als je `.parquet` naast de altijd-geschreven CSV's wilt). Volledig
-offline, raakt niets in de pipelines. De **bron van waarheid** is
-`data/twin2_history/<YYYY-MM>.json` — gecommitte maand-shards (kolomsgewijs: per
-kamer `ts`/`temp`×10/`hum`/`heat`, plus uur-`weather`-rijen en
-`openings`-snapshots), elk kwartier aangevuld, dus een `git pull` ververst de
-data en opnieuw draaien regenereert alles. De exporter hergebruikt de bestaande
-loaders (`airflow2_model.load_dataset` → `airflow_model.build_timeline` + de
-pure helpers) en schrijft naar het gitignore'de `data/ml/`:
+die de vent-tweeling-fysica-baseline (`pred_twin1_c`) toevoegt; eerst
+`pip install pandas pyarrow` als je `.parquet` naast de altijd-geschreven
+CSV's wilt). Volledig offline, raakt niets in de pipelines. De **bron van
+waarheid** is `data/twin2_history/<YYYY-MM>.json` — gecommitte maand-shards
+(kolomsgewijs: per kamer `ts`/`temp`×10/`hum`/`heat`, plus uur-`weather`-rijen
+en `openings`-snapshots), elk kwartier aangevuld, dus een `git pull` ververst
+de data en opnieuw draaien regenereert alles. De exporter hergebruikt de
+bestaande loaders (`vent_io.load_dataset` → `vent_io.build_timeline` + de pure
+`vent_physics`-helpers, met een expliciete `RunContext`) en schrijft naar het
+gitignore'de `data/ml/`:
 `ventilation_long.csv/.parquet` (één rij per tijdstip × kamer),
 `ventilation_wide.csv/.parquet` (één rij per tijdstip, kamers als
 `__<kamer>`-kolommen) en `schema.json` (de kolom-dictionary — lees die eerst).
 Kolommen splitsen in features (weer, zon az/el, per-raam zon-door-glas,
 dak-instraling, `open_<element>`-fracties), doelwaarden (`temp_c`, `humidity`),
 uitsluit-vlaggen (`heating`/`ac_here`/`paused`, die de tweeling uit de
-kalibratie laat vallen) en optionele baselines (`pred_twin1_c`/`pred_twin2_c`).
+kalibratie laat vallen) en de optionele baseline (`pred_twin1_c`;
+`pred_twin2_c` is verwijderd — tweeling 2 is met pensioen).
 Om een verse sessie te oriënteren: begin met deze `README.md`, dan
 `tools/export_ml_dataset.py`, met de tweeling-interne werking gedocumenteerd
-onder Projecten 8 & 12 in `CLAUDE.md`; de manual-dispatch `ml-dataset.yml`-
+onder Project 13 in `CLAUDE.md`; de manual-dispatch `ml-dataset.yml`-
 workflow bouwt dezelfde bestanden als download-artefact als je liever niet
 cloont.

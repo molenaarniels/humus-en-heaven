@@ -169,7 +169,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: update sandbox_state.json [skip ci]"
-            # De window/airflow-loops committen elk kwartier naar main — zonder
+            # De window/vent-loops committen elk kwartier naar main — zonder
             # rebase raced deze push en faalt hij. De state wordt elke run
             # volledig opnieuw geschreven, dus bij conflict wint onze verse
             # versie (-X theirs). Falen moet hard en zichtbaar zijn (exit 1).

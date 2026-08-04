@@ -99,7 +99,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "data: daily refresh $(date -u +%Y-%m-%d)"
-            # De window/airflow-loops committen de hele dag door naar main —
+            # De window/vent-loops committen de hele dag door naar main —
             # zonder rebase kan deze push racen en faalt de dagelijkse update
             # stilletjes. data.json wordt elke run volledig opnieuw gegenereerd,
             # dus bij conflict wint onze verse versie (-X theirs, zie de

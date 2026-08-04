@@ -120,7 +120,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: update shade_state.json [skip ci]"
-            # De soil-run en de window/airflow-loops committen de hele dag door
+            # De soil-run en de window/vent-loops committen de hele dag door
             # naar main — rebase vóór push. De state wordt elke run volledig
             # opnieuw geschreven, dus bij conflict wint onze verse versie
             # (-X theirs). Falen moet hard en zichtbaar zijn (exit 1): zonder

@@ -1,5 +1,7 @@
 # Ventilatie 2 (Project 12) — assessment augustus 2026: eenzijdige ventilatie
 
+> **Historisch document (aug 2026):** beschrijft de in de herbouw vervangen tweelingen (Projects 8/12). Het huidige ventilatie-project is Project 13 (vent_*.py) — zie CLAUDE.md. De meetresultaten hieronder blijven de onderbouwing van de geporteerde fysica.
+
 _Datum: 2026-08-02. Databron: een held-out-campagne met `tools/twin2_experiment.py`
 (10 runs, `--lam0 1.0 --epochs 14`, rotaties `off2` compleet + `off0` deels), de gefitte
 parametersets daaruit, en `tools/twin2_residual_diagnostics.py`. Aanleiding: de vraag of het

@@ -64,7 +64,15 @@ RMSE °C, gepoold over 0–12u, 405 oorsprongen:
 | **gepoold** | **0,699** | 1,120 | 1,204 | 1,250 | 1,832 |
 
 Alleen **bath** verliest van persistentie — een raamloze kamer met 0,62 °C totale spreiding,
-waar "het blijft zoals het is" moeilijk te verslaan is. Daar valt geen modelleerwerk te halen.
+waar "het blijft zoals het is" moeilijk te verslaan is.
+
+**Besluit (eigenaar, aug 2026): `bath` is buiten scope en blijft dat.** Ze wordt gewoon
+meegesimuleerd, getoond en meegekalibreerd — ze is een zone in het druknetwerk en haar samples
+zijn geldig — maar er gaat geen modelleer- of afsteltijd naar, en haar achterstand op
+persistentie is een geaccepteerd resultaat in plaats van een openstaand punt. Vastgelegd in de
+ground rules van CLAUDE.md, inclusief de keerzijde: een wijziging die alleen bath verbetert is
+geen shipping-grond, maar een wijziging die bath duidelijk verslechtert blijft een signaal dat er
+iets huisbreeds mis is.
 
 **Het herankeren is verreweg de grootste enkele winst: 1,120 → 0,699 gepoold.** Dat is de reden
 dat de vooruitblik in `vent_forecast.py` een *tweede* simulatie is naast de kalibratieloop, in

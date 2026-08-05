@@ -86,6 +86,13 @@ def reg_weight(name: str, solar_mean: float | None = None) -> float:
         w += frac * (REG_WEIGHT - w)   # 6.0 (frac=0) → REG_WEIGHT (frac=1)
     return w
 
+# Nabijheidsmaat voor een HUISMODEL-grens (`param_bounds`), als fractie van de grenswaarde —
+# niet van de bandbreedte, zoals `RAIL_TOL` voor de globale `BOUNDS` doet. Zie de uitleg in
+# `railed_params`: op een brede band (c_mass 0.2–10.0) is 2 % bandbreedte ~0.19, waardoor een
+# waarde 22 % boven zijn vloer nog steeds als "gerailed" werd gemeld en de vlag dus niets meer
+# zei over of de constraint werkelijk bond.
+MODEL_RAIL_TOL = 0.02
+
 def railed_params(params: dict, tol: float = RAIL_TOL,
                   house: dict | None = None) -> list[str]:
     """Welke geleerde params op (≈) hun grens zitten — de 'saturatie-tell' dat een fysisch
@@ -99,8 +106,23 @@ def railed_params(params: dict, tol: float = RAIL_TOL,
     `living.c_mass@floor(model)` — want hij betekent iets ánders: een `BOUNDS`-rail is een
     saturatie-KLACHT (de fysica wil ergens heen waar ze niet mag), een huismodel-rail is de
     constraint die dóét waarvoor hij is aangebracht. `is_model_rail` scheidt de twee voor
-    poorten die alleen op het eerste mogen afgaan (tools/vent_seed.py)."""
+    poorten die alleen op het eerste mogen afgaan (tools/vent_seed.py).
+
+    **Twee verschillende nabijheidsmaten, en dat is bewust.** Een `BOUNDS`-grens wordt getoetst
+    op een fractie van de BANDBREEDTE (`tol`) — zo is het altijd geweest en zo blijft het. Voor
+    een huismodel-grens deugt die maat niet: `c_mass` heeft een band van 0.2–10.0, dus 2 %
+    daarvan is ~0.19, en `living.c_mass` met vloer 0.595 werd daardoor als "op de vloer"
+    gemeld terwijl de fit op 0.728 zat — 22 % erboven, dus de constraint bond helemaal niet.
+    Een grens die je zélf aanbrengt wil je juist alleen zien wanneer de fit er écht tegenaan
+    duwt, dus die wordt getoetst op een fractie van de GRENSWAARDE (`MODEL_RAIL_TOL`, ~0.012
+    voor 0.595). Bij een grens van (bijna) nul is een relatieve maat betekenisloos → terugval
+    op de bandbreedte-regel."""
     out = []
+
+    def _near(value: float, bound: float, rng: float, is_model: bool) -> bool:
+        if is_model and abs(bound) > 1e-9:
+            return abs(value - bound) <= MODEL_RAIL_TOL * abs(bound)
+        return abs(value - bound) <= tol * rng
 
     def _flag(scope: str, name: str, value) -> None:
         if name not in BOUNDS or not isinstance(value, (int, float)):
@@ -110,10 +132,11 @@ def railed_params(params: dict, tol: float = RAIL_TOL,
         rng = hi - lo
         if rng <= 0:
             return
-        if value - lo <= tol * rng:
-            out.append(f"{scope}.{name}@floor" + ("" if lo <= glo else "(model)"))
-        elif hi - value <= tol * rng:
-            out.append(f"{scope}.{name}@ceil" + ("" if hi >= ghi else "(model)"))
+        lo_model, hi_model = lo > glo, hi < ghi
+        if _near(value, lo, rng, lo_model):
+            out.append(f"{scope}.{name}@floor" + ("(model)" if lo_model else ""))
+        elif _near(value, hi, rng, hi_model):
+            out.append(f"{scope}.{name}@ceil" + ("(model)" if hi_model else ""))
 
     for name in GLOBAL_PARAMS:
         if name in params:

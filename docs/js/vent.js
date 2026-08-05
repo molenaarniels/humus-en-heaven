@@ -95,6 +95,7 @@ function render() {
       <span class="chip-strong num">${rmse!=null?rmse.toFixed(2)+"°C":"—"}</span>
       <span class="ctl-sub">${learnTrendText(d)}</span>
       ${d.learned&&d.learned.skill!=null?`<span class="ctl-sub">· skill ${(+d.learned.skill).toFixed(2)}</span>`:""}
+      ${fitExcludedNote(d)}
     </div>
     ${(d.learned&&d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — het huis staat op pauze. Het model voorspelt door maar leert dit venster niet (zo blijft de geleerde fysica schoon).</div>`:''}
     ${(d.learned&&d.learned.held&&!d.learned.paused)?`<div style="margin-top:8px;color:var(--clay);font-style:italic;font-size:13px;border-left:3px solid var(--clay);padding-left:10px;">⏸ Leren gepauzeerd — de fout is anomaal hoog. Waarschijnlijk staat er iets open/dicht dat niet gemeld is; het model voorspelt door en hervat het leren vanzelf (uiterlijk na 24u).</div>`:''}
@@ -135,6 +136,7 @@ function render() {
       <span>— doorgetrokken: model</span><span>· · gestippeld: tado-meting</span>
       <span>24u terug · 12u vooruit</span>
       <span class="ctl-sub">rechts van "nu": voorspelling, geankerd op de laatste tado-meting</span>
+      ${hiddenNote(d)}
     </div>
   </div></div>`;
 
@@ -155,6 +157,7 @@ function render() {
       ${r.ac ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">❄️ airco aan — niet gekalibreerd (model heeft geen koel-term)</div>` : ""}
       ${r.heating ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">🔥 verwarming aan — niet gekalibreerd (model heeft geen verwarmingsterm)</div>` : ""}
       ${r.paused ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">⏸️ gepauzeerd — niet gekalibreerd (standen niet betrouwbaar gemeld)</div>` : ""}
+      ${r.fit_excluded ? `<div class="ctl-sub" style="margin-top:6px;color:var(--clay);">🚿 niet gekalibreerd — douche/handbediende afzuiging; deze kamer telt niet mee in de leerfout en staat niet in de grafieken</div>` : ""}
       <div class="chips" style="margin-top:10px;">
         <span class="ctl-sub">ACH</span><span class="num">${fmt(r.ach,2)}</span>
         <span class="ctl-sub">zon in</span><span class="num"${sunTip?` title="${sunTip}"`:""}>${fmt(r.solar_w,0)} W</span>
@@ -262,7 +265,12 @@ function drawTempChart() {
     ds.push({ label: "buiten", data: out, borderColor: COLORS.sand, borderWidth: 1.2,
               borderDash: [2, 3], pointRadius: 0, tension: 0.3, spanGaps: true, order: 9 });
   let i = 0;
+  // `hidden` (house_model.json → vent_data.json) houdt kamers uit de grafiek die er geen
+  // leesbaar verhaal in hebben: de badkamer (douche + handbediende afzuiging → pieken die
+  // geen gemelde raamstand verklaart) en het trappenhuis (geen sensor → een lijn zonder
+  // meting ernaast). Ze blijven in de plattegrond, op hun kaart en in de meldmodal.
   Object.entries(state.data.rooms || {}).forEach(([rid, r]) => {
+    if (r.hidden) return;
     const col = ROOM_PALETTE[i % ROOM_PALETTE.length]; i++;
     // Eén doorlopende modellijn: het gekalibreerde verleden plus de op de tado-meting
     // geankerde 12u-vooruitblik. Dat zijn twee verschillende simulaties (zie
@@ -467,6 +475,20 @@ const triggerWorkflow = () => dispatchWorkflow("vent-notify.yml");
 
 // ===================== HELPERS =====================
 function num(v) { return v==null ? "—" : (+v).toFixed(2); }
+// Noem de weggelaten kamers expliciet onder de grafiek — een lijn die er zonder uitleg niet
+// staat leest als een storing. Leeg als er niets verborgen is.
+function hiddenNote(d) {
+  const names = Object.entries(d.rooms || {}).filter(([, r]) => r.hidden)
+    .map(([rid, r]) => r.label || rid);
+  return names.length ? `<span class="ctl-sub">niet getoond: ${names.join(", ")}</span>` : "";
+}
+// Idem bij de leerfout: welke kamers zitten er níét in? Zonder dat erbij is de RMSE een
+// getal over een onbekende verzameling kamers.
+function fitExcludedNote(d) {
+  const names = Object.entries(d.rooms || {}).filter(([, r]) => r.fit_excluded)
+    .map(([rid, r]) => r.label || rid);
+  return names.length ? `<span class="ctl-sub">· zonder ${names.join(", ")}</span>` : "";
+}
 function windArrow(deg) { if (deg==null) return ""; const a=["↓","↙","←","↖","↑","↗","→","↘"]; return a[Math.round(((deg%360)/45))%8]; }
 function sunGlyph(el) { return el!=null && el>0 ? "☀" : "🌙"; }
 function learnTrendText(d) {

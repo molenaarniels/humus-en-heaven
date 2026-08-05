@@ -174,6 +174,11 @@ def test_driver_export_schema(setup):
     assert meta["t0"] == NOW.isoformat()
     assert meta["zones"] == list(house["rooms"]) + list(house.get("junctions", {}))
     assert set(meta["sensor_rooms"]) == {"living", "ted", "hotties", "office", "bath"}
+    # `hidden_rooms` staat NAAST sensor_rooms: die lijst is het kolomcontract van de
+    # JS-kern + de golden-vector, dus een weergavekeuze mag er niet in snijden. bath staat
+    # dus in béíde — ze wordt volledig meegesimuleerd, alleen niet getekend.
+    assert set(meta["hidden_rooms"]) == {"bath", "stair"}
+    assert "bath" in meta["sensor_rooms"]
     assert meta["past"] and meta["actual"]["ted"]
     # Elke stap draagt precies wat de JS-kern niet zelf kan uitrekenen.
     step = meta["steps"][0]

@@ -116,6 +116,8 @@
         0
       ],
       "label": "Trappenhuis (bg→2e)",
+      "hide_in_charts": true,
+      "_hide_in_charts": "de koker heeft geen sensor, dus haar lijn is een puur hypothetische reeks zonder meting ernaast — op de temperatuurgrafiek voegt ze ruis toe i.p.v. informatie. Ze blijft wél volledig meedraaien in de fysica (druknetwerk + stratificatie), in de plattegrond, op haar kamerkaart en in de meldmodal.",
       "stratify": true,
       "subzones": [
         {
@@ -154,7 +156,9 @@
         3
       ],
       "label": "Badkamer (douche)",
-      "_sensor": "tado-sensor 'Shower' → nu een gekalibreerde kamer (was junctie). Raamloos: geen zonwinst, deur meestal dicht + mechanische afzuiging. De douche geeft warmte-/vochtpieken; de tweeling laat samples waarin er gestookt wordt (heat-vlag uit window_data.json) uit de fit vallen."
+      "exclude_from_fit": true,
+      "hide_in_charts": true,
+      "_sensor": "tado-sensor 'Shower' → wordt gesimuleerd en getoond, maar NIET meer gekalibreerd (zie exclude_from_fit). Raamloos: geen zonwinst, deur meestal dicht + mechanische afzuiging. De douche + de handbediende afzuiging geven warmte-/vochtpieken die geen enkele gemelde raamstand verklaart; die samples trokken de gedeelde globalen scheef en lieten de anomaliepoort op een douche afgaan. De heat-vlag-filter ving daar maar een deel van (douchen ≠ stoken)."
     }
   },
   "junctions": {

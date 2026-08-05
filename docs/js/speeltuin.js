@@ -1006,7 +1006,7 @@ function runSandboxForecast(core, unc) {
   // onderweg (de vraag bij "kan ik de nacht doorkoelen?"), en wat scheelt jouw scenario.
   const horizonH = (times[times.length - 1] - times[0]) / 36e5;
   let rows = "";
-  (f.sensor_rooms || []).forEach(rid => {
+  shownRooms(f).forEach(rid => {
     const bs = base.sensor[rid] || [], ss = scen.sensor[rid] || [];
     if (!ss.length) return;
     const bMin = seriesMin(times, bs), sMin = seriesMin(times, ss);
@@ -1058,6 +1058,16 @@ function runSandboxForecast(core, unc) {
       vooraf uitgerekend${d && d.paused ? ", en het huis staat op pauze" : ""}.</p>`;
 }
 
+// De kamers die de vooruitblik toont: de sensorkamers min `hidden_rooms` (house_model.json
+// `hide_in_charts`). Het trappenhuis zit hier sowieso al niet in (geen sensor); de badkamer
+// wél, en die hoort er niet: douche + handbediende afzuiging zijn drijvers die het scenario
+// niet kan variëren, dus haar lijn én haar tabelrij zeggen niets over jouw keuze. De sim
+// rekent haar gewoon mee — ze is een zone in het druknetwerk — alleen tonen we haar niet.
+function shownRooms(f) {
+  const hide = new Set(f.hidden_rooms || []);
+  return (f.sensor_rooms || []).filter(rid => !hide.has(rid));
+}
+
 function drawSandboxChart(times, steps, base, scen) {
   const c = document.getElementById("sandbox-chart");
   if (!c || typeof Chart === "undefined") return;
@@ -1071,7 +1081,7 @@ function drawSandboxChart(times, steps, base, scen) {
   ds.push({ label: "buiten", data: [...past, ...outFuture], borderColor: COLORS.sand,
             borderWidth: 1.2, borderDash: [2, 3], pointRadius: 0, tension: 0.3, spanGaps: true, order: 9 });
   let i = 0;
-  (f.sensor_rooms || []).forEach(rid => {
+  shownRooms(f).forEach(rid => {
     const col = FC_PALETTE[i % FC_PALETTE.length]; i++;
     const label = (f.room_labels || {})[rid] || rid;
     const meas = (f.actual || {})[rid] || [];

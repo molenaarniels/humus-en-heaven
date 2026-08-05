@@ -748,6 +748,12 @@ Six small cross-project Python modules (everything else is self-contained):
   artifact stamps (`generated_at`) stay UTC/ISO; display in Amsterdam on the frontend
 - Python 3.11+, no build step for frontend
 - `ruff check .` and `python -m pytest` must stay green (ruff config in `pyproject.toml`, pytest import-bootstrap in `conftest.py`; CI runs both on every push)
+- **De pytest-suite is `tests/` en alleen `tests/`** (`testpaths` in `pyproject.toml`). De
+  `tools/test_*.py`/`test_*.js`-scripts (`test_invariants.py`, `test_golden.js`) zijn handmatige
+  diagnose-runners die je zelf aanroept, geen pytest-modules — ze mogen `requirements-tools.txt`
+  (numpy/torch) importeren, wat CI bewust niet installeert. Nieuwe échte tests horen in `tests/`;
+  een importfout in een verzameld bestand is een **collection**-error en die zet de hele run op
+  exit 2, dus dan draait er geen enkele test meer (bit ons in aug 2026).
 - Every runner script wraps `main` in `notify.run_guarded` — keep that when adding a pipeline
 
 ---

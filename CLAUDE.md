@@ -590,7 +590,7 @@ de vooruitblik een **tweede** sim over `[nu, nu+12u]`, geankerd op de laatste ta
 gepoold **0.70 °C** tegen vrijloop 1.12, persistentie 1.20, gisteren-om-deze-tijd 1.25,
 klimatologie 1.83 — en de fout PLATEAUT (h=1 0.34 → h=12 0.85) i.p.v. te divergeren, wat een
 12-uurs venster überhaupt verdedigbaar maakt. Alleen `bath` verliest van persistentie (raamloos,
-0.62 °C totale spreiding). Het herankeren zelf is de grootste enkele winst: 1.12 → 0.70.
+0.62 °C totale spreiding) — bewust buiten scope, zie de ground rules. Het herankeren zelf is de grootste enkele winst: 1.12 → 0.70.
 **Elke accuraatheid hier gaat uit van een perfecte weersvoorspelling** (de backtest speelt
 hindcast-weer af); die fout is ongemeten en is de grootste openstaande onzekerheid.
 
@@ -720,6 +720,15 @@ Six small cross-project Python modules (everything else is self-contained):
 - **Never re-report the twin's nowcast RMSE as a forecast score** — `vent_learned.json`'s ~0.5 °C
   is een nowcast over een venster dat elk kwartier op verse metingen wordt gezet. De
   voorspelscore is `tools/horizon_backtest.py`, en die is ~0.70 °C op 12u.
+- **`bath` is bewust buiten scope — laat 'm met rust.** De badkamer wordt gewoon meegesimuleerd,
+  getoond en meegekalibreerd (ze is een zone in het druknetwerk en haar samples zijn geldig),
+  maar er gaat géén modelleer- of afsteltijd naar. Ze is raamloos met 0.62 °C totale spreiding
+  over het hele record, dus "het blijft zoals het is" is er nauwelijks te verslaan — en ze staat
+  als enige kamer structureel achter op persistentie (0.363 vs 0.352 op 12u). Dat is een bekend
+  en geaccepteerd resultaat, geen openstaand punt: niet als regressie rapporteren, geen
+  bath-specifieke termen/parameters/uitzonderingen introduceren, en een verandering die alleen
+  bath verbetert is geen reden om iets te shippen. Een verandering die bath duidelijk
+  verslechtert is wél nog steeds een signaal — dan is er waarschijnlijk iets huisbreeds mis.
 - **Never change FAO-56 formulas** without explicit instruction — they are validated against scientific literature
 - **Never touch the Gist write logic** without explicit instruction — silent data loss risk
 - **Never commit secrets** — all credentials live in GitHub Actions secrets

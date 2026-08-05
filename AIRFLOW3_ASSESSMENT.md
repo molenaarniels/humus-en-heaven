@@ -179,6 +179,36 @@ Een **globale** `c_mass`-vermenigvuldiger is getest en verworpen: hielp living (
 dezelfde ruil. Living-only ×1,6 → 0,595 haalde het wél, met een vooraf vastgelegde bewaking dat
 geen andere kamer meer dan 10 % mocht verslechteren.
 
+### Vloer of vastpinnen? Gemeten: het maakt niet uit — mits je onder de ~0,6 wegblijft
+
+Terugkerende vraag, dus hier het getal. De offline meting (living 0,576) draaide met `c_mass`
+op een vaste 0,595, maar dat is geen keuze die getest is: **de backtest bevriest per constructie
+álle parameters** — hij speelt historie af met één vaste vector en kan "vastgepind" dus niet van
+"driftend" onderscheiden. In productie loopt de waarde wél, want de online fit herleert 'm; over
+de eerste 37 rev-7-runs bewoog hij tussen 0,595 en 0,744 en raakte hij de vloer alleen tussen
+04:00 en 05:00.
+
+Sweep over de 12u-horizon, alles behalve `living.c_mass` gelijk gehouden (405 oorsprongen):
+
+| `living.c_mass` | living | gepoold |
+|---|---|---|
+| 0,595 (de vloer) | 0,573 | 0,660 |
+| 0,68 | 0,565 | 0,657 |
+| 0,72 | 0,564 | 0,657 |
+| 0,90 | 0,579 | 0,659 |
+
+**Vlak.** Over de hele band beweegt living 0,015 °C en gepoold 0,003 — ruis. Het ondiepe optimum
+ligt rond 0,68–0,72, precies waar de online fit vanzelf naartoe drijft, dus driften is hier eerder
+marginaal beter dan slechter. Onder de vloer is het een ander verhaal: op 0,372 (de oude
+gerailde waarde) kostte het living 0,663 tegen 0,576 — dáár zit de klif.
+
+Conclusie: **vastpinnen voegt niets toe.** De vloer doet het enige dat telt — voorkomen dat de
+nowcast-doelfunctie de waarde terug de klif af duwt — en laat de fit vrij in het gebied waar het
+toch niet uitmaakt. Dat maakt ook een duurdere vervolgproef (de fit-trajectorie per oorsprong
+terugspelen i.p.v. één vaste vector) overbodig: elke baan bínnen 0,6–0,9 landt op hetzelfde
+getal. Voorbehoud: gemeten op zomerdata; drijft de waarde 's winters ver buiten die band, dan
+zegt deze vlakheid niets meer.
+
 **Waarom dit een constraint-wijziging is en geen waarde-wijziging.** `c_mass` zit in
 `PER_ROOM_PARAMS`, dus de online Gauss-Newton-stap herleert hem elk kwartier — tegen de
 **nowcast**-doelfunctie, en dát is de doelfunctie die hem in de eerste plaats omlaag duwde. Een

@@ -1,5 +1,17 @@
 # Alleen tooling-config; het project zelf is losse scripts, geen package.
 
+[tool.pytest.ini_options]
+# De suite is `tests/` — en alléén `tests/`. Zonder die grens verzamelt pytest de
+# hele rootdir en pakt hij ook `tools/test_invariants.py` op: een handmatig
+# diagnose-script (`python tools/test_invariants.py`, nul testfuncties) dat de
+# naamconventie van `tools/test_golden.js` volgt en `surrogate_runtime` → numpy
+# importeert — een `requirements-tools.txt`-dep die CI bewust niet installeert
+# (zie Project 13: het surrogaat-spoor is géén runtime-/CI-afhankelijkheid).
+# Dat is een COLLECTION-error, en die is fataal voor de hele run: pytest stopt met
+# exit 2 en draait vervolgens geen enkel van de 24 echte testbestanden. Zo stond CI
+# sinds 4 aug 2026 op elke push rood zonder dat er één test gefaald had.
+testpaths = ["tests"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120          # cosmetisch; E501 staat toch uit

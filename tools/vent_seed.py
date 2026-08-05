@@ -88,14 +88,19 @@ def replay(house: dict, dataset: dict, days: float, step_h: float,
         tm_seed = {rid: sum(v for _, v in s) / len(s) for rid, s in actual.items()}
         gamma_measured = {rid: list(s) for rid, s in actual.items()}
 
-        # Dezelfde hygiëne-filters als de runner (AC / verwarming / pauze).
+        # Dezelfde hygiëne-filters als de runner (uitgesloten kamers / AC / verwarming / pauze).
+        # De structurele uitsluiting hoort hier expliciet bij: seedt de tool op een ándere
+        # verzameling kamers dan de productie-fit, dan keurt de acceptatiepoort (RMSE ≤ 0.9)
+        # een getal dat de runner nooit rapporteert.
+        actual, _ = vf.filter_excluded_rooms(actual, house)
         acc = vio.ac_changes(log)
         actual, _ = vf.filter_ac_samples(actual, acc, vio.ac_room_at(acc, vnow), vnow)
         actual, _ = vf.filter_heating_samples(actual, dataset.get("heat_on", {}))
         pch = vio.pause_changes(log)
         actual, _ = vf.filter_paused_samples(actual, vio.paused_intervals(pch, vnow))
         if not actual:
-            print(f"[seed] {vnow:%m-%d %H:%M} — alles weggefilterd (AC/stook/pauze), overgeslagen")
+            print(f"[seed] {vnow:%m-%d %H:%M} — alles weggefilterd (uitgesloten/AC/stook/pauze), "
+                  "overgeslagen")
             continue
 
         timeline = vio.build_timeline(house, weather, log, vnow, window_h, ctx,

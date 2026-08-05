@@ -478,8 +478,9 @@ Read-only aggregation of the published artefacts of Projects 1, 5, 7, 13 from th
   (`refine_outside_now`), `build_timeline` (om_bias-gecorrigeerde driver; additieve `end_h` —
   P10 rekt hem tot de volgende ochtend), `make_context()`, en de maand-shard-I/O
   (append/load/refresh; env `VENT_HISTORY_DIR`).
-- `vent_fit.py` — online kalibratie (`calibrate`), de AC/verwarmings/pauze-filters, en de
-  **deadlock-proof anomalie-poort** `anomaly_step` (zie "Learning regime").
+- `vent_fit.py` — online kalibratie (`calibrate`), de AC/verwarmings/pauze-filters + de
+  structurele kamer-uitsluiting (`filter_excluded_rooms`), en de **deadlock-proof
+  anomalie-poort** `anomaly_step` (zie "Learning regime").
 - `vent_forecast.py` — de **12-uurs vooruitblik** (`FORECAST_H`): `anchor_seed`/`forecast` (de
   op de tado-meting geherankerde tweede sim, zie "Vooruitblik") + `driver_export` (de
   browser-payload voor de speeltuin). Zuivere functies, geen I/O.
@@ -617,11 +618,32 @@ er-ontbreekt-nog-iets-signaal (dak-kamer, zon-naar-massa-split).
 - **Bewust afwezig:** checkpoint/auto-fallback, `backfill_rmse_history`/log-vingerafdrukken, batch-verankering en tarrering — elk groot incident in Projects 8/12 kwam uit dát vangnet-complex, niet uit de fysica. De seeding-tool + de rev-poort vervangen ze.
 - **Anomalie-poort deadlock-proof** (`anomaly_step`): een log↔werkelijkheid-mismatch houdt het leren maximaal `ANOMALY_MAX_HOLD_H` (24u) vast, daarna hervat het leren met een `ANOMALY_REARM_H`-cooloff (de zelfvoedende hold die P12 bevroor kan niet terug); revisie-migratie → cooloff i.p.v. hold. Bij hold-start gaat een nudge naar de privé-chat (herhaald op cooldown), plus een "leren hervat"-variant bij escape; de handmatige huis-brede pauze nudget bewust níet (zelfgekozen).
 - Leercurve-punten dragen additief `skill`, `rmse_naive` en `wx` (weer-samenvatting), zodat een RMSE-verschuiving toewijsbaar blijft.
+- **Structurele kamer-uitsluiting (`exclude_from_fit`, aug 2026).** Naast de drie *tijdvenster*-filters (AC/verwarming/pauze) kan `house_model.json` een kamer permanent buiten de kalibratie zetten: `rooms.<id>.exclude_from_fit: true` → `vent_fit.filter_excluded_rooms` haalt haar vóór alle andere filters uit `actual`, dus uit de fit, de RMSE, `rmse_naive`/skill, de leercurve én de anomaliepoort. Nu: **`bath`** — douche + handbediende mechanische afzuiging zijn drijvers die de fysica niet kent en die géén melding kan repareren (de heat-vlag-filter ving er maar een deel van; douchen ≠ stoken), terwijl haar samples wél de gedeelde globalen meebepaalden. Ze wordt onverkort meegesimuleerd, getoond op haar kamerkaart en meegenomen in het druknetwerk; alleen haar params bevriezen op de priors/seed. `coupled_sensorless_zones` slaat zo'n kamer over — anders zou ze via de sensorloos-gekoppelde achterdeur alsnog meeleren. `tools/vent_seed.py` past hetzelfde filter toe, anders keurt zijn acceptatiepoort een RMSE over een andere kamerverzameling dan de runner rapporteert. `tools/horizon_backtest.py` doet dat bewust **niet**: die scoort *voorspellen*, en een niet-gefitte kamer blijft een geldige voorspeldoelstelling (het is juist de vergelijking die de bath-grondregel hieronder staaft).
+  - **Gemeten bij invoering:** de leercurve stapt hierdoor ~+0,08 °C **omhoog**, niet omlaag — over acht 72u-vensters (1–5 aug 2026, offline replay) was bath met RMSE 0,28–0,71 °C juist de bést-gevolgde kamer van het huis (living/hotties zaten op 1,4–1,5), en er stond geen enkel `held`-punt in de leercurve. De uitsluiting is dus een keuze over *wat er in het objectief hoort*, niet een reparatie van een slecht getal; punten van vóór en ná de omschakeling zijn niet vergelijkbaar.
+
+### Wat de grafieken tonen (`hide_in_charts`, aug 2026)
+`house_model.json` kan een kamer `rooms.<id>.hide_in_charts: true` geven. Dat raakt **alleen
+lijnen en tabelrijen**: de kamer blijft volledig meedraaien in de fysica, in de plattegrond,
+op haar eigen kamerkaart, in de meldmodal en in de airco-dropdown. Uitgesloten zijn nu:
+- **`bath`** (model + tado) — zie `exclude_from_fit` hierboven; een kamer die niet meeleert en
+  waarvan de uitschieters uit een douche komen, voegt aan een grafiek over raamstanden niets toe.
+- **`stair`** (model) — de koker heeft geen sensor, dus haar lijn is hypothetisch: geen meting
+  ernaast om 'm tegen te ijken, terwijl ze wél de drukste lijn van de vijf is.
+
+De vlag wordt op twee plekken uitgelezen: per kamer als `hidden` in `vent_data.json`
+(→ `docs/js/vent.js`, de 24u-terug/12u-vooruit-temperatuurgrafiek) en als de lijst
+`hidden_rooms` in `vent_forecast.json` (→ `docs/js/speeltuin.js`, zowel de
+scenariografiek als de per-kamer-tabel eronder). Beide kanten degraderen netjes: een
+artefact van vóór deze velden tekent gewoon alles. Onder de temperatuurgrafiek staat
+expliciet wélke kamers ontbreken (`hiddenNote`) en naast de leerfout wie er niet in
+meegeteld is (`fitExcludedNote`) — een lijn die zonder uitleg wegblijft leest als een storing.
 
 ### Artefact schema (lean, additive only — never break existing fields)
-`vent_data.json`: `generated_at`, `as_of_local`, `source: "vent_twin"`, `model_version`, `weather` (outside temp/RH + `outside_source`, wind/gust/shortwave, sun az/el, `neighbor_temp`, `ground_temp`, `wu_solar_scale`), `openings`, `controls`, `paused`/`paused_since`, `ac` (`room`, `rooms[]`), `rooms.<id>` (`label`, `predicted_temp` (sensor-ruimte), `predicted_air_temp`, `predicted_mass_temp`, `actual_temp`, `error`, `ach`, `solar_w`, `solar_by_window`, `env_w`, `vent_w`, `trend_c_per_h`, `humidity`, `comfort_low/high`, `ac`, `heating`, `paused`, `sensor_outdoor_frac`, `predicted_series[]` (kalibratievenster t/m nu), `forecast_series[]` (12u vooruit, geankerd), `actual_series[]`, `params`, plus de stair-velden op de stratify-zone: `stair_gradient_c_per_m`/`stair_crown_c`/`stair_pin_error_c`/`stair_gamma_w`/`predicted_temp_top`/`predicted_temp_bottom`), `flows[]` (`{id, a, b, flow_m3s}`), `learned` (`params`, `rmse`, `rmse_naive`, `skill`, `railed`, `rmse_history`, `held`, `paused`), `house_meta` (volledige speeltuin-geometrie). `vent_learned.json`: `updated_at`, `model_version`, `physics_rev`, `params`, `rmse`, `skill`, `railed`, `rmse_history[]` (punten: `t`/`rmse`/`held`/`paused`/`version` + additief `skill`/`rmse_naive`/`wx`), `anomaly` (`held_since`/`cooloff_until`/`nudged_at`/`escaped_at`), `seed_src` (van `tools/vent_seed.py`, zolang er nog geen leercurve is).
+`vent_data.json`: `generated_at`, `as_of_local`, `source: "vent_twin"`, `model_version`, `weather` (outside temp/RH + `outside_source`, wind/gust/shortwave, sun az/el, `neighbor_temp`, `ground_temp`, `wu_solar_scale`), `openings`, `controls`, `paused`/`paused_since`, `ac` (`room`, `rooms[]`), `rooms.<id>` (`label`, `predicted_temp` (sensor-ruimte), `predicted_air_temp`, `predicted_mass_temp`, `actual_temp`, `error`, `ach`, `solar_w`, `solar_by_window`, `env_w`, `vent_w`, `trend_c_per_h`, `humidity`, `comfort_low/high`, `ac`, `heating`, `paused`, `fit_excluded`/`hidden` (de twee structurele vlaggen uit `house_model.json` — zie "Learning regime" en "Wat de grafieken tonen"), `sensor_outdoor_frac`, `predicted_series[]` (kalibratievenster t/m nu), `forecast_series[]` (12u vooruit, geankerd), `actual_series[]`, `params`, plus de stair-velden op de stratify-zone: `stair_gradient_c_per_m`/`stair_crown_c`/`stair_pin_error_c`/`stair_gamma_w`/`predicted_temp_top`/`predicted_temp_bottom`), `flows[]` (`{id, a, b, flow_m3s}`), `learned` (`params`, `rmse`, `rmse_naive`, `skill`, `railed`, `rmse_history`, `held`, `paused`), `house_meta` (volledige speeltuin-geometrie). `vent_learned.json`: `updated_at`, `model_version`, `physics_rev`, `params`, `rmse`, `skill`, `railed`, `rmse_history[]` (punten: `t`/`rmse`/`held`/`paused`/`version` + additief `skill`/`rmse_naive`/`wx`), `anomaly` (`held_since`/`cooloff_until`/`nudged_at`/`escaped_at`), `seed_src` (van `tools/vent_seed.py`, zolang er nog geen leercurve is).
 `vent_forecast.json` (browser-payload, apart bestand omdat vent_data.json bewust een slank
-dashboard-schema is): `zones`, `sensor_rooms`, `room_labels`, `volumes`, `elements[]` (id, kind,
+dashboard-schema is): `zones`, `sensor_rooms`, `hidden_rooms` (weergavefilter — bewust
+**naast** `sensor_rooms` en niet erin gesnoeid: die lijst is het kolomcontract van
+`vent_core.js` + de golden-vector), `room_labels`, `volumes`, `elements[]` (id, kind,
 per-stand-fractie, default — de **volgorde is het kolomcontract van het surrogaat**), `doors[]`,
 `strat`, `consts`, `ss_windows[]`, `sensor_outdoor_frac`, `par` (thermische params per zone),
 `ginter[]`, `ground_temp`, `neighbor_temp`, `vent_eff`, `cp_shelter`, `rho_cp`, `substep_s`,
@@ -724,15 +746,19 @@ Six small cross-project Python modules (everything else is self-contained):
 - **Never re-report the twin's nowcast RMSE as a forecast score** — `vent_learned.json`'s ~0.5 °C
   is een nowcast over een venster dat elk kwartier op verse metingen wordt gezet. De
   voorspelscore is `tools/horizon_backtest.py`, en die is ~0.70 °C op 12u.
-- **`bath` is bewust buiten scope — laat 'm met rust.** De badkamer wordt gewoon meegesimuleerd,
-  getoond en meegekalibreerd (ze is een zone in het druknetwerk en haar samples zijn geldig),
-  maar er gaat géén modelleer- of afsteltijd naar. Ze is raamloos met 0.62 °C totale spreiding
-  over het hele record, dus "het blijft zoals het is" is er nauwelijks te verslaan — en ze staat
-  als enige kamer structureel achter op persistentie (0.363 vs 0.352 op 12u). Dat is een bekend
-  en geaccepteerd resultaat, geen openstaand punt: niet als regressie rapporteren, geen
-  bath-specifieke termen/parameters/uitzonderingen introduceren, en een verandering die alleen
-  bath verbetert is geen reden om iets te shippen. Een verandering die bath duidelijk
+- **`bath` is bewust buiten scope — laat 'm met rust.** De badkamer wordt gewoon meegesimuleerd
+  (ze is een zone in het druknetwerk) en staat op de plattegrond, op haar eigen kamerkaart en in
+  de meldmodal, maar er gaat géén modelleer- of afsteltijd naar. Ze is raamloos met 0.62 °C
+  totale spreiding over het hele record, dus "het blijft zoals het is" is er nauwelijks te
+  verslaan — en ze staat als enige kamer structureel achter op persistentie (0.363 vs 0.352 op
+  12u). Dat is een bekend en geaccepteerd resultaat, geen openstaand punt: niet als regressie
+  rapporteren, geen bath-specifieke termen/parameters introduceren, en een verandering die
+  alleen bath verbetert is geen reden om iets te shippen. Een verandering die bath duidelijk
   verslechtert is wél nog steeds een signaal — dan is er waarschijnlijk iets huisbreeds mis.
+  **Sinds aug 2026 is "buiten scope" ook letterlijk zo geconfigureerd** (bewonersbesluit): ze
+  draagt `exclude_from_fit` + `hide_in_charts` in `house_model.json`, dus ze leert niet meer mee
+  en staat in geen enkele grafiek. Dat zijn de twee generieke vlaggen — géén bath-specifieke
+  code — en een nieuwe uitzondering hoort langs dezelfde weg te lopen of helemaal niet.
 - **Never change FAO-56 formulas** without explicit instruction — they are validated against scientific literature
 - **Never touch the Gist write logic** without explicit instruction — silent data loss risk
 - **Never commit secrets** — all credentials live in GitHub Actions secrets

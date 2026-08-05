@@ -226,6 +226,13 @@ def driver_export(house: dict, params: dict, ctx: RunContext, steps: list[dict],
     return {
         "zones": zones,
         "sensor_rooms": sensor_rooms,
+        # Kamers die de speeltuin niet tekent/telt (house_model.json `hide_in_charts`).
+        # Bewust een APARTE lijst i.p.v. een gesnoeide `sensor_rooms`: die lijst is het
+        # kolomcontract waar vent_core.js zijn sensor-ruimte-mapping op bouwt en waar de
+        # golden-vector op vastligt — daar een weergavekeuze in verwerken koppelt twee
+        # dingen die niets met elkaar te maken hebben.
+        "hidden_rooms": [rid for rid, r in house.get("rooms", {}).items()
+                         if r.get("hide_in_charts")],
         "room_labels": {rid: r.get("label", rid) for rid, r in house.get("rooms", {}).items()},
         "volumes": {z: (house.get("rooms", {}).get(z)
                         or house.get("junctions", {}).get(z, {})).get("volume_m3", 1.0)

@@ -129,8 +129,8 @@ def test_dashboard_schema_kamers(setup, dash):
                  "sensor_outdoor_frac", "predicted_mass_temp", "error", "humidity",
                  "ach", "solar_w", "solar_by_window", "env_w", "vent_w",
                  "trend_c_per_h", "comfort_low", "comfort_high", "ac", "heating",
-                 "paused", "predicted_series", "forecast_series", "actual_series",
-                 "params"}
+                 "paused", "fit_excluded", "hidden", "predicted_series",
+                 "forecast_series", "actual_series", "params"}
     geschrapt = {"from_window_data", "party_w", "ground_w", "internal_w",
                  "ac_excluded_samples"}
     assert set(dash["rooms"]) == set(setup["house"]["rooms"])
@@ -144,6 +144,7 @@ def test_dashboard_schema_kamers(setup, dash):
         assert _num(room["trend_c_per_h"]) and _num(room["sensor_outdoor_frac"])
         assert isinstance(room["ac"], bool) and isinstance(room["heating"], bool)
         assert isinstance(room["paused"], bool)
+        assert isinstance(room["fit_excluded"], bool) and isinstance(room["hidden"], bool)
         assert isinstance(room["solar_by_window"], dict)
         for wentry in room["solar_by_window"].values():
             assert {"label", "w"} <= set(wentry)
@@ -167,6 +168,23 @@ def test_dashboard_schema_kamers(setup, dash):
     assert ted["comfort_low"] == pytest.approx(17.0)
     assert ted["comfort_high"] == pytest.approx(18.0)
     assert len(ted["actual_series"]) == 2
+
+
+def test_dashboard_stempelt_de_structurele_uitsluitingen(dash):
+    """De badkamer valt buiten de fit én buiten de grafieken, de trapkoker alleen buiten de
+    grafieken; de rest blijft onaangeroerd. Beide vlaggen komen uit house_model.json en
+    dragen de dashboard-JS — zonder deze stempels tekent de grafiek weer alles."""
+    assert dash["rooms"]["bath"]["fit_excluded"] is True
+    assert dash["rooms"]["bath"]["hidden"] is True
+    assert dash["rooms"]["stair"]["hidden"] is True
+    assert dash["rooms"]["stair"]["fit_excluded"] is False     # koker leert wél mee (sensorloos-gekoppeld)
+    for rid in ("living", "ted", "hotties", "office"):
+        assert dash["rooms"][rid]["hidden"] is False
+        assert dash["rooms"][rid]["fit_excluded"] is False
+    # De kamer blijft volledig bestaan: kaart, plattegrond en meldmodal veranderen niet.
+    assert dash["rooms"]["bath"]["predicted_series"]
+    assert "bath" in dash["house_meta"]["rooms"]
+    assert "bath" in {r["id"] for r in dash["ac"]["rooms"]}
 
 
 def test_dashboard_draagt_de_vooruitblik_door(setup):

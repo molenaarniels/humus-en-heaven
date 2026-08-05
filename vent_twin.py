@@ -31,9 +31,9 @@ import vent_fit as vf
 import vent_forecast
 from vent_forecast import FORECAST_H, PLAYGROUND_PAST_H, latest_actual
 from vent_fit import (
-    anomaly_step, calibrate, filter_ac_samples, filter_heating_samples,
-    filter_paused_samples, naive_rmse, railed_params, rmse, should_nudge_anomaly,
-    skill_score, thin_rmse_history, _residuals,
+    anomaly_step, calibrate, filter_ac_samples, filter_excluded_rooms,
+    filter_heating_samples, filter_paused_samples, naive_rmse, railed_params, rmse,
+    should_nudge_anomaly, skill_score, thin_rmse_history, _residuals,
 )
 from vent_io import (
     CALIB_WINDOW_H, DASHBOARD_FILE, FORECAST_FILE, LEARNED_FILE, PHYSICS_REV, TZ, WARMUP_H,
@@ -229,6 +229,12 @@ def _room_dashboard_row(rid, room, house, params, wd, sim, timeline,
         "ac": (rid == bundle.get("ac_room")),
         "heating": bool(bundle.get("heat_now", {}).get(rid)),
         "paused": bool(bundle.get("paused_now")),
+        # Structurele uitsluitingen uit house_model.json (additief, per kamer):
+        # `fit_excluded` = telt niet mee in fit/RMSE/skill/leercurve/anomaliepoort (kaart-chip),
+        # `hidden` = niet tekenen in de temperatuur- en speeltuingrafiek. De kamer blijft in de
+        # plattegrond, op haar eigen kaart en in de meldmodal — dít veld raakt alleen de lijnen.
+        "fit_excluded": bool(room.get("exclude_from_fit")),
+        "hidden": bool(room.get("hide_in_charts")),
         # Verleden: het volle residu-venster van de kalibratie-sim (de WARMUP_H aanloop is
         # sim-only opwarming van de massaknoop, niet bedoeld als zichtbare voorspelling).
         # Snijdt af op `now`: de toekomst zit in `forecast_series`, dat op de meting geankerd
@@ -502,6 +508,13 @@ def main():
     # Regressie-basis voor de koker-gradiënt γ: bewust de ÓNGEFILTERDE metingen — de filters
     # houden vervuilde samples uit de FIT, maar γ is een waarneming, geen fit-doel.
     gamma_measured = {rid: list(s) for rid, s in actual.items() if s}
+
+    # Structureel uitgesloten kamers (house_model.json `exclude_from_fit`) — als eerste, want
+    # dit is geen tijdvenster maar een eigenschap van de kamer: bath's douche + handbediende
+    # afzuiging zijn drijvers die de fysica niet kent en die geen melding kan repareren.
+    actual, fit_excluded = filter_excluded_rooms(actual, house)
+    if fit_excluded:
+        print(f"[uitgesloten] kamers structureel buiten de fit: {fit_excluded}")
 
     # Airco-kamer uit de kalibratie (geen actieve-koel-term in de fysica).
     acc = ac_changes(log)

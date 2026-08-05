@@ -355,6 +355,27 @@ def filter_paused_samples(actual: dict, intervals: list[tuple]) -> tuple[dict, d
             out[rid] = kept
     return out, excluded
 
+def excluded_rooms(house: dict) -> set[str]:
+    """Kamers met `exclude_from_fit` in house_model.json — structureel buiten de kalibratie.
+
+    Anders dan de AC-/verwarmings-/pauze-filters is dit géén tijdvenster maar een eigenschap
+    van de kamer zelf: haar meetreeks bevat een drijver die de fysica niet kent en die geen
+    melding kan repareren (bath: douche + handbediende mechanische afzuiging). Zo'n reeks
+    hoort niet in een objectief dat óók de gedeelde globalen bepaalt."""
+    return {rid for rid, r in (house.get("rooms") or {}).items()
+            if r.get("exclude_from_fit")}
+
+def filter_excluded_rooms(actual: dict, house: dict) -> tuple[dict, dict]:
+    """Laat de kamers met `exclude_from_fit` volledig uit `actual` vallen. Geeft (gefilterde
+    actual-kopie, {kamer: #weggelaten}) — zelfde vorm als de AC-/verwarmings-/pauze-filters,
+    en met dezelfde afspraak: de kamer wordt nog wél gesimuleerd en getoond (seed uit
+    seed_src), ze telt alleen niet mee in fit, RMSE, skill, leercurve en anomaliepoort."""
+    ex = excluded_rooms(house)
+    if not ex:
+        return actual, {}
+    out = {rid: s for rid, s in actual.items() if rid not in ex}
+    return out, {rid: len(actual[rid]) for rid in actual if rid in ex}
+
 def coupled_sensorless_zones(house: dict, rooms: list[str]) -> list[str]:
     """Zones zónder eigen meting die wél via een deur aan ≥1 gemeten kamer hangen.
 
@@ -368,12 +389,15 @@ def coupled_sensorless_zones(house: dict, rooms: list[str]) -> list[str]:
     measured = set(rooms)
     if not measured:
         return []
+    # Een `exclude_from_fit`-kamer is niet "sensorloos" maar bewust genegeerd: haar params
+    # via de achterdeur alsnog laten meeleren zou de uitsluiting deels ongedaan maken.
+    skip = excluded_rooms(house)
     out = []
     # Alléén `rooms`: junctions (de gang) krijgen in `_zone_thermal_params` generieke vaste
     # waarden en lezen hun params niet, dus die meeleren zou een nul-gradiënt-richting aan de
     # vector toevoegen — kosten zonder informatie.
     for zid in house.get("rooms", {}):
-        if zid in measured:
+        if zid in measured or zid in skip:
             continue
         for d in house.get("doors", {}).values():
             pair = d.get("between") or []

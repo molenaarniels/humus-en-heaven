@@ -524,6 +524,30 @@ def _strat_house():
     }
 
 
+def test_filter_excluded_rooms_drops_the_room_wholesale():
+    t0 = datetime(2026, 6, 15, 12, 0, tzinfo=TZ)
+    house = _heat_house()
+    house["rooms"]["bath"]["exclude_from_fit"] = True
+    actual = {"ted": [(t0, 22.0), (t0, 22.5)], "bath": [(t0, 25.0), (t0, 31.0), (t0, 26.0)]}
+    filt, excl = vf.filter_excluded_rooms(actual, house)
+    assert list(filt) == ["ted"]                # bath valt volledig weg, niet per sample
+    assert excl == {"bath": 3}                  # zelfde rapportagevorm als de andere filters
+    assert filt["ted"] == actual["ted"]         # de rest blijft ongemoeid
+    assert vf.excluded_rooms(house) == {"bath"}
+    # Geen vlag → bit-voor-bit het oude gedrag (backwards-compatibel).
+    plain = _heat_house()
+    filt2, excl2 = vf.filter_excluded_rooms(actual, plain)
+    assert filt2 == actual and excl2 == {} and vf.excluded_rooms(plain) == set()
+
+
+def test_excluded_room_never_learns_via_the_sensorless_backdoor():
+    """Uit de fit is uit de fit: zonder deze poort zou een uitgesloten kamer die wél via een
+    deur aan een gemeten kamer hangt alsnog als 'sensorloze gekoppelde zone' meeleren."""
+    house = _strat_house()
+    house["rooms"]["shaft"]["exclude_from_fit"] = True
+    assert vf.coupled_sensorless_zones(house, ["top", "bot"]) == []
+
+
 def test_coupled_sensorless_zones_finds_the_shaft_only():
     house = _strat_house()
     # 'shaft' heeft geen meting maar hangt via open deuren aan twee gemeten kamers.

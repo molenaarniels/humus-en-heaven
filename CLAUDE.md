@@ -397,6 +397,26 @@ Independent. **Commits `docs/window_data.json` each run** (workflow is now `cont
 
 **Waarom dit er is:** de helling is één constante die op één seizoen (apr–jun) is gefit en met de hand wordt overgeschreven. Elke serieuze vervolgvraag — schuift de helling met het seizoen, helpt een windterm, houdt een modelvorm stand op een vooruit-geschoven validatievenster — heeft een gróeiende reeks nodig. Zonder archief gooide elke run de vorige steekproef weg. De 1438 uren van 17 apr – 15 jun 2026 zijn met `tools/station_backfill.py` uit de bestaande scatter geseed; die rijen dragen geen `wu_solar`/`rh` (van vóór die export) — een latere run over dezelfde periode vult ze alsnog aan.
 
+### Tweede referentie: KNMI De Bilt (`knmi_ref.py`, fase 1 — **nog niet in productie**)
+ERA5 is een reanalyse op gridschaal en draagt zelf ~1,2 °C RMSE; dat is de vloer waar
+elke modelvorm-vraag tegenaan loopt (op die ruis scheelt geen enkele kandidaat-term
+meer dan ~1%). KNMI-station **De Bilt (260) ligt 4,1 km** verderop: een officieel
+gesiteerde hut, via de klassieke scriptservice `daggegevens.knmi.nl/klimatologie/
+uurgegevens` — **geen API-key, geen nieuwe dependency, jaren historie**, dus meteen
+toepasbaar op de uren die al in `data/station_history/` staan. ERA5 blijft ernaast
+staan: standhouden tegen twee ónafhankelijke referenties is een sterkere
+overfit-bewaking dan welk CV-schema ook op één referentie.
+**Status:** `knmi_ref.py` + `tests/test_knmi_ref.py` + `.github/workflows/knmi-probe.yml`
+staan er, maar de parser is geschreven tegen de *gedocumenteerde* vorm — de
+ontwikkelomgeving mag knmi.nl niet bereiken. `tools/knmi_probe.py` print de ruwe
+records en weegt `WU − KNMI` tegen `WU − ERA5` op de gearchiveerde uren; pas ná die
+meting verhuist de referentie naar `station_accuracy.py`. Let bij die stap op de
+tijdconventie (`HOUR_SHIFT`): KNMI-uur `h` is de momentopname op `h` UT (24 rolt naar
+00 van de volgende dag), terwijl het WU-uur een *emmer* met `tempAvg` is — een
+halfuur-scheefheid die er altijd al in zat en met twee referenties voor het eerst
+meetbaar is. Sub-uurlijk kan deze bron niet; daarvoor zijn buur-PWS'en of het
+KNMI Data Platform nodig.
+
 ### Relation to other projects
 Read-only with **one deliberate output**: it never imports or writes other projects' artefacts, but it is the **calibration source** for `wu_bias.py`'s `SOLAR_BIAS_SLOPE` (a hand-copied constant, no runtime coupling). Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.
 

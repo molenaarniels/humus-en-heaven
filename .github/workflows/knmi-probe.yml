@@ -1,0 +1,48 @@
+name: KNMI-referentie (probe)
+
+# Fase 1, stap 1: stel de responsvorm van de KNMI-scriptservice vast en weeg de
+# referentie tegen ERA5 op de uren die al in data/station_history staan.
+# Read-only: geen secrets (de scriptservice heeft geen API-key), geen commits,
+# geen ander artefact. Bestaat om een aanname te vervangen door een meting —
+# zodra de vorm bevestigd is, verhuist de referentie naar station_accuracy.py.
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Startdatum (YYYY-MM-DD, leeg = 7 dagen terug)"
+        type: string
+        default: ""
+      end:
+        description: "Einddatum (YYYY-MM-DD, leeg = gisteren)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe KNMI
+        env:
+          PROBE_START: ${{ inputs.start }}
+          PROBE_END: ${{ inputs.end }}
+        run: |
+          args=""
+          [ -n "$PROBE_START" ] && args="$args --start $PROBE_START"
+          [ -n "$PROBE_END" ] && args="$args --end $PROBE_END"
+          python tools/knmi_probe.py $args

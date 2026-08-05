@@ -465,6 +465,37 @@ def test_railed_params_onderscheidt_huismodel_grens_van_saturatie():
     assert not vf.is_model_rail("a.solar_gain@floor")
 
 
+def test_huismodel_rail_meet_relatief_aan_de_grens_niet_aan_de_bandbreedte():
+    """De vlag moet betekenen "de fit duwt er écht tegenaan", en op een brede band doet een
+    bandbreedte-maat dat niet.
+
+    `c_mass` loopt van 0.2 tot 10.0, dus RAIL_TOL (2 % van de band) is ~0.19 — breder dan de
+    hele afstand die `living.c_mass` in productie boven zijn vloer van 0.595 zat (0.728, oftewel
+    22 % erboven). Die werd daardoor permanent als "op de vloer" gemeld terwijl de constraint
+    niets deed. Een huismodel-grens wordt daarom relatief aan de GRENSWAARDE getoetst."""
+    house = {"rooms": {"a": {"param_bounds": {"c_mass": {"min": 0.595}}}}}
+    band = vp.BOUNDS["c_mass"][1] - 0.595
+    assert vf.RAIL_TOL * band > 0.18            # de oude maat is hier grof...
+    assert vf.MODEL_RAIL_TOL * 0.595 < 0.02     # ...en de nieuwe scherp
+
+    # Pal op de vloer → wél melden (dit is wat de seeding-replay produceert).
+    assert "a.c_mass@floor(model)" in vf.railed_params({"a": {"c_mass": 0.595}}, house=house)
+    # 22 % erboven → NIET melden, ook al valt het binnen 2 % van de bandbreedte.
+    assert not vf.railed_params({"a": {"c_mass": 0.728}}, house=house)
+
+    # De globale BOUNDS-maat blijft ongemoeid: zonder huismodel-grens geldt de oude regel, en
+    # 0.35 ligt binnen 2 % van de band boven de globale vloer 0.2.
+    assert "a.c_mass@floor" in vf.railed_params({"a": {"c_mass": 0.35}}, house={"rooms": {"a": {}}})
+
+
+def test_huismodel_rail_valt_terug_op_de_bandbreedte_bij_een_nulgrens():
+    """Een relatieve maat is betekenisloos rond nul — dan geldt gewoon de oude regel."""
+    house = {"rooms": {"a": {"param_bounds": {"q_int": {"max": 0.5}}}}}
+    # q_int heeft globale vloer 0.0; een huismodel-plafond van 0.5 raakt die vloer niet.
+    assert "a.q_int@floor" in vf.railed_params({"a": {"q_int": 0.0}}, house=house)
+    assert "a.q_int@ceil(model)" in vf.railed_params({"a": {"q_int": 0.5}}, house=house)
+
+
 def test_huismodel_draagt_de_living_c_mass_vloer():
     """Vangnet tegen stil verlies: zonder deze vloer leert de nowcast-fit living's
     thermische massa terug naar de globale ondergrens en groeit de voorspelde dagcyclus

@@ -564,7 +564,11 @@ Twin 1's validated physics, ported verbatim into `vent_physics.py`: multi-zone d
   GLOBALE vloer is getest en verworpen (hotties-amplitude 0.883 → 1.468). `railed_params`
   markeert zo'n grens als `@floor(model)` — een `BOUNDS`-rail is een saturatie-klacht, een
   huismodel-rail is de constraint die dóét waarvoor hij er is; `tools/vent_seed.py`'s
-  acceptatiepoort gaat alleen op het eerste af.
+  acceptatiepoort gaat alleen op het eerste af. De twee gebruiken een **verschillende
+  nabijheidsmaat**: `BOUNDS` op een fractie van de bandbreedte (`RAIL_TOL`, ongewijzigd),
+  een huismodel-grens op een fractie van de GRENSWAARDE (`MODEL_RAIL_TOL`). Op de brede
+  `c_mass`-band (0.2–10.0) is 2 % bandbreedte ~0.19, waardoor `living.c_mass` op 0.728 — 22 %
+  bóven zijn vloer van 0.595, dus volledig vrij — permanent als "op de vloer" werd gemeld.
 
 ### Vooruitblik (12u) — `vent_forecast.py`
 De kalibratie-sim start 72u terug en staat op "nu" dus op een *gesimuleerde* toestand. Voor een

@@ -6,7 +6,7 @@ moduleconstanten aan — niet tegen hardcoded tuningwaarden (die worden bewust
 af en toe geretuned, vgl. tests/test_soil_model.py).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -983,3 +983,73 @@ def test_urgent_muf_volgt_de_veto_vlag_van_decide():
     assert wa.urgent_reason(22.0, 21.0, net_onder, "open", rh_veto=True) == "muf"
     # Andersom: afgerond ópheffend, maar decide() vetode niet → geen muf-label.
     assert wa.urgent_reason(22.0, 21.0, wa.RH_HARD_CAP, "open", rh_veto=False) is None
+
+
+# ── WU history/all: veldnaam + zichtbare terugval ─────────────────────────────
+
+class _Resp:
+    def __init__(self, payload, status=200):
+        self._payload, self.status_code = payload, status
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def wu_env(monkeypatch):
+    monkeypatch.setenv("WU_STATION_ID", "TESTSTATION")
+    monkeypatch.setenv("WU_API_KEY", "testkey")
+
+
+def _obs(minutes_ago, now, field="solarRadiationHigh", value=300.0):
+    """WU-observatierecord met een UTC-stempel, zoals het endpoint ze levert."""
+    t = (now - timedelta(minutes=minutes_ago)).astimezone(timezone.utc)
+    return {"obsTimeUtc": t.strftime("%Y-%m-%dT%H:%M:%SZ"), field: value}
+
+
+def test_recent_solar_leest_het_history_veld(wu_env, monkeypatch):
+    """History-records dragen `solarRadiationHigh`; alleen het current-endpoint kent
+    het kale `solarRadiation`. Die verwisseling liet dit endpoint een maand lang
+    stilletjes niets opleveren (aug 2026)."""
+    now = datetime.now(wa.TZ)
+    obs = [_obs(m, now, value=v) for m, v in ((5, 100.0), (15, 500.0), (25, 300.0))]
+    monkeypatch.setattr(wa.requests, "get", lambda *a, **k: _Resp({"observations": obs}))
+    assert wa.fetch_wu_recent_solar(now) == 300.0
+
+
+@pytest.mark.parametrize("field", ["solarRadiationAvg", "solarRadiation"])
+def test_recent_solar_accepteert_ook_avg_en_kale_veldnaam(wu_env, monkeypatch, field):
+    now = datetime.now(wa.TZ)
+    obs = [_obs(5, now, field=field, value=222.0)]
+    monkeypatch.setattr(wa.requests, "get", lambda *a, **k: _Resp({"observations": obs}))
+    assert wa.fetch_wu_recent_solar(now) == 222.0
+
+
+def test_recent_solar_negeert_samples_buiten_het_venster(wu_env, monkeypatch):
+    now = datetime.now(wa.TZ)
+    obs = [_obs(5, now, value=100.0), _obs(200, now, value=900.0)]
+    monkeypatch.setattr(wa.requests, "get", lambda *a, **k: _Resp({"observations": obs}))
+    assert wa.fetch_wu_recent_solar(now) == 100.0
+
+
+@pytest.mark.parametrize("payload,verwacht", [
+    ({"observations": []}, "0 records"),
+    ({"observations": [{"obsTimeUtc": "2026-08-01T10:00:00Z", "tempAvg": 20.0}]},
+     "0 met instraling"),
+])
+def test_recent_solar_meldt_waarom_hij_terugvalt(wu_env, monkeypatch, capsys, payload, verwacht):
+    """Elke onbruikbare uitkomst moet een diagnose printen. De stille lege-tak is
+    precies wat de veldnaam-bug een maand lang onzichtbaar hield."""
+    monkeypatch.setattr(wa.requests, "get", lambda *a, **k: _Resp(payload))
+    assert wa.fetch_wu_recent_solar(datetime.now(wa.TZ)) is None
+    assert verwacht in capsys.readouterr().out
+
+
+def test_recent_solar_meldt_non_200(wu_env, monkeypatch, capsys):
+    monkeypatch.setattr(wa.requests, "get", lambda *a, **k: _Resp({}, status=403))
+    assert wa.fetch_wu_recent_solar(datetime.now(wa.TZ)) is None
+    assert "status 403" in capsys.readouterr().out
+
+
+def test_workflow_checkout_pint_branch_tip(assert_checkout_pinned):
+    assert_checkout_pinned("window-notify.yml")

@@ -1,0 +1,78 @@
+"""Project 7 — archief + scatter-export."""
+import json
+
+import pytest
+
+import station_accuracy as sa
+
+
+@pytest.fixture
+def archive(tmp_path, monkeypatch):
+    monkeypatch.setattr(sa, "HISTORY_DIR", str(tmp_path))
+    return tmp_path
+
+
+def _row(t, wu=20.0, om=19.0, **kw):
+    return {"t": t, "wu": wu, "om": om, "solar": 400.0, "wu_solar": 512.0,
+            "cloud": 20, "wind": 8.0, "rh": 61, **kw}
+
+
+def test_archief_is_idempotent_en_werkt_bij(archive):
+    """Een tweede run over hetzelfde venster mag niet stapelen — dat is precies wat
+    er gebeurt als het venster elke dispatch overlapt (ACCURACY_DAYS=30, handmatig
+    gedraaid). Wijzigt ERA5 zijn archief achteraf, dan wint de nieuwe waarde."""
+    rows = [_row("2026-08-01T10"), _row("2026-08-01T11")]
+    assert sa.append_archive(rows) == (2, 0)
+    assert sa.append_archive(rows) == (0, 0)
+
+    herzien = [_row("2026-08-01T10", om=19.4)]
+    assert sa.append_archive(herzien) == (0, 1)
+    bewaard = sa.load_archive()
+    assert len(bewaard) == 2
+    assert bewaard[0]["om"] == 19.4
+
+
+def test_archief_splitst_per_maand_en_sorteert(archive):
+    sa.append_archive([_row("2026-09-02T05"), _row("2026-08-31T23"), _row("2026-08-01T00")])
+    assert sorted(p.name for p in archive.iterdir()) == ["2026-08.json", "2026-09.json"]
+    aug = json.loads((archive / "2026-08.json").read_text())
+    assert [r["t"] for r in aug["rows"]] == ["2026-08-01T00", "2026-08-31T23"]
+    assert [r["t"] for r in sa.load_archive()] == ["2026-08-01T00", "2026-08-31T23", "2026-09-02T05"]
+
+
+def test_archief_leidt_bias_en_lokaal_uur_af(archive):
+    """`bias` wordt bewust niet opgeslagen maar afgeleid, zodat hij niet uit de pas
+    kan lopen met zijn operanden na een ERA5-herziening. Het uur is lokaal (het
+    archief zelf staat in UTC)."""
+    sa.append_archive([_row("2026-08-01T10", wu=21.5, om=19.5)])
+    row = sa.load_archive()[0]
+    assert row["bias"] == pytest.approx(2.0)
+    assert row["hour"] == 12          # UTC+2 in augustus
+    assert "bias" not in json.loads((archive / "2026-08.json").read_text())["rows"][0]
+
+
+def test_archief_slaat_onbruikbare_rijen_over(archive):
+    sa.append_archive([_row("2026-08-01T10", wu=None), _row("2026-08-01T11")])
+    assert [r["t"] for r in sa.load_archive()] == ["2026-08-01T11"]
+
+
+def test_kapot_shard_blokkeert_het_archief_niet(archive):
+    (archive / "2026-08.json").write_text("{niet eens json")
+    assert sa.load_archive() == []
+    assert sa.append_archive([_row("2026-08-01T10")]) == (1, 0)
+
+
+def test_scatter_draagt_de_wu_pyranometer():
+    """De scatter droeg alleen de Open-Meteo-instraling, terwijl de correctie in
+    productie op de WU-pyranometer draait — elke modelvorm-analyse op dit artefact
+    toetste dus een andere as dan er gebruikt wordt."""
+    rows = [{"t": f"2026-08-01T{h:02d}", "hour": h, "wu": 20.0 + h, "om": 19.0 + h,
+             "bias": 1.0, "solar": 100.0 * h, "wu_solar": 110.0 * h,
+             "cloud": 20, "wind": 8.0, "rh": 60} for h in range(24)]
+    scatter = sa.analyse(rows)["scatter"]
+    assert len(scatter) == 24
+    assert [p["wu_solar"] for p in scatter] == [110.0 * h for h in range(24)]
+
+
+def test_workflow_checkout_pint_branch_tip(assert_checkout_pinned):
+    assert_checkout_pinned("station-accuracy.yml")

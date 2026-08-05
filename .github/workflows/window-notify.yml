@@ -41,7 +41,18 @@ jobs:
     # and a pending restart kick can take over.
     timeout-minutes: 350
     steps:
+      # Branch-tip, niet de dispatch-SHA. Een restart-kick wordt door de
+      # concurrency-guard tot ~5u vastgehouden, maar `github.sha` blijft de stand
+      # van het moment van inplannen — de overnemende loop checkt dus een uren-oude
+      # window_data.json uit. Gevolg (gemeten 5 aug 2026): de solar-mediaan van
+      # `smoothed_solar` vindt geen recente samples meer en valt terug op één
+      # instantane meting, waardoor twee runs op hetzelfde moment dezelfde
+      # stationsmeting van 28.1 °C als 27.2 en 26.2 °C publiceerden; bovendien
+      # rebaset de nieuwe run zijn oude historie over de tussenliggende samples heen
+      # (gat 14:00→15:45 in outside_history). Zelfde pin als shade-notify.yml.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v6

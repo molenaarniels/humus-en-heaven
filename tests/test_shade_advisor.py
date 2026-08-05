@@ -6,7 +6,6 @@ getest met gemonkeypatchte weer/log-seams en een tmp-state-bestand.
 """
 import json
 import math
-import pathlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -221,18 +220,11 @@ def test_stale_state_snapshot_zou_dubbel_sturen(state_env, monkeypatch):
     assert len(sent) == 2 and sent[0] == sent[1]
 
 
-def test_workflow_checkout_pint_branch_tip():
+def test_workflow_checkout_pint_branch_tip(assert_checkout_pinned):
     """De reminder-dedup vereist een checkout op de branch-tip, niet op de
     dispatch-SHA — anders leest een tweede dispatch de state van vóór de commit
     van de eerste (dubbele melding, 2 aug 2026)."""
-    wf = (pathlib.Path(__file__).resolve().parents[1]
-          / ".github" / "workflows" / "shade-notify.yml").read_text(encoding="utf-8")
-    lines = wf.splitlines()
-    idx = [i for i, ln in enumerate(lines) if "actions/checkout" in ln]
-    assert idx, "geen checkout-stap in shade-notify.yml"
-    for i in idx:
-        assert any("ref: ${{ github.ref_name }}" in ln for ln in lines[i:i + 3]), \
-            "checkout zonder branch-tip-pin — een 2e reminder-dispatch stuurt dubbel"
+    assert_checkout_pinned("shade-notify.yml")
 
 
 def test_state_roundtrip(tmp_path, monkeypatch):

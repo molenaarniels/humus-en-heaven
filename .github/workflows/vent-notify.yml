@@ -33,7 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      # Branch-tip, niet de dispatch-SHA — zie window-notify.yml voor de diagnose.
+      # Dezelfde loop-overdracht speelt hier: de overnemende run zou anders de
+      # maand-shards en vent_learned.json vanaf een uren-oude stand bijwerken en
+      # de tussenliggende samples wegrebasen.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v6

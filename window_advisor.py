@@ -426,6 +426,23 @@ def fetch_wu_current_temp() -> tuple[float | None, float | None, float | None]:
         return None, None, None
 
 
+# De WU *history*-endpoints leveren per record een High/Low/Avg-samenvatting; alleen
+# het *current*-endpoint kent het kale `solarRadiation`. `solarRadiationHigh` staat
+# vooraan omdat Project 7 de SOLAR_BIAS_SLOPE op exact dát veld fit
+# (station_accuracy.fetch_wu_hourly) — zo blijft de driver op dezelfde as als de
+# kalibratie. De andere twee zijn vangnet voor stations/tiers die ze anders leveren.
+SOLAR_OBS_FIELDS = ("solarRadiationHigh", "solarRadiationAvg", "solarRadiation")
+
+
+def _obs_solar(obs: dict) -> float | None:
+    """Eerste aanwezige instralingsveld uit een WU-observatie-record."""
+    for key in SOLAR_OBS_FIELDS:
+        val = obs.get(key)
+        if val is not None:
+            return val
+    return None
+
+
 def fetch_wu_recent_solar(now: datetime, window_min: float = SOLAR_AVG_WINDOW_MIN) -> float | None:
     """Mediaan van de WU-pyranometer over de laatste `window_min` minuten, via het
     raw (~5-min) `history/all`-endpoint voor vandaag.
@@ -438,7 +455,16 @@ def fetch_wu_recent_solar(now: datetime, window_min: float = SOLAR_AVG_WINDOW_MI
     piekige "gecorrigeerde" buitentemp tussen 12–15u op dagen met wisselende
     bewolking (gediagnosticeerd juli 2026). Middelen over een venster benadert de
     kap-traagheid i.p.v. het instant-moment. None bij falen/geen recente data —
-    de aanroeper valt dan terug op de instant-waarde."""
+    de aanroeper valt dan terug op de instant-waarde.
+
+    HISTORIE (aug 2026): deze functie leverde vanaf de deploy structureel None,
+    genoteerd als "history/all geeft non-200, vermoedelijk een product-tier-gap".
+    Dat klopte niet — het endpoint antwoordt gewoon, maar hier werd de veldnaam van
+    het *current*-endpoint (`solarRadiation`) gelezen terwijl history-records
+    `solarRadiationHigh` dragen (zoals station_accuracy.py en soil_model.py al
+    deden). `vals` bleef dus leeg en de lege-tak returnde None **zonder te printen**,
+    waardoor een maand lang alleen de terugval zichtbaar was en nooit de oorzaak.
+    Vandaar dat élke onbruikbare uitkomst hieronder een diagnose print."""
     station_id = os.environ.get("WU_STATION_ID")
     api_key    = os.environ.get("WU_API_KEY")
     if not (station_id and api_key):
@@ -462,19 +488,26 @@ def fetch_wu_recent_solar(now: datetime, window_min: float = SOLAR_AVG_WINDOW_MI
         print(f"[WU] history/all call failed: {sanitize_error(e)}")
         return None
     cutoff = now - timedelta(minutes=window_min)
-    vals = []
+    vals, with_solar = [], 0
     for obs in obs_list:
         ts = obs.get("obsTimeUtc")
-        solar = obs.get("solarRadiation")
+        solar = _obs_solar(obs)
         if not ts or solar is None:
             continue
+        with_solar += 1
         try:
             t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except ValueError:
             continue
         if cutoff <= t <= now:
             vals.append(solar)
-    return statistics.median(vals) if vals else None
+    if not vals:
+        # Nooit stil terugvallen: dit onderscheidt "endpoint leeg", "records zonder
+        # instralingsveld" (de bug hierboven) en "wel data, maar niets recents".
+        print(f"[WU] history/all: {len(obs_list)} records, {with_solar} met instraling, "
+              f"0 binnen de laatste {window_min:.0f} min — val terug op lokale mediaan")
+        return None
+    return statistics.median(vals)
 
 
 def _parse_local(t: str) -> datetime:
@@ -908,8 +941,8 @@ def smoothed_solar(history: list[dict], now: datetime,
                    window_min: float = SOLAR_AVG_WINDOW_MIN) -> float | None:
     """Mediaan van de eigen (per-run gepersisteerde) `solar`-samples in `history` over
     de laatste `window_min` minuten, inclusief de huidige meting — de lokale fallback
-    voor `fetch_wu_recent_solar()` wanneer het `history/all`-endpoint faalt (bv. geen
-    entitlement op dat WU-productniveau). Werkt met wat we al elke 15 min ophalen en
+    voor `fetch_wu_recent_solar()` wanneer het `history/all`-endpoint niets bruikbaars
+    geeft. Werkt met wat we al elke 15 min ophalen en
     bewaren, dus geen extra API-call nodig; bouwt vanzelf op na de deploy die `solar`
     additief aan `outside_history` toevoegt (oudere samples zonder dat veld tellen
     simpelweg niet mee). `current` None → None."""
@@ -1620,11 +1653,11 @@ def main():
         # laatste SOLAR_AVG_WINDOW_MIN, via het `history/all`-endpoint
         # (fetch_wu_recent_solar) — een enkel instant-sample importeerde voorbijgaande
         # wolkenschaduw 1-op-1 in de correctie (piekige gecorrigeerde temp rond 12-15u
-        # op wisselend bewolkte dagen). Dat endpoint bleek in de praktijk altijd te
-        # falen (elke iteratie viel terug op de instant-waarde, gediagnosticeerd juli
-        # 2026 — vermoedelijk een ander WU-productniveau dan current/hourly/daily),
-        # dus een lokale mediaan (smoothed_solar) over onze eigen 15-minuten-historie
-        # zit er tussenin: geen extra endpoint-afhankelijkheid, wel dezelfde demping.
+        # op wisselend bewolkte dagen). Dat endpoint gaf tot aug 2026 nooit iets terug
+        # — geen product-tier-gap zoals eerst genoteerd, maar een verkeerde veldnaam,
+        # zie fetch_wu_recent_solar. De lokale mediaan (smoothed_solar) over onze eigen
+        # 15-minuten-historie blijft eronder staan: geen extra endpoint-afhankelijkheid,
+        # wel dezelfde demping, en hij dekt de eerste runs na een lege checkout.
         # Laatste redmiddel: de instant-WU-waarde, dan Open-Meteo. Dit schoont meteen
         # de microklimaat-bias-blend, decide() en outside_history op.
         raw = outside

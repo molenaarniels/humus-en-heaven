@@ -26,7 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Branch-tip: sinds deze workflow een groeiend archief bijwerkt
+      # (data/station_history) mag een tweede dispatch niet vanaf een oudere
+      # momentopname committen — dan rebaset hij de uren van de eerste eruit.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -50,7 +55,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/accuracy_data.json
+          git add docs/accuracy_data.json data/station_history
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else

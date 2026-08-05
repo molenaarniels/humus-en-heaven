@@ -385,3 +385,10 @@ def test_window_weather_summary_leeg():
     rows = [{"dt": now - timedelta(hours=100), "T_out": 20.0, "shortwave": 50.0},
             {"dt": None, "T_out": 21.0, "shortwave": 60.0}]
     assert vt.window_weather_summary({"hourly": rows}, now, window_h=24.0) == {}
+
+
+def test_workflow_checkout_pint_branch_tip(assert_checkout_pinned):
+    """De tweeling draait dezelfde zelf-gestuurde kwartierloop als de raam-adviseur:
+    zonder pin werkt de overnemende run de maand-shards en vent_learned.json bij
+    vanaf een uren-oude stand en rebaset hij de tussenliggende samples eruit."""
+    assert_checkout_pinned("vent-notify.yml")

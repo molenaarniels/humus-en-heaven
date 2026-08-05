@@ -27,6 +27,7 @@ JSON of logs geschreven.
 
 from __future__ import annotations
 
+import glob
 import json
 import math
 import os
@@ -51,6 +52,14 @@ WIND_BINS = [(0, 5), (5, 10), (10, 20), (20, 1000)]   # km/h @10m
 
 OUT_PATH = "docs/accuracy_data.json"
 SCATTER_CAP = 1500               # max punten in JSON (dashboard scatter)
+
+# Maand-shards met de gekoppelde uren (zelfde patroon als data/twin2_history).
+# accuracy_data.json is een *momentopname* van het laatste venster en wordt elke
+# run overschreven; modelvorm-vragen (helling per seizoen, wind-/geometrieterm,
+# validatie op een vooruit-geschoven venster) hebben juist een groeiende reeks
+# nodig. Zonder archief gooit elke run de vorige steekproef weg.
+HISTORY_DIR = os.getenv("STATION_HISTORY_DIR", "data/station_history")
+SHARD_SCHEMA = 1
 
 
 # =============================================================================
@@ -146,7 +155,7 @@ def fetch_om_archive_hourly(start: str, end: str) -> Dict[str, dict]:
 
 
 # =============================================================================
-# PAIR + STATS
+# PAIR
 # =============================================================================
 
 def pair_hours(wu: Dict[str, dict], om: Dict[str, dict]) -> List[dict]:
@@ -165,9 +174,86 @@ def pair_hours(wu: Dict[str, dict], om: Dict[str, dict]) -> List[dict]:
             "wu_solar": w.get("solar"),      # WU eigen pyranometer (lokaal, co-located)
             "cloud": o.get("cloud"),
             "wind": o.get("wind"),
+            "rh": w.get("rh"),               # alleen voor het archief, niet gestratificeerd
         })
     return rows
 
+
+# =============================================================================
+# ARCHIEF (maand-shards — de groeiende kalibratie-/validatieset)
+# =============================================================================
+
+ARCHIVE_FIELDS = ("wu", "om", "solar", "wu_solar", "cloud", "wind", "rh")
+
+
+def _shard_path(month: str) -> str:
+    return os.path.join(HISTORY_DIR, f"{month}.json")
+
+
+def load_shard(month: str) -> dict:
+    try:
+        with open(_shard_path(month), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"schema": SHARD_SCHEMA, "month": month,
+                "reference": "open-meteo ERA5 archive", "rows": []}
+
+
+def append_archive(rows: List[dict]) -> Tuple[int, int]:
+    """Voeg de gekoppelde uren toe aan `data/station_history/<YYYY-MM>.json`.
+
+    Idempotent op het UTC-uur: een tweede run over hetzelfde venster werkt de rij
+    bij i.p.v. te stapelen (ERA5 herziet zijn archief soms). `bias` wordt niet
+    opgeslagen — die is `wu − om` en zou bij een herziening uit de pas kunnen gaan
+    lopen met zijn eigen operanden. Geeft (nieuw, bijgewerkt) terug.
+
+    VEILIGHEID: hier gaat alleen meetdata in, nooit WU_STATION_ID.
+    """
+    by_month: Dict[str, dict] = {}
+    fresh = updated = 0
+    for r in rows:
+        month = r["t"][:7]
+        if month not in by_month:
+            by_month[month] = load_shard(month)
+        shard = by_month[month]
+        index = {row["t"]: row for row in shard["rows"]}
+        row = {"t": r["t"], **{k: r.get(k) for k in ARCHIVE_FIELDS}}
+        if r["t"] in index:
+            if index[r["t"]] != row:
+                index[r["t"]].update(row)
+                updated += 1
+        else:
+            shard["rows"].append(row)
+            fresh += 1
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    for shard in by_month.values():
+        shard["rows"].sort(key=lambda row: row["t"])
+        with open(_shard_path(shard["month"]), "w", encoding="utf-8") as f:
+            json.dump(shard, f, ensure_ascii=False, separators=(",", ":"))
+    return fresh, updated
+
+
+def load_archive() -> List[dict]:
+    """Alle gearchiveerde uren over alle shards, op tijd gesorteerd, met `bias`
+    en `hour` (lokaal) opnieuw afgeleid — de vorm die `analyse()` verwacht."""
+    out: Dict[str, dict] = {}
+    for path in sorted(glob.glob(os.path.join(HISTORY_DIR, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                shard = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for row in shard.get("rows", []):
+            if row.get("wu") is None or row.get("om") is None:
+                continue
+            local = datetime.fromisoformat(row["t"] + ":00:00").replace(tzinfo=UTC).astimezone(TZ)
+            out[row["t"]] = {**row, "bias": row["wu"] - row["om"], "hour": local.hour}
+    return [out[k] for k in sorted(out)]
+
+
+# =============================================================================
+# ANALYSE
+# =============================================================================
 
 def _agg(rows: List[dict]) -> dict:
     """Mean bias, RMSE, n, en (waar zinnig) correlatie WU↔model."""
@@ -274,10 +360,14 @@ def analyse(rows: List[dict]) -> dict:
     solar_corr, solar_corr_n = _bias_corr(rows, "solar")
     wu_solar_corr, wu_solar_corr_n = _bias_corr(rows, "wu_solar")
 
-    # scatter (gedownsampled) voor het dashboard
+    # scatter (gedownsampled) voor het dashboard. `wu_solar` is additief meegenomen:
+    # de scatter droeg alleen de Open-Meteo-instraling, terwijl de correctie in
+    # productie op de WU-pyranometer draait — elke modelvorm-analyse op dit artefact
+    # toetste dus een andere as dan er gebruikt wordt.
     step = max(1, len(rows) // SCATTER_CAP)
     scatter = [{"t": r["t"], "h": r["hour"], "bias": round(r["bias"], 2),
-                "solar": r["solar"], "cloud": r["cloud"], "wind": r["wind"],
+                "solar": r["solar"], "wu_solar": r.get("wu_solar"),
+                "cloud": r["cloud"], "wind": r["wind"],
                 "wu": round(r["wu"], 1), "om": round(r["om"], 1)}
                for r in rows[::step]]
 
@@ -403,6 +493,10 @@ def main() -> None:
     if not rows:
         raise SystemExit("Geen gekoppelde uren — controleer station-id/periode "
                          "(ERA5 loopt ~5 dagen achter).")
+
+    fresh, updated = append_archive(rows)
+    print(f"[archief] {HISTORY_DIR}: {fresh} nieuwe uren, {updated} bijgewerkt "
+          f"({len(load_archive())} totaal)")
 
     stats = analyse(rows)
     report = build_report(stats)

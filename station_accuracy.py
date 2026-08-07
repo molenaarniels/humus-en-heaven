@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+import knmi_ref
 from http_util import get_json
 from notify import sanitize_error, send_telegram
 from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ, local_today
@@ -183,7 +184,7 @@ def pair_hours(wu: Dict[str, dict], om: Dict[str, dict]) -> List[dict]:
 # ARCHIEF (maand-shards — de groeiende kalibratie-/validatieset)
 # =============================================================================
 
-ARCHIVE_FIELDS = ("wu", "om", "solar", "wu_solar", "cloud", "wind", "rh")
+ARCHIVE_FIELDS = ("wu", "om", "knmi", "solar", "wu_solar", "cloud", "wind", "rh")
 
 
 def _shard_path(month: str) -> str:
@@ -254,6 +255,27 @@ def load_archive() -> List[dict]:
 # =============================================================================
 # ANALYSE
 # =============================================================================
+
+def attach_knmi(rows: List[dict], knmi_hours: Dict[str, dict]) -> int:
+    """Hang de KNMI-referentietemperatuur aan de gekoppelde uren (`knmi`-kolom).
+
+    Additief en niet-fataal: ontbreekt de bron, dan blijft `knmi` None en draait
+    alles ongewijzigd door op ERA5. De stratificatie hieronder blijft bewust op
+    ERA5 staan — dit veld gaat het archief in zodat `bias_eval`/`tools/
+    bias_backtest.py` er tegen kan scoren (`--reference knmi`).
+
+    Gemeten op de eerste 1437 gekoppelde uren (apr–jun 2026): dezelfde gemiddelde
+    bias als ERA5 (+0,88 °C, twee onafhankelijke referenties die het eens zijn),
+    maar sd 1,15 vs 1,42 — ~0,27 °C van wat als stationsruis werd gefit, was
+    ERA5's eigen gridfout.
+    """
+    hit = 0
+    for row in rows:
+        temp = (knmi_hours.get(row["t"]) or {}).get("temp")
+        row["knmi"] = temp
+        hit += temp is not None
+    return hit
+
 
 def _agg(rows: List[dict]) -> dict:
     """Mean bias, RMSE, n, en (waar zinnig) correlatie WU↔model."""
@@ -493,6 +515,15 @@ def main() -> None:
     if not rows:
         raise SystemExit("Geen gekoppelde uren — controleer station-id/periode "
                          "(ERA5 loopt ~5 dagen achter).")
+
+    # Tweede referentie (KNMI De Bilt, 4,1 km) — niet-fataal: de diagnose blijft
+    # op ERA5 draaien als de scriptservice hapert. Zie knmi_ref.py voor het waarom.
+    try:
+        hit = attach_knmi(rows, knmi_ref.fetch_hourly(start.isoformat(), end.isoformat()))
+        print(f"[KNMI] {hit}/{len(rows)} gekoppelde uren hebben een KNMI-referentie")
+    except Exception as e:
+        attach_knmi(rows, {})
+        print(f"[KNMI] referentie niet opgehaald ({sanitize_error(e)}) — alleen ERA5")
 
     fresh, updated = append_archive(rows)
     print(f"[archief] {HISTORY_DIR}: {fresh} nieuwe uren, {updated} bijgewerkt "

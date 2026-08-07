@@ -315,6 +315,9 @@ def archive_summary(rows: List[dict]) -> dict:
             "n_wu_solar": sum(1 for r in rows if r.get("wu_solar") is not None)}
 
 
+NEIGHBOUR_DAYS = 30      # eigen venster; zie de rate-limit-noot in neighbour_coherence
+
+
 def neighbour_coherence(api_key: str, start: str, end: str, days: int,
                         reference: Dict[str, dict]) -> Optional[dict]:
     """Draait de buur-PWS-coherentietoets mee in de maandelijkse run.
@@ -332,11 +335,19 @@ def neighbour_coherence(api_key: str, start: str, end: str, days: int,
     ids = neighbour_pws.neighbour_ids()
     if not (ids and reference):
         return None
+    # Eigen, korter venster. `fetch_wu_hourly` doet één call per dag per station, dus
+    # de coherentietoets vermenigvuldigt het WU-verkeer met (1 + aantal buren): een
+    # 120-daagse run met drie buren is 480 calls, en WU staat er 30 per minuut toe —
+    # dan loopt de run tegen de limiet in plaats van tegen de data. De vraag ("delen
+    # de buren onze warme nacht?") is met ~30 dagen ruim beantwoord; de 45-daagse
+    # eerste meting gaf een verschil van 0,4 °C tussen ons en de warmste buur, ver
+    # boven de ruis. Het lange venster blijft voor het archief zelf.
+    window = min(days, NEIGHBOUR_DAYS)
     ours = neighbour_pws.profile(neighbour_pws.pair_with_reference(
-        fetch_wu_hourly(os.environ.get("WU_STATION_ID", ""), api_key, days), reference))
+        fetch_wu_hourly(os.environ.get("WU_STATION_ID", ""), api_key, window), reference))
     others = []
     for idx, sid in enumerate(ids, 1):
-        paired = neighbour_pws.pair_with_reference(fetch_wu_hourly(sid, api_key, days),
+        paired = neighbour_pws.pair_with_reference(fetch_wu_hourly(sid, api_key, window),
                                                    reference)
         if not paired:
             print(f"[buur] buur {idx}: geen gekoppelde uren — overgeslagen")
@@ -346,7 +357,8 @@ def neighbour_coherence(api_key: str, start: str, end: str, days: int,
         return None
     code, uitleg = neighbour_pws.verdict(ours, others)
     print(f"[buur] {code.upper()}: {uitleg}")
-    return {"verdict": code, "explanation": uitleg, "window": {"start": start, "end": end},
+    return {"verdict": code, "explanation": uitleg,
+            "window": {"start": start, "end": end, "days": window},
             "ours": {"label": "ons station", **ours}, "others": others,
             "spread_night": neighbour_pws.spread(others, "night_bias"),
             "spread_slope": neighbour_pws.spread(others, "slope_per_100")}

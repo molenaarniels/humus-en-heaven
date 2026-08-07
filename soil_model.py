@@ -193,6 +193,28 @@ def _soil_temps(daily_means: Dict[str, Dict[str, float]],
     return out
 
 
+TEMP_FACTOR_ZERO_C = 5.0    # hieronder groeit er niets meer
+TEMP_FACTOR_FULL_C = 8.0    # hierboven remt temperatuur de groei niet
+
+
+def temp_factor(tmean_eff: float) -> float:
+    """Koude-demping op Kcb: 0 onder 5 °C, lineair naar 1 op 8 °C (FAO-56 §3.3).
+
+    Uitgelicht uit `run_water_balance` zodat het bodemtemperatuur-onderzoek
+    (`soil_temp_proxy.py`) exact dezelfde drempels gebruikt als het model, i.p.v.
+    een kopie die stilletjes uit de pas kan gaan lopen. Puur; identiek gedrag.
+
+    `tmean_eff` is het SOIL_TEMP_WINDOW-daagse loopgemiddelde van de *lucht*-Tmean
+    — een gedempte proxy voor de bodemtemperatuur, want de bodem ijlt na. Of die
+    proxy en dat venster kloppen is nooit gemeten; zie `soil_temp_proxy.py`.
+    """
+    if tmean_eff <= TEMP_FACTOR_ZERO_C:
+        return 0.0
+    if tmean_eff <= TEMP_FACTOR_FULL_C:
+        return (tmean_eff - TEMP_FACTOR_ZERO_C) / (TEMP_FACTOR_FULL_C - TEMP_FACTOR_ZERO_C)
+    return 1.0
+
+
 def seasonal_kcb(zone_key: str, doy: int) -> float:
     """Lineair geïnterpoleerde basal Kcb voor zone op dag `doy`."""
     anchors = KCB_SEASONAL[zone_key]
@@ -375,13 +397,8 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         if len(tmean_window) > SOIL_TEMP_WINDOW:
             tmean_window.pop(0)
         tmean_eff = sum(tmean_window) / len(tmean_window)
-        if tmean_eff <= 5.0:
-            temp_factor = 0.0
-        elif tmean_eff <= 8.0:
-            temp_factor = (tmean_eff - 5.0) / 3.0
-        else:
-            temp_factor = 1.0
-        kcb_eff = round(kcb * temp_factor, 3)
+        tf = temp_factor(tmean_eff)
+        kcb_eff = round(kcb * tf, 3)
 
         ET0 = d["ET0"] or 0
 
@@ -421,7 +438,7 @@ def run_water_balance(series: List[Dict], zone: Dict, zone_key: str,
         else:
             Kr = (TEW - De) / (TEW - REW)
         # Ke (FAO-56 Eq. 71). temp_factor demt ook E onder 5–8 °C.
-        Ke = max(0.0, min(Kr * (KC_MAX - kcb_eff), few * KC_MAX)) * temp_factor
+        Ke = max(0.0, min(Kr * (KC_MAX - kcb_eff), few * KC_MAX)) * tf
 
         # Stress en transpiratie uit de diepe bucket.
         depletion = max(0, AWC_max - water)

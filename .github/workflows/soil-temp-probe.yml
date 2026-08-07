@@ -1,0 +1,52 @@
+name: Bodemtemperatuur-proxy (probe)
+
+# Toetst de aanname onder `soil_model.temp_factor`: is een 5-daags loopgemiddelde
+# van de lucht-Tmean een goede stand-in voor de bodemtemperatuur, en klopt die
+# vensterlengte? Het ERA5-archief draagt bodemtemperatuur jaren terug, dus dit kan
+# over meerdere schouderseizoenen tegelijk in plaats van te wachten op de volgende.
+#
+# Read-only: geen secrets (Open-Meteo heeft geen key), geen commits, geen artefact.
+# Meet eerst; een uitkomst hoort in een aparte, expliciete wijziging te landen —
+# `temp_factor` werkt door in Project 5 (groei-accumulatie + dormancy-guard).
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Aantal jaren archief"
+        type: string
+        default: "4"
+      depth:
+        description: "Bodemlaag"
+        type: choice
+        options: ["root", "shallow"]
+        default: "root"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soil-temp-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe bodemtemperatuur-proxy
+        env:
+          PROBE_YEARS: ${{ inputs.years || '4' }}
+          PROBE_DEPTH: ${{ inputs.depth || 'root' }}
+        run: python tools/soil_temp_probe.py --years "$PROBE_YEARS" --depth "$PROBE_DEPTH"

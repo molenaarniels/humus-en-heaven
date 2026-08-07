@@ -181,3 +181,82 @@ def test_workflow_draait_maandelijks_en_heeft_een_dagen_fallback():
     assert "schedule:" in wf and "cron:" in wf
     assert "timezone: \"Europe/Amsterdam\"" in wf
     assert "inputs.days || " in wf
+
+
+# ── Dashboard-velden (ijking) ────────────────────────────────────────────────
+
+def test_reference_stats_zet_beide_referenties_naast_elkaar():
+    """De sd is de kolom die telt: een verschil in gemiddelde is over 4 km deels
+    écht microklimaat, de spreiding is de vloer waar de hellingfit tegenaan loopt."""
+    rows = [{"t": "2026-08-01T10", "wu": 21.0, "om": 20.0, "knmi": 20.5},
+            {"t": "2026-08-01T11", "wu": 22.0, "om": 20.0, "knmi": 21.5}]
+    stats = {r["key"]: r for r in sa.reference_stats(rows)}
+    assert stats["om"]["bias"] == pytest.approx(1.5)
+    assert stats["knmi"]["bias"] == pytest.approx(0.5)
+    assert stats["knmi"]["sd"] == pytest.approx(0.0)      # constante offset
+    assert stats["om"]["sd"] == pytest.approx(0.5)
+
+
+def test_reference_stats_slaat_een_ontbrekende_referentie_over():
+    rows = [{"t": "2026-08-01T10", "wu": 21.0, "om": 20.0, "knmi": None}]
+    assert [r["key"] for r in sa.reference_stats(rows)] == ["om"]
+
+
+def test_archive_summary_telt_de_kolommen():
+    rows = [_row("2026-07-31T23", knmi=20.4), _row("2026-08-01T00", knmi=None, wu_solar=None)]
+    summary = sa.archive_summary(rows)
+    assert summary["n"] == 2 and summary["months"] == ["2026-07", "2026-08"]
+    assert summary["start"] == "2026-07-31" and summary["end"] == "2026-08-01"
+    assert summary["n_knmi"] == 1 and summary["n_wu_solar"] == 1
+    assert sa.archive_summary([])["n"] == 0
+
+
+def _knmi_frame(n=240):
+    return {f"2026-08-{d // 24 + 1:02d}T{d % 24:02d}":
+            {"temp": 20.0, "solar": max(0.0, (12 - abs(d % 24 - 13)) * 60.0), "wind": 3.0}
+            for d in range(n)}
+
+
+def test_neighbour_coherence_zonder_secret_is_none(monkeypatch):
+    monkeypatch.delenv("WU_NEIGHBOUR_IDS", raising=False)
+    assert sa.neighbour_coherence("key", "2026-08-01", "2026-08-10", 10, _knmi_frame()) is None
+
+
+def test_neighbour_coherence_zonder_knmi_frame_is_none(monkeypatch):
+    monkeypatch.setenv("WU_NEIGHBOUR_IDS", "N1")
+    assert sa.neighbour_coherence("key", "2026-08-01", "2026-08-10", 10, {}) is None
+
+
+def test_neighbour_coherence_bouwt_het_oordeel(monkeypatch):
+    monkeypatch.setenv("WU_NEIGHBOUR_IDS", "N1,N2")
+    monkeypatch.setenv("WU_STATION_ID", "ONS")
+    frame = _knmi_frame()
+    warm = {"ONS": 0.5, "N1": 0.7, "N2": 1.0}
+
+    def fake_fetch(sid, key, days):
+        return {t: {"temp": v["temp"] + warm[sid], "solar": v["solar"], "wind": v["wind"]}
+                for t, v in frame.items()}
+
+    monkeypatch.setattr(sa, "fetch_wu_hourly", fake_fetch)
+    out = sa.neighbour_coherence("key", "2026-08-01", "2026-08-10", 10, frame)
+    assert out["verdict"] == "gedeeld"
+    assert out["ours"]["label"] == "ons station"
+    assert [o["label"] for o in out["others"]] == ["buur 1", "buur 2"]
+
+
+def test_neighbour_coherence_lekt_geen_station_ids(monkeypatch):
+    """De id's zijn locatiegegevens; ze mogen niet in het publieke artefact belanden."""
+    monkeypatch.setenv("WU_NEIGHBOUR_IDS", "IGEHEIM1,IGEHEIM2")
+    monkeypatch.setenv("WU_STATION_ID", "IGEHEIMONS")
+    frame = _knmi_frame()
+    monkeypatch.setattr(sa, "fetch_wu_hourly", lambda sid, key, days: {
+        t: {"temp": v["temp"] + 0.5, "solar": v["solar"], "wind": v["wind"]}
+        for t, v in frame.items()})
+    out = sa.neighbour_coherence("key", "2026-08-01", "2026-08-10", 10, frame)
+    assert "IGEHEIM" not in json.dumps(out)
+
+
+def test_workflow_geeft_de_buur_ids_door():
+    wf = (pathlib.Path(__file__).resolve().parents[1]
+          / ".github" / "workflows" / "station-accuracy.yml").read_text(encoding="utf-8")
+    assert "WU_NEIGHBOUR_IDS:" in wf and "secrets.WU_NEIGHBOUR_IDS" in wf

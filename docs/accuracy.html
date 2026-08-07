@@ -45,7 +45,7 @@
     <div>
       <div class="corner-mark">Diagnostiek · Project VII</div>
       <h1>Weerstation-ijking</h1>
-      <div class="subtitle">Hoe nauwkeurig is het eigen WU-station? De uurtemperatuur wordt vergeleken met Open-Meteo ERA5 (reanalyse) en de afwijking uitgesplitst naar tijd-van-dag, zon en wind — om de stralingsfout op zonnige (laat-)middagen zichtbaar te maken.</div>
+      <div class="subtitle">Hoe nauwkeurig is het eigen WU-station? De uurtemperatuur wordt vergeleken met twee onafhankelijke referenties — Open-Meteo ERA5 (reanalyse) en KNMI De Bilt op 4,1 km — en de afwijking uitgesplitst naar tijd-van-dag, zon en wind. Buurstations bepalen daarnaast of een warme nacht van ons station komt of van de buurt.</div>
     </div>
     <div style="text-align:right;">
       <div class="corner-mark">Periode</div>
@@ -94,6 +94,32 @@
   </div>
 </div>
 
+<div class="grid grid-2">
+  <div class="specimen-card">
+    <div class="card-title">IJking — moet de constante bijgesteld?</div>
+    <div id="recal-verdict" class="verdict" style="font-size:16px;margin:6px 0 10px;">–</div>
+    <div class="stat-row"><span class="lbl">Uitgerolde helling</span><span id="recal-deployed">–</span></div>
+    <div class="stat-row"><span class="lbl">Bewijs</span><span id="recal-evidence">–</span></div>
+    <div class="lbl-sm" style="margin-top:8px;">Een kandidaat wordt alleen aangenomen als hij out-of-sample wint (forward-chaining), in élke fold wint, én boven de A/A-ruisvloer uitkomt.</div>
+  </div>
+  <div class="specimen-card">
+    <div class="card-title">Referenties naast elkaar</div>
+    <table id="ref-table" style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:12px;"></table>
+    <div class="lbl-sm" style="margin-top:8px;">De <b>sd</b> is de kolom die telt: een verschil in gemiddelde is over 4 km deels écht microklimaat, maar de spreiding is de ruisvloer waar elke hellingfit tegenaan loopt.</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="specimen-card">
+    <div class="card-title">Buurstations — is de warme nacht van ons of van de buurt?</div>
+    <div id="neigh-verdict" class="verdict" style="font-size:16px;margin:6px 0 10px;">–</div>
+    <div style="overflow-x:auto;">
+      <table id="neigh-table" style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:12px;"></table>
+    </div>
+    <div class="lbl-sm" style="margin-top:8px;">KNMI levert het gemeenschappelijke frame (referentie, zon én wind); elk station brengt alleen zijn eigen temperatuur in. Delen de buren onze warme, windstille nacht, dan is dat microklimaat en géén sensorfout — en blijft de correctie een zuivere zon-term.</div>
+  </div>
+</div>
+
 <div class="grid">
   <div class="specimen-card">
     <div class="card-title">Afwijking per uur van de dag</div>
@@ -116,17 +142,18 @@
   <div class="specimen-card">
     <div class="card-title">Spreiding: instraling → afwijking</div>
     <div class="chart-box"><canvas id="scatterChart"></canvas></div>
-    <div class="lbl-sm" style="margin-top:8px;">Elk punt = één uur. Kleur = lokaal uur (donker → vroeg, fel → middag).</div>
+    <div class="lbl-sm" style="margin-top:8px;" id="scatter-note">Elk punt = één uur. Kleur = lokaal uur (donker → vroeg, fel → middag).</div>
   </div>
 </div>
 
 <footer>
-  Referentie: Open-Meteo ERA5-reanalyse — een grid-schaal model, geen absolute waarheid.
-  Een positieve afwijking die met de zon meeschaalt en 's nachts verdwijnt wijst op een
-  stralings-/plaatsingsfout van het station; een constante afwijking dag én nacht wijst op ijking.
-  Gegenereerd door <span class="num">station_accuracy.py</span>.
+  Twee referenties: Open-Meteo ERA5 (grid-schaal model) en KNMI De Bilt (echte waarneming op 4,1 km).
+  Een afwijking die met de zon meeschaalt is een stralings-/plaatsingsfout van het station; een
+  afwijking die óók 's nachts staat is dat niet per se — buurstations laten zien of die van de buurt
+  komt. De ijk-beslissing loopt via het acceptatieprotocol in <span class="num">bias_eval.py</span>,
+  niet via een losse fit. Gegenereerd door <span class="num">station_accuracy.py</span>.
 </footer>
 
-<script src="js/accuracy.js"></script>
+<script src="js/accuracy.js?v=2"></script>
 </body>
 </html>

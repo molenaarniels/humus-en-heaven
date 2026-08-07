@@ -39,6 +39,7 @@ import requests
 
 import bias_eval
 import knmi_ref
+import neighbour_pws
 from http_util import get_json
 from notify import sanitize_error, send_telegram
 from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ, local_today
@@ -277,6 +278,78 @@ def attach_knmi(rows: List[dict], knmi_hours: Dict[str, dict]) -> int:
         row["knmi"] = temp
         hit += temp is not None
     return hit
+
+
+def reference_stats(rows: List[dict]) -> List[dict]:
+    """Bias-statistiek van het station tegen élke beschikbare referentie.
+
+    De **sd** is de kolom die telt, niet de bias: een verschil in gemiddelde is
+    over 4,1 km deels écht microklimaat, maar de spreiding is de ruisvloer waar
+    elke hellingfit tegenaan loopt. KNMI scoorde daar 1,15 vs ERA5's 1,42.
+    """
+    out = []
+    for key, label in (("om", "Open-Meteo ERA5"), ("knmi", "KNMI De Bilt (260)")):
+        diffs = [r["wu"] - r[key] for r in rows
+                 if r.get("wu") is not None and r.get(key) is not None]
+        if not diffs:
+            continue
+        n = len(diffs)
+        mean = sum(diffs) / n
+        out.append({
+            "key": key, "label": label, "n": n, "bias": round(mean, 3),
+            "rmse": round(math.sqrt(sum(d * d for d in diffs) / n), 3),
+            "sd": round(math.sqrt(sum((d - mean) ** 2 for d in diffs) / n), 3),
+        })
+    return out
+
+
+def archive_summary(rows: List[dict]) -> dict:
+    """Omvang van de gróeiende reeks — het gepubliceerde venster is maar een
+    momentopname, en het dashboard hoort te tonen waar het bewijs op rust."""
+    if not rows:
+        return {"n": 0, "months": [], "start": None, "end": None}
+    months = sorted({r["t"][:7] for r in rows})
+    return {"n": len(rows), "months": months,
+            "start": rows[0]["t"][:10], "end": rows[-1]["t"][:10],
+            "n_knmi": sum(1 for r in rows if r.get("knmi") is not None),
+            "n_wu_solar": sum(1 for r in rows if r.get("wu_solar") is not None)}
+
+
+def neighbour_coherence(api_key: str, start: str, end: str, days: int,
+                        reference: Dict[str, dict]) -> Optional[dict]:
+    """Draait de buur-PWS-coherentietoets mee in de maandelijkse run.
+
+    Waarom hier en niet in een losse probe: het antwoord ("is de warme, windstille
+    nacht van ons of van de buurt?") bepaalt of de correctie een interceptterm mág
+    hebben, en dat is een blijvende vraag die elk seizoen opnieuw gesteld hoort te
+    worden — 's winters kan een hitte-eiland zich anders gedragen. Meeliften op de
+    maandcron geeft die herhaling gratis; een handmatige probe zou het bij één
+    zomermeting laten.
+
+    Niet-fataal en volledig optioneel: zonder `WU_NEIGHBOUR_IDS` gebeurt er niets.
+    VEILIGHEID: station-id's worden nooit in het artefact of de log geschreven.
+    """
+    ids = neighbour_pws.neighbour_ids()
+    if not (ids and reference):
+        return None
+    ours = neighbour_pws.profile(neighbour_pws.pair_with_reference(
+        fetch_wu_hourly(os.environ.get("WU_STATION_ID", ""), api_key, days), reference))
+    others = []
+    for idx, sid in enumerate(ids, 1):
+        paired = neighbour_pws.pair_with_reference(fetch_wu_hourly(sid, api_key, days),
+                                                   reference)
+        if not paired:
+            print(f"[buur] buur {idx}: geen gekoppelde uren — overgeslagen")
+            continue
+        others.append({"label": f"buur {idx}", **neighbour_pws.profile(paired)})
+    if not others:
+        return None
+    code, uitleg = neighbour_pws.verdict(ours, others)
+    print(f"[buur] {code.upper()}: {uitleg}")
+    return {"verdict": code, "explanation": uitleg, "window": {"start": start, "end": end},
+            "ours": {"label": "ons station", **ours}, "others": others,
+            "spread_night": neighbour_pws.spread(others, "night_bias"),
+            "spread_slope": neighbour_pws.spread(others, "slope_per_100")}
 
 
 def _agg(rows: List[dict]) -> dict:
@@ -598,12 +671,23 @@ def main() -> None:
 
     # Tweede referentie (KNMI De Bilt, 4,1 km) — niet-fataal: de diagnose blijft
     # op ERA5 draaien als de scriptservice hapert. Zie knmi_ref.py voor het waarom.
+    knmi_hours: Dict[str, dict] = {}
     try:
-        hit = attach_knmi(rows, knmi_ref.fetch_hourly(start.isoformat(), end.isoformat()))
+        knmi_hours = knmi_ref.fetch_hourly(start.isoformat(), end.isoformat())
+        hit = attach_knmi(rows, knmi_hours)
         print(f"[KNMI] {hit}/{len(rows)} gekoppelde uren hebben een KNMI-referentie")
     except Exception as e:
         attach_knmi(rows, {})
         print(f"[KNMI] referentie niet opgehaald ({sanitize_error(e)}) — alleen ERA5")
+
+    # Buur-coherentie liftt mee op dezelfde KNMI-uren (geen tweede fetch) en is
+    # optioneel: zonder WU_NEIGHBOUR_IDS gebeurt er niets.
+    try:
+        neighbours = neighbour_coherence(api_key, start.isoformat(), end.isoformat(),
+                                         days, knmi_hours)
+    except Exception as e:
+        neighbours = None
+        print(f"[buur] coherentietoets overgeslagen ({sanitize_error(e)})")
 
     fresh, updated = append_archive(rows)
     print(f"[archief] {HISTORY_DIR}: {fresh} nieuwe uren, {updated} bijgewerkt "
@@ -611,7 +695,8 @@ def main() -> None:
 
     # Herijkingssignaal: draait op het hele archief (niet alleen dit venster) en
     # meldt alleen als het protocol de herijking dráágt — zie recalibration_signal.
-    signal = recalibration_signal(load_archive())
+    archive = load_archive()
+    signal = recalibration_signal(archive)
 
     stats = analyse(rows)
     report = build_report(stats)
@@ -625,6 +710,19 @@ def main() -> None:
         "location": {"lat": UTRECHT_LAT, "lon": UTRECHT_LON, "name": "Utrecht Oost"},
         "period": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
         "n_pairs": len(rows),
+        # Additief (aug 2026): het dashboard toonde alleen het laatste venster tegen
+        # ERA5, terwijl de ijking inmiddels op een groeiend archief, een tweede
+        # referentie en een expliciet acceptatieprotocol rust.
+        "references": reference_stats(rows),
+        "archive": archive_summary(archive),
+        "recalibration": {
+            "needed": bool(signal),
+            "deployed": SOLAR_BIAS_SLOPE,
+            "reference_wm2": REFERENCE_WM2,
+            **({k: signal[k] for k in ("slope", "delta_c", "reference", "driver", "n", "months")}
+               if signal else {}),
+        },
+        "neighbours": neighbours,
         **stats,
     }
     os.makedirs("docs", exist_ok=True)

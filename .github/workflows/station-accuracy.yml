@@ -58,6 +58,8 @@ jobs:
         env:
           WU_STATION_ID:      ${{ secrets.WU_STATION_ID }}
           WU_API_KEY:         ${{ secrets.WU_API_KEY }}
+          # Optioneel: zonder dit secret slaat de buur-coherentietoets zichzelf over.
+          WU_NEIGHBOUR_IDS:   ${{ secrets.WU_NEIGHBOUR_IDS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           # Op de cron zijn er geen inputs: 40 dagen dekt de vorige maand ruim,

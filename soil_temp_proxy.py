@@ -165,16 +165,37 @@ def evaluate_windows(dates: Sequence[str], air: Sequence[Optional[float]],
     for w in windows:
         proxy = rolling_mean(air, w)
         shifts = mark_shift(season_marks(dates, proxy), truth_marks)
-        absmean = (sum(abs(s["shift_days"]) for s in shifts) / len(shifts)) if shifts else None
+        absolute = sorted(abs(s["shift_days"]) for s in shifts)
         rows.append({"window": w, "fit": fit_stats(proxy, soil),
                      "disagreement": factor_disagreement(proxy, soil),
-                     "shifts": shifts, "mean_abs_shift": absmean})
+                     "shifts": shifts,
+                     "mean_abs_shift": (sum(absolute) / len(absolute)) if absolute else None,
+                     "median_abs_shift": _median(absolute)})
     return rows
 
 
+def _median(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
 def best_window(rows: Sequence[dict]) -> Optional[Tuple[int, float]]:
-    """Het venster met de kleinste gemiddelde verschuiving van de seizoensgrenzen —
-    bewust niet de laagste RMSE, want boven 8 °C verandert RMSE geen beslissing."""
-    scored = [(r["window"], r["mean_abs_shift"]) for r in rows
-              if r.get("mean_abs_shift") is not None]
+    """Het venster met de kleinste **mediane** verschuiving van de seizoensgrenzen.
+
+    Bewust niet de laagste RMSE: boven 8 °C verandert RMSE geen enkele beslissing.
+    En bewust de mediaan en niet het gemiddelde — dat laatste stond hier eerst en
+    gaf een misleidend antwoord. In een zachte winter zakt de bodem op 7–28 cm
+    nauwelijks onder 8 °C, waardoor "eerste duurzame passage" met maanden kan
+    springen (jan 2023: bodem 4 januari, proxy 17 maart, 72 dagen verschil). Eén
+    zo'n jaar domineert een gemiddelde over tien seizoensgrenzen volledig, en het
+    resultaat verraadde zichzelf doordat de reeks over de vensters niet-monotoon
+    werd — 7 dagen 17.1, 14 dagen 2.9, 21 dagen 5.9. Dat is ruis met een winnaar,
+    geen optimum. Zelfde les als de acceptatieregel in `bias_eval`: één uitbijter
+    mag geen conclusie dragen.
+    """
+    scored = [(r["window"], r["median_abs_shift"]) for r in rows
+              if r.get("median_abs_shift") is not None]
     return min(scored, key=lambda x: x[1]) if scored else None

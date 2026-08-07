@@ -474,6 +474,27 @@ winst zat in de nachtoffset. **Meer seizoenen lossen dit niet op** — het is ge
 precisieprobleem maar een identificeerbaarheidsprobleem; daarvoor is een referentie
 nodig die óns microklimaat deelt maar een andere kap heeft (buur-PWS'en).
 
+### Buur-PWS-coherentie (`neighbour_pws.py` + `tools/neighbour_probe.py`, route A)
+De toets die de bovenstaande knoop doorhakt. Enkele WU-buurstations op honderden
+meters délen ons microklimaat maar hebben een andere kap; KNMI levert het
+gemeenschappelijke frame (referentietemperatuur, instraling **en** wind — anders
+vergelijk je vooral anemometers op verschillende hoogtes) en elk station brengt
+alleen zijn eigen temperatuur in. `verdict()` meet onze nachtbias tegen de
+**warmste** buur, niet het gemiddelde: met drie buren op verschillende plekken is
+de spreiding groot, en één afwijkende buur mag ons niet vrijpleiten.
+- **`gedeeld`** → microklimaat. De +1 °C op windstille nachten is écht de
+  temperatuur hier; `wu_bias` blijft een zuivere zon-term en fase 3 verandert niets.
+- **`uitzondering`** → onze plaatsing. Dan is een interceptterm verdedigbaar en
+  wordt de fase-3-beslissing een andere.
+- **`onbeslist`** bij te weinig nachtelijke uren — liever geen uitspraak dan een halve.
+
+De buren zijn goedkope sensoren met hun eigen fouten, en dat geeft niet: dit is een
+*coherentie*-toets, geen ijking. De vraag is niet wie gelijk heeft maar of het
+signaal gedeeld wordt. **De station-id's staan in het secret `WU_NEIGHBOUR_IDS`
+(komma-gescheiden) en nooit in de repo** — drie id's verraden de locatie net zo
+goed als `WU_STATION_ID`, dat om precies die reden al een secret is. Het rapport
+nummert ze als "buur 1/2/3"; een test bewaakt dat er geen id in de broncode staat.
+
 ### Relation to other projects
 Read-only with **one deliberate output**: it never imports or writes other projects' artefacts, but it is the **calibration source** for `wu_bias.py`'s `SOLAR_BIAS_SLOPE` (a hand-copied constant, no runtime coupling). Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.
 
@@ -814,6 +835,7 @@ Six small cross-project Python modules (everything else is self-contained):
 - `WU_STATION_ID`, `WU_API_KEY` — Weather Underground (soil project + window advisor)
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — soil, sandbox, heating, mowing + window advisor (raam-advies + operational alerts, privé-chat) + vent twin (Project 13: anomalie-nudge + crash-alert, privé-chat)
 - `TELEGRAM_CHAT_GROUP_ID` — weather briefing + night forecast + het dagplan van de raam-adviseur (group chat)
+- `WU_NEIGHBOUR_IDS` — komma-gescheiden buur-PWS-id's voor de coherentie-toets (Project 7, route A); locatiegegevens, dus nooit in de repo
 - `GIST_ID`, `GIST_TOKEN` — soil project (irrigation log) + mowing advisor (mow log, same Gist) + vent twin (Project 13: opening log `house_openings.json`, same Gist, read-only from Python); `GIST_TOKEN` also used by the window advisor
 - `TADO_GIST_ID` — **separate secret Gist** for the window advisor: rotating tado refresh token (`tado_token.json`) + per-room advice state, meldgeheugen en dagbudget (`window_state.json`)
 - `GITHUB_TOKEN` — automatic, sandbox project

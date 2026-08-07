@@ -104,9 +104,9 @@ def test_evaluate_windows_scoort_elk_venster():
 def test_best_window_kiest_op_verschuiving_niet_op_rmse():
     """Een venster met een lagere RMSE maar een grotere seizoensverschuiving mag
     niet winnen — de verschuiving is wat een maai-advies verzet."""
-    rows = [{"window": 3, "mean_abs_shift": 4.0}, {"window": 9, "mean_abs_shift": 1.5}]
+    rows = [{"window": 3, "median_abs_shift": 4.0}, {"window": 9, "median_abs_shift": 1.5}]
     assert stp.best_window(rows) == (9, 1.5)
-    assert stp.best_window([{"window": 3, "mean_abs_shift": None}]) is None
+    assert stp.best_window([{"window": 3, "median_abs_shift": None}]) is None
 
 
 def test_een_tragere_bodem_vraagt_een_langer_venster():
@@ -142,3 +142,21 @@ def test_een_reeks_die_warm_begint_meldt_geen_lentepassage():
 def test_koud_beginnende_reeks_meldt_geen_najaarspassage():
     dates, vals = _reeks([2] * 30, start="2026-09-01")
     assert stp.season_marks(dates, vals, threshold=8.0)[2026]["autumn"] is None
+
+
+def test_best_window_is_bestand_tegen_een_uitbijterjaar():
+    """Eén zachte winter waarin de bodem nauwelijks onder 8 °C zakt kan de
+    seizoensgrens met maanden verschuiven (gemeten jan 2023: 72 dagen). Op een
+    gemiddelde domineert zo'n jaar tien andere grenzen; op de mediaan niet."""
+    rows = [
+        {"window": 5, "mean_abs_shift": 9.8, "median_abs_shift": 1.5},
+        {"window": 14, "mean_abs_shift": 2.9, "median_abs_shift": 4.0},
+    ]
+    assert stp.best_window(rows) == (5, 1.5)      # niet 14 op het gemiddelde
+
+
+def test_evaluate_windows_geeft_beide_maten():
+    dates, air = _reeks([2 + i * 0.1 for i in range(400)])
+    soil = [v - 0.5 for v in air]
+    row = stp.evaluate_windows(dates, air, soil, (5,))[0]
+    assert "median_abs_shift" in row and "mean_abs_shift" in row

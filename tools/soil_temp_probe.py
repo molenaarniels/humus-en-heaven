@@ -57,13 +57,14 @@ def main() -> None:
     results = stp.evaluate_windows(dates, air, soil, WINDOWS)
 
     print(f"\n{'venster':>8s} {'rmse':>7s} {'bias':>7s} {'corr':>6s} "
-          f"{'dagen oneens':>13s} {'gem |verschuiving|':>19s}")
+          f"{'dagen oneens':>13s} {'med |versch.|':>14s} {'gem':>7s}")
     for r in results:
         f, d = r["fit"], r["disagreement"]
         mark = "  ← huidig" if r["window"] == SOIL_TEMP_WINDOW else ""
-        shift = "—" if r["mean_abs_shift"] is None else f"{r['mean_abs_shift']:.1f} d"
+        med = "—" if r["median_abs_shift"] is None else f"{r['median_abs_shift']:.1f} d"
+        gem = "—" if r["mean_abs_shift"] is None else f"{r['mean_abs_shift']:.1f}"
         print(f"{r['window']:6d} d {f['rmse']:7.2f} {f['bias']:+7.2f} "
-              f"{f['corr']:6.3f} {d['n_disagree']:9d}/{d['n']:<4d} {shift:>19s}{mark}")
+              f"{f['corr']:6.3f} {d['n_disagree']:9d}/{d['n']:<4d} {med:>14s} {gem:>7s}{mark}")
 
     huidig = next(r for r in results if r["window"] == SOIL_TEMP_WINDOW)
     print(f"\nSeizoensgrenzen bij het huidige venster van {SOIL_TEMP_WINDOW} dagen "
@@ -73,17 +74,31 @@ def main() -> None:
         print(f"  {s['year']:6d} {s['season']:>8s} {str(s['proxy']):>12s} "
               f"{str(s['truth']):>12s} {s['shift_days']:+8d} d")
 
+    # Niet-monotonie over de vensters is het teken dat de verschuivingsmaat door
+    # losse uitbijters wordt gedreven i.p.v. door een echt optimum; dan is elke
+    # "winnaar" ruis. Zie de noot bij `best_window`.
+    meds = [r["median_abs_shift"] for r in results if r["median_abs_shift"] is not None]
+    gems = [r["mean_abs_shift"] for r in results if r["mean_abs_shift"] is not None]
+    def _wisselingen(xs):
+        richting = [b - a for a, b in zip(xs, xs[1:])]
+        return sum(1 for a, b in zip(richting, richting[1:]) if a * b < 0)
+
     beste = stp.best_window(results)
     if beste:
         venster, shift = beste
-        huidige_shift = huidig["mean_abs_shift"]
-        print(f"\n[uitkomst] kleinste gemiddelde verschuiving: {venster} dagen "
-              f"({shift:.1f} d) — huidig {SOIL_TEMP_WINDOW} dagen geeft {huidige_shift:.1f} d")
-        if venster == SOIL_TEMP_WINDOW:
-            print("           De bestaande keuze wint. Niets te veranderen.")
+        huidig_med = huidig["median_abs_shift"]
+        print(f"\n[uitkomst] kleinste MEDIANE verschuiving: {venster} dagen ({shift:.1f} d) — "
+              f"huidig {SOIL_TEMP_WINDOW} dagen geeft {huidig_med:.1f} d")
+        print(f"           richtingswisselingen over de vensters: mediaan {_wisselingen(meds)}, "
+              f"gemiddelde {_wisselingen(gems)} (veel = uitbijter-gedreven, geen optimum)")
+        if venster == SOIL_TEMP_WINDOW or huidig_med - shift < 1.0:
+            print("           Geen reden om het venster te wijzigen: het verschil met de "
+                  "bestaande keuze\n           is kleiner dan een dag op een grens die zelf "
+                  "op dagen nauwkeurig is.")
         else:
-            print(f"           Winst t.o.v. nu: {huidige_shift - shift:.1f} dag gemiddeld op "
-                  f"het begin/eind van het groeiseizoen.")
+            print(f"           Kandidaat-winst: {huidig_med - shift:.1f} dag op de mediaan. "
+                  "Toets dit op meer jaren\n           vóór je temp_factor aanraakt — het werkt "
+                  "door in Project 5.")
     print("\nLet op: ERA5-bodemtemperatuur is zelf een model in een standaard-"
           "bodemkolom,\nniet deze klei-verrijkte zandgrond. Dit weegt de tráágheid van de "
           "proxy,\nniet de absolute waarde — een uitkomst hoort in een vensterlengte te "

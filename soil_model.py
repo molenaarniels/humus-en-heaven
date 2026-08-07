@@ -5,7 +5,7 @@ Shared between the GitHub Action and the data-builder for the static site.
 import calendar as _calendar
 import math
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import requests
 
@@ -156,6 +156,41 @@ OM_SM_LAYERS_ARCHIVE = [
     ("soil_moisture_7_to_28cm",   0.07, 0.28),
     ("soil_moisture_28_to_100cm", 0.28, 1.00),
 ]
+
+# Open-Meteo bodemtemperatuur (°C), zelfde forecast/archive-splitsing als de
+# vochtlagen hierboven. **Puur additief: geen enkele beslissing hangt eraan.**
+#
+# Waarom ze er zijn: `temp_factor` (zie run_water_balance) is de enige plek waar
+# bodemtemperatuur het model binnenkomt, en die draait op een SOIL_TEMP_WINDOW-
+# daags loopgemiddelde van de *lucht*-Tmean — een bewuste demping omdat de bodem
+# achterloopt. Of die proxy klopt, en of 5 dagen het juiste venster is, is nooit
+# gemeten; er was simpelweg niets om tegen te meten. Deze twee reeksen leggen dat
+# vast zodat de vraag over een paar weken beantwoordbaar is i.p.v. over een paar
+# maanden. Pas de proxy niet aan op grond van deze velden zonder die meting —
+# het is een domeinbeslissing die doorwerkt in Project 5 (grasgroei/dormancy).
+#
+# Diepte: de wortelzone van gras loopt tot ~0.20 m, dus "shallow" (~6 cm) zit in
+# de laag die de kiemtemperatuur-drempel bepaalt en "root" (~18 cm) onderin de
+# graswortelzone. De archive-API levert dieptebanden i.p.v. puntdieptes; de
+# namen zijn daarom generiek gehouden en de bron staat in `Tsoil_src`.
+OM_ST_LAYERS_FORECAST = [
+    ("soil_temperature_6cm",  "Tsoil_shallow"),
+    ("soil_temperature_18cm", "Tsoil_root"),
+]
+OM_ST_LAYERS_ARCHIVE = [
+    ("soil_temperature_0_to_7cm",  "Tsoil_shallow"),
+    ("soil_temperature_7_to_28cm", "Tsoil_root"),
+]
+
+
+def _soil_temps(daily_means: Dict[str, Dict[str, float]],
+                layers: List[Tuple[str, str]], day: str) -> Dict[str, Optional[float]]:
+    """Dagelijkse bodemtemperaturen voor `day`, op onze veldnamen gezet."""
+    out: Dict[str, Optional[float]] = {}
+    for key, field in layers:
+        value = (daily_means.get(key) or {}).get(day)
+        out[field] = round(value, 2) if value is not None else None
+    return out
 
 
 def seasonal_kcb(zone_key: str, doy: int) -> float:
@@ -538,7 +573,8 @@ def _per_zone_sm(layer_means_by_day: Dict[str, Dict[str, float]],
 
 def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_FORECAST]
-    hourly_vars = ["precipitation", "shortwave_radiation"] + sm_layer_keys
+    st_layer_keys = [k for k, _ in OM_ST_LAYERS_FORECAST]
+    hourly_vars = ["precipitation", "shortwave_radiation"] + sm_layer_keys + st_layer_keys
     params = {
         "latitude": UTRECHT_LAT,
         "longitude": UTRECHT_LON,
@@ -565,6 +601,7 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
     # Amsterdam is dit typisch < 0.1, dus today's verdamping = bijna nul.
     today_solar_fraction = _today_solar_fraction(j.get("hourly"), today)
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
+    st_daily = _hourly_daily_means(j.get("hourly"), st_layer_keys)
     # Per-dag piek-instraling (W/m²) — fallback-driver voor de Tmax-biascorrectie
     # wanneer de WU-pyranometer een gat heeft (zie apply_et0_and_balance).
     solar_peak = _hourly_daily_peak(j.get("hourly"), "shortwave_radiation")
@@ -587,6 +624,8 @@ def fetch_open_meteo(days_past: int = 30, days_forecast: int = 7) -> List[Dict]:
             "precip_prob": precip_prob[i] if i < len(precip_prob) else None,
             "era5_theta_lawn": per_zone.get("lawn"),
             "era5_theta_shrubs": per_zone.get("shrubs"),
+            **_soil_temps(st_daily, OM_ST_LAYERS_FORECAST, t),
+            "Tsoil_src": "om_forecast",
             "forecast": t > today,
             "partial_factor": today_solar_fraction if t == today else 1.0,
         }
@@ -871,6 +910,7 @@ def build_full_dataset(station_id: Optional[str], api_key: Optional[str],
 def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
     """Haalt historische data op via de Open-Meteo archive API (ERA5 reanalysis)."""
     sm_layer_keys = [k for k, _, _ in OM_SM_LAYERS_ARCHIVE]
+    st_layer_keys = [k for k, _ in OM_ST_LAYERS_ARCHIVE]
     params = {
         "latitude": UTRECHT_LAT,
         "longitude": UTRECHT_LON,
@@ -879,13 +919,14 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
         "daily": ("temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
                   "relative_humidity_2m_mean,wind_speed_10m_mean,precipitation_sum,"
                   "shortwave_radiation_sum"),
-        "hourly": ",".join(sm_layer_keys),
+        "hourly": ",".join(sm_layer_keys + st_layer_keys),
         "timezone": "Europe/Amsterdam",
     }
     j = get_json("https://archive-api.open-meteo.com/v1/archive", params,
                  timeout=30, label="open-meteo-archive")
     d = j["daily"]
     sm_daily = _hourly_daily_means(j.get("hourly"), sm_layer_keys)
+    st_daily = _hourly_daily_means(j.get("hourly"), st_layer_keys)
     out = []
     for i, t in enumerate(d["time"]):
         per_zone = _per_zone_sm(sm_daily, OM_SM_LAYERS_ARCHIVE, t)
@@ -900,6 +941,8 @@ def fetch_open_meteo_archive(start_date: str, end_date: str) -> List[Dict]:
             "precip": d["precipitation_sum"][i] or 0,
             "era5_theta_lawn": per_zone.get("lawn"),
             "era5_theta_shrubs": per_zone.get("shrubs"),
+            **_soil_temps(st_daily, OM_ST_LAYERS_ARCHIVE, t),
+            "Tsoil_src": "om_archive",
             "forecast": False,
         })
     return out

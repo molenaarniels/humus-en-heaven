@@ -32,6 +32,7 @@ This repo contains eleven independent automation pipelines (P1–P7, P9–P11, P
   - E = Ke × ET0 (directe bodemverdamping uit oppervlaktelaag), Ke = min(Kr · (Kc_max − Kcb), few · Kc_max) (Eq. 71), Kr lineair tussen REW en TEW (Eq. 74)
   - Effectieve Kc = (E + T)/ET0
 - temp_factor = 0 below 5°C, linear 0→1 between 5–8°C, op 5-daagse rolling Tmean (lucht-Tmean als proxy voor bodemtemperatuur, gedempt)
+- **Bodemtemperatuur-overlay (`Tsoil_shallow`/`Tsoil_root`, aug 2026) — additief, stuurt niets aan.** Open-Meteo levert bodemtemperatuur in dezelfde uurlijkse call die de bodemvochtlagen al ophaalde (forecast: 6/18 cm; archive: 0–7/7–28 cm — zelfde splitsing als `OM_SM_LAYERS_*`), dus dit kost geen extra request, dependency of secret. Ze staan er om een nooit-gemeten aanname toetsbaar te maken: `temp_factor` is de énige plek waar bodemtemperatuur het model binnenkomt en draait op een `SOIL_TEMP_WINDOW`-daags loopgemiddelde van de *lucht*-Tmean, gedempt omdat de bodem naijlt. Of die proxy klopt — en of 5 dagen het juiste venster is — kon niemand nagaan zonder een reeks om tegen te leggen. **De proxy blijft ongewijzigd tot die meting er is**; hem aanpassen is een domeinbeslissing die doorwerkt in Project 5 (groei-accumulatie + dormancy-guard), en het effect zit sowieso alleen in de schouderseizoenen (boven 8 °C staat `temp_factor` op 1.0). Vastgelegd door `tests/test_soil_model.py::test_bodemtemperatuur_stuurt_de_waterbalans_niet_aan`.
 - Kcb: seasonal via linear interpolation over monthly anchor points (jan→dec)
 - Twee buckets: diepe wortelzone (`water`) en oppervlaktelaag (`De`, depletie van 0..TEW)
 - Regen/irrigatie vult oppervlaktelaag eerst tot TEW; overschot infiltreert naar wortelzone
@@ -68,6 +69,7 @@ This repo contains eleven independent automation pipelines (P1–P7, P9–P11, P
     "u2": null, "Rs": null, "precip": null,
     "Rs_peak_wm2": null, "wu_solar_peak": null,
     "Tmax_corr": null, "Tmean_corr": null, "bias_corr": null, "bias_solar_src": "wu | om",
+    "Tsoil_shallow": null, "Tsoil_root": null, "Tsoil_src": "om_forecast | om_archive",
     "ET0": null, "ET0_om": null,
     "lawn_theta": null, "lawn_depletion": null, "lawn_ETc": null,
     "lawn_Kc": null, "lawn_Kcb": null, "lawn_Ke": null,

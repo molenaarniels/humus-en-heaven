@@ -1,5 +1,6 @@
-"""Project 7 — archief + scatter-export."""
+"""Project 7 — archief, scatter-export en het herijkingssignaal."""
 import json
+import pathlib
 
 import pytest
 
@@ -103,3 +104,80 @@ def test_ontbrekende_knmi_bron_laat_alles_op_era5_draaien(archive):
     assert sa.attach_knmi(rows, {}) == 0
     assert rows[0]["knmi"] is None
     assert sa.analyse(rows)["overall"]["n"] == 1
+
+
+# ── Herijkingssignaal (fase 4) ───────────────────────────────────────────────
+
+def _reeks(maanden=("2026-04", "2026-05", "2026-06", "2026-07"), slope=0.00421, dagen=25):
+    """Uren met een exact bekende helling, over meerdere maanden (forward-chaining
+    heeft minstens twee maanden nodig)."""
+    rows = []
+    for maand in maanden:
+        for dag in range(1, dagen + 1):
+            for uur in range(24):
+                solar = max(0.0, (12 - abs(uur - 13)) * 60.0)
+                rows.append({"t": f"{maand}-{dag:02d}T{uur:02d}",
+                             "wu": 20.0 + slope * solar, "om": 20.0, "knmi": 20.0,
+                             "solar": solar, "wu_solar": solar,
+                             "cloud": 20, "wind": 8.0, "rh": 60})
+    return rows
+
+
+def test_geen_signaal_als_de_uitgerolde_helling_klopt():
+    """De maandelijkse run moet zwijgen zolang er niets te melden is — anders is
+    het een tikkende teller in plaats van een uitzonderingsmelding."""
+    assert sa.recalibration_signal(_reeks(slope=sa.SOLAR_BIAS_SLOPE)) is None
+
+
+def test_signaal_bij_een_gedragen_verschuiving():
+    verschoven = sa.SOLAR_BIAS_SLOPE + 0.0015      # ~0.9 °C bij 600 W/m²
+    signal = sa.recalibration_signal(_reeks(slope=verschoven))
+    assert signal is not None
+    assert signal["slope"] == pytest.approx(verschoven, abs=1e-5)
+    assert signal["delta_c"] == pytest.approx(0.0015 * sa.REFERENCE_WM2, rel=0.05)
+    assert signal["reference"] == "knmi" and signal["driver"] == "wu_solar"
+
+
+def test_kleine_verschuiving_haalt_de_drempel_niet():
+    """Statistisch overtuigend maar praktisch verwaarloosbaar is géén melding:
+    de drempel staat in °C op een zonnige middag, niet in helling-eenheden."""
+    klein = sa.SOLAR_BIAS_SLOPE + (sa.DRIFT_ALERT_C / sa.REFERENCE_WM2) * 0.5
+    assert sa.recalibration_signal(_reeks(slope=klein)) is None
+
+
+def test_signaal_valt_terug_op_era5_en_gridzon():
+    """Een archief van vóór de KNMI-/wu_solar-kolommen moet gewoon werken."""
+    rows = _reeks(slope=sa.SOLAR_BIAS_SLOPE + 0.0015)
+    for r in rows:
+        r["knmi"] = r["wu_solar"] = None
+    signal = sa.recalibration_signal(rows)
+    assert signal and signal["reference"] == "om" and signal["driver"] == "solar"
+
+
+def test_signaal_is_none_op_een_leeg_archief():
+    assert sa.recalibration_signal([]) is None
+
+
+def test_drift_message_noemt_graden_en_bewijs():
+    signal = sa.recalibration_signal(_reeks(slope=sa.SOLAR_BIAS_SLOPE + 0.0015))
+    msg = sa.drift_message(signal)
+    assert "SOLAR_BIAS_SLOPE" in msg and "wu_bias.py" in msg
+    assert f"{sa.REFERENCE_WM2:.0f} W/m²" in msg
+    assert "forward-chaining" in msg
+
+
+def test_protocol_report_zegt_ook_iets_als_er_niets_te_melden_is():
+    rows = _reeks(slope=sa.SOLAR_BIAS_SLOPE)
+    assert "Geen herijking nodig" in sa.protocol_report(rows, None)
+    signal = sa.recalibration_signal(_reeks(slope=sa.SOLAR_BIAS_SLOPE + 0.0015))
+    assert "kan herijkt worden" in sa.protocol_report(rows, signal)
+
+
+def test_workflow_draait_maandelijks_en_heeft_een_dagen_fallback():
+    """Zonder fallback krijgt de cron een lege ACCURACY_DAYS (inputs bestaan daar
+    niet) en crasht int('') de run."""
+    wf = (pathlib.Path(__file__).resolve().parents[1]
+          / ".github" / "workflows" / "station-accuracy.yml").read_text(encoding="utf-8")
+    assert "schedule:" in wf and "cron:" in wf
+    assert "timezone: \"Europe/Amsterdam\"" in wf
+    assert "inputs.days || " in wf

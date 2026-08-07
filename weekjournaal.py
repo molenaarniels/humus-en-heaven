@@ -30,7 +30,7 @@ LEARNED_PATH = os.getenv("VENT_LEARNED_PATH", "docs/vent_learned.json")
 ACCURACY_DATA_PATH = os.getenv("ACCURACY_DATA_PATH", "docs/accuracy_data.json")
 
 WEEK_DAYS = 7            # het venster: vandaag −6 t/m vandaag
-STATION_MAX_AGE_D = 30.0  # accuracy-check is manual-dispatch → ouder dan dit = sectie weg
+STATION_MAX_AGE_D = 40.0  # accuracy-check draait maandelijks → net ruimer dan die cadans
 RMSE_LOOKBACK_D = 6.5    # "een week geleden"-punt in rmse_history
 MAX_LEN = 4000           # defensief onder de Telegram-limiet (4096) blijven
 

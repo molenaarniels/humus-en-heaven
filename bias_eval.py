@@ -55,6 +55,11 @@ MODELS: "OrderedDict[str, List[str]]" = OrderedDict([
     ("+ zon vorig uur", ["1", "solar", "prev_solar"]),
     ("+ zon x bewolking", ["1", "solar", "solar_cloud"]),
     ("alles", ["1", "solar", "wind", "prev_solar", "solar_cloud"]),
+    # Zon × wind ZONDER intercept: de enige uitbreiding die 's nachts per
+    # constructie nul blijft. Zie de identificeerbaarheidsnotitie hieronder —
+    # een vrije intercept- of wind-term leert het nachtelijke WU−KNMI-verschil,
+    # en dat is over 4,1 km grotendeels écht microklimaat, geen sensorfout.
+    ("helling x wind (nul 's nachts)", ["solar", "solar_wind"]),
 ])
 
 DEPLOYED = "uitgerold (SOLAR_BIAS_SLOPE)"
@@ -92,6 +97,10 @@ def prepare(rows: Iterable[dict], reference: str = "om",
             "prev_solar": prev["solar"] if prev and _adjacent(prev["t"], row["t"]) else None,
         }
         item["solar_cloud"] = (sol * item["cloud"] / 100.0) if item["cloud"] is not None else None
+        # Wind vermenigvuldigd met de zon, niet los: zo dooft de term 's nachts
+        # samen met de instraling uit en kan hij het nachtelijke microklimaat-
+        # verschil met de referentie niet opslokken.
+        item["solar_wind"] = (sol * item["wind"]) if item["wind"] is not None else None
         out.append(item)
         prev = item
     return out

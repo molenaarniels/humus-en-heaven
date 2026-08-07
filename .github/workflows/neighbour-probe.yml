@@ -1,0 +1,45 @@
+name: Buur-PWS coherentie (probe)
+
+# Fase 1, route A: delen de buurstations onze warme, windstille nacht?
+# Zie neighbour_pws.py — dit is de meting die de fase-3-beslissing blokkeert.
+# Read-only: geen commits, geen artefact. De station-id's zitten in secrets en
+# worden nooit geprint (het rapport nummert ze als "buur 1", "buur 2", …).
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Aantal dagen historie"
+        type: string
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neighbour-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe buurstations
+        env:
+          WU_STATION_ID:     ${{ secrets.WU_STATION_ID }}
+          WU_API_KEY:        ${{ secrets.WU_API_KEY }}
+          WU_NEIGHBOUR_IDS:  ${{ secrets.WU_NEIGHBOUR_IDS }}
+          PROBE_DAYS:        ${{ inputs.days || '30' }}
+        run: python tools/neighbour_probe.py --days "$PROBE_DAYS"

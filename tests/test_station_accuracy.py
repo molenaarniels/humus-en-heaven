@@ -76,3 +76,30 @@ def test_scatter_draagt_de_wu_pyranometer():
 
 def test_workflow_checkout_pint_branch_tip(assert_checkout_pinned):
     assert_checkout_pinned("station-accuracy.yml")
+
+
+# ── Tweede referentie (KNMI) ─────────────────────────────────────────────────
+
+def test_knmi_wordt_additief_aangehangen(archive):
+    rows = [{"t": "2026-08-01T10", "wu": 21.0, "om": 20.0},
+            {"t": "2026-08-01T11", "wu": 22.0, "om": 20.5}]
+    hit = sa.attach_knmi(rows, {"2026-08-01T10": {"temp": 20.4}})
+    assert hit == 1
+    assert rows[0]["knmi"] == 20.4
+    assert rows[1]["knmi"] is None          # geen KNMI-uur → expliciet leeg, geen gat
+
+
+def test_archief_bewaart_de_knmi_kolom(archive):
+    rows = [_row("2026-08-01T10", knmi=20.4)]
+    sa.append_archive(rows)
+    assert sa.load_archive()[0]["knmi"] == 20.4
+
+
+def test_ontbrekende_knmi_bron_laat_alles_op_era5_draaien(archive):
+    """De diagnose mag niet omvallen als de scriptservice hapert — ERA5 blijft
+    de referentie waarop gestratificeerd wordt."""
+    rows = [{"t": "2026-08-01T10", "wu": 21.0, "om": 20.0, "hour": 12,
+             "bias": 1.0, "solar": 300.0, "wu_solar": 320.0, "cloud": 20, "wind": 8.0}]
+    assert sa.attach_knmi(rows, {}) == 0
+    assert rows[0]["knmi"] is None
+    assert sa.analyse(rows)["overall"]["n"] == 1

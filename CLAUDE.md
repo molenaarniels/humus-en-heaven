@@ -408,16 +408,52 @@ uurgegevens` — **geen API-key, geen nieuwe dependency, jaren historie**, dus m
 toepasbaar op de uren die al in `data/station_history/` staan. ERA5 blijft ernaast
 staan: standhouden tegen twee ónafhankelijke referenties is een sterkere
 overfit-bewaking dan welk CV-schema ook op één referentie.
-**Status:** `knmi_ref.py` + `tests/test_knmi_ref.py` + `.github/workflows/knmi-probe.yml`
-staan er, maar de parser is geschreven tegen de *gedocumenteerde* vorm — de
-ontwikkelomgeving mag knmi.nl niet bereiken. `tools/knmi_probe.py` print de ruwe
-records en weegt `WU − KNMI` tegen `WU − ERA5` op de gearchiveerde uren; pas ná die
-meting verhuist de referentie naar `station_accuracy.py`. Let bij die stap op de
-tijdconventie (`HOUR_SHIFT`): KNMI-uur `h` is de momentopname op `h` UT (24 rolt naar
-00 van de volgende dag), terwijl het WU-uur een *emmer* met `tempAvg` is — een
-halfuur-scheefheid die er altijd al in zat en met twee referenties voor het eerst
-meetbaar is. Sub-uurlijk kan deze bron niet; daarvoor zijn buur-PWS'en of het
-KNMI Data Platform nodig.
+**Gemeten en bedraad (aug 2026).** `tools/knmi_probe.py` (workflow `knmi-probe.yml`,
+geen secrets, committeert niets) bevestigde de responsvorm records-voor-records en
+woog de referentie op 1437 gearchiveerde uren:
+
+| referentie | n | bias | rmse | sd |
+|---|---|---|---|---|
+| KNMI 260 | 1437 | +0.88 | 1.45 | **1.15** |
+| ERA5 | 1437 | +0.88 | 1.67 | 1.42 |
+
+Dezelfde gemiddelde bias — twee ónafhankelijke referenties die het over de
+grootte van de stationsfout eens zijn — maar 19% minder spreiding. Zo'n 0,27 °C
+van wat als stationsruis werd gefit, was ERA5's eigen gridfout. `attach_knmi`
+hangt de kolom sindsdien additief aan elke gekoppelde rij en het archief bewaart
+'m; de **stratificatie in het rapport blijft bewust op ERA5** (dat is de reeks
+die terugloopt tot april), de KNMI-kolom is er om tegen te scóren via
+`tools/bias_backtest.py --reference knmi`. Niet-fataal: hapert de scriptservice,
+dan blijft `knmi` None en draait alles ongewijzigd door.
+
+Let op de tijdconventie (`HOUR_SHIFT`): KNMI-uur `h` is de momentopname op `h` UT
+(24 rolt naar 00 van de volgende dag), terwijl het WU-uur een *emmer* met
+`tempAvg` is — een halfuur-scheefheid die er altijd al in zat en met twee
+referenties voor het eerst meetbaar is. Sub-uurlijk kan deze bron niet; daarvoor
+zijn buur-PWS'en of het KNMI Data Platform (API-key + netCDF/EDR) nodig.
+
+### Evaluatieprotocol (`bias_eval.py` + `tools/bias_backtest.py`, fase 2)
+Vóór dit protocol werd elke modelvorm-vraag beantwoord met een fit en een blik op
+de RMSE — in-sample, op één seizoen, tegen een referentie die zelf ~1,2 °C ruis
+draagt. Zo praat je jezelf een verbetering van 1% aan die de volgende maand
+omdraait. Vier poorten, allemaal zuivere functies (geen numpy — dit draait in CI):
+1. **nulmodel + de uitgerolde constante als lat**, met `skill` erbij (zelfde
+   patroon als `rmse_naive`/`skill` in `vent_learned.json`);
+2. **forward-chaining** (train op maand 1..n, toets op n+1) — dát is hoe de
+   constante gebruikt wordt; dag-geblokte CV staat ernaast als ondergrens, met
+   hele dagen in of uit want opeenvolgende uren lekken;
+3. **A/A-ruisvloer**: dezelfde modelvorm, alleen een andere dag→fold-toewijzing.
+   Winst kleiner dan die spreiding is geen winst (zelfde rol als de A/A-run in
+   `tools/vent_experiment.py`);
+4. **parameterbudget** — ~60 onafhankelijke dagen dragen geen vijf vrije params.
+
+`accept()` eist alle drie: beter op forward-chaining, beter in *élke* fold (een
+gemiddelde die uit één maand komt is een seizoenstoevalligheid), én winst boven
+de ruisvloer. **Eerste uitkomst (apr–jun, ERA5, grid-driver): elke extra term
+valt af** — wind, zon-vorig-uur en zon×bewolking verliezen allemaal op
+forward-chaining. Alleen het *herijken van de bestaande helling* haalt de poorten.
+Dat is precies de volgorde die de assessment voorspelde: de winst zit in de
+constante, niet in de vorm.
 
 ### Relation to other projects
 Read-only with **one deliberate output**: it never imports or writes other projects' artefacts, but it is the **calibration source** for `wu_bias.py`'s `SOLAR_BIAS_SLOPE` (a hand-copied constant, no runtime coupling). Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.

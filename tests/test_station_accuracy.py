@@ -260,3 +260,28 @@ def test_workflow_geeft_de_buur_ids_door():
     wf = (pathlib.Path(__file__).resolve().parents[1]
           / ".github" / "workflows" / "station-accuracy.yml").read_text(encoding="utf-8")
     assert "WU_NEIGHBOUR_IDS:" in wf and "secrets.WU_NEIGHBOUR_IDS" in wf
+
+
+def test_buurvenster_wordt_begrensd(monkeypatch):
+    """`fetch_wu_hourly` doet één call per dag per station, dus de coherentietoets
+    vermenigvuldigt het WU-verkeer met (1 + aantal buren). Bij 120 dagen en drie
+    buren is dat 480 calls tegen een limiet van 30/min — de run loopt dan tegen de
+    rate limit in plaats van tegen de data."""
+    monkeypatch.setenv("WU_NEIGHBOUR_IDS", "N1,N2,N3")
+    monkeypatch.setenv("WU_STATION_ID", "ONS")
+    gevraagd = []
+    frame = _knmi_frame()
+
+    def fake_fetch(sid, key, days):
+        gevraagd.append(days)
+        return {t: {"temp": v["temp"] + 0.5, "solar": v["solar"], "wind": v["wind"]}
+                for t, v in frame.items()}
+
+    monkeypatch.setattr(sa, "fetch_wu_hourly", fake_fetch)
+    out = sa.neighbour_coherence("key", "2026-04-09", "2026-08-06", 120, frame)
+    assert gevraagd == [sa.NEIGHBOUR_DAYS] * 4          # ons + drie buren
+    assert out["window"]["days"] == sa.NEIGHBOUR_DAYS
+    # Een kórter hoofdvenster wint wel: dan is er niet meer data om te halen.
+    gevraagd.clear()
+    sa.neighbour_coherence("key", "2026-08-01", "2026-08-10", 10, frame)
+    assert gevraagd == [10] * 4

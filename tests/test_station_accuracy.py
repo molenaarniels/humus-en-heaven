@@ -264,9 +264,10 @@ def test_workflow_geeft_de_buur_ids_door():
 
 def test_buurvenster_wordt_begrensd(monkeypatch):
     """`fetch_wu_hourly` doet één call per dag per station, dus de coherentietoets
-    vermenigvuldigt het WU-verkeer met (1 + aantal buren). Bij 120 dagen en drie
-    buren is dat 480 calls tegen een limiet van 30/min — de run loopt dan tegen de
-    rate limit in plaats van tegen de data."""
+    vermenigvuldigt het WU-verkeer met (1 + aantal buren): 480 calls bij 120 dagen
+    en drie buren. Dat lóópt (gemeten: ~2 min, geen 429), maar het is verspilling
+    voor een vraag die met 30 dagen ruim beantwoord is — en die verspilling groeit
+    mee met het archief."""
     monkeypatch.setenv("WU_NEIGHBOUR_IDS", "N1,N2,N3")
     monkeypatch.setenv("WU_STATION_ID", "ONS")
     gevraagd = []

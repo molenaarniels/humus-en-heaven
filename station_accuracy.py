@@ -337,11 +337,13 @@ def neighbour_coherence(api_key: str, start: str, end: str, days: int,
         return None
     # Eigen, korter venster. `fetch_wu_hourly` doet één call per dag per station, dus
     # de coherentietoets vermenigvuldigt het WU-verkeer met (1 + aantal buren): een
-    # 120-daagse run met drie buren is 480 calls, en WU staat er 30 per minuut toe —
-    # dan loopt de run tegen de limiet in plaats van tegen de data. De vraag ("delen
-    # de buren onze warme nacht?") is met ~30 dagen ruim beantwoord; de 45-daagse
-    # eerste meting gaf een verschil van 0,4 °C tussen ons en de warmste buur, ver
-    # boven de ruis. Het lange venster blijft voor het archief zelf.
+    # 120-daagse run met drie buren is 480 calls. Dat blijkt in de praktijk te lopen
+    # (de eerste zo'n run was in ~2 min klaar, geen 429's) — dit is dus een
+    # voorzorg, geen reparatie van een waargenomen storing. Maar 480 calls voor een
+    # vraag die met 30 dagen ruim beantwoord is, is verspilling die bij een groeiend
+    # archief alleen maar toeneemt: de 45-daagse eerste meting gaf 0,4 °C verschil
+    # tussen ons en de warmste buur, ver boven de ruis. Het lange venster blijft
+    # onverkort gelden voor het archief zelf.
     window = min(days, NEIGHBOUR_DAYS)
     ours = neighbour_pws.profile(neighbour_pws.pair_with_reference(
         fetch_wu_hourly(os.environ.get("WU_STATION_ID", ""), api_key, window), reference))

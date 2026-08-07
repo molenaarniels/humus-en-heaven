@@ -37,10 +37,12 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+import bias_eval
 import knmi_ref
 from http_util import get_json
 from notify import sanitize_error, send_telegram
 from shared_const import LATITUDE as UTRECHT_LAT, LONGITUDE as UTRECHT_LON, TZ, local_today
+from wu_bias import SOLAR_BIAS_SLOPE
 
 UTC = timezone.utc
 
@@ -484,6 +486,84 @@ def build_report(stats: dict) -> str:
     return "\n".join(L)
 
 
+# =============================================================================
+# HERIJKINGSSIGNAAL (fase 4)
+# =============================================================================
+
+# Drempel voor "de helling is meetbaar verschoven", uitgedrukt als het
+# temperatuurverschil dat de oude en de nieuwe helling geven bij REFERENCE_WM2 —
+# een zonnige middag. Een helling in °C per W/m² zegt niks in het bericht; "op een
+# zonnige middag scheelt dit 0,4 °C" wel.
+REFERENCE_WM2 = 600.0
+DRIFT_ALERT_C = 0.30
+
+
+def recalibration_signal(rows: List[dict]) -> Optional[dict]:
+    """Is er *bewijs* dat `wu_bias.SOLAR_BIAS_SLOPE` herijkt moet worden?
+
+    Bewust niet "is de fit veranderd" — dat is hij altijd. De poort is het
+    evaluatieprotocol (`bias_eval`): de heringestelde helling moet de uitgerolde
+    constante verslaan op forward-chaining, in élke fold, én boven de A/A-ruisvloer
+    uitkomen. Pas dan is er iets te melden. Zo wordt de maandelijkse run een
+    uitzonderingsmelding in plaats van een tikkende teller.
+
+    Referentie en driver worden gekozen op wat het archief draagt: KNMI boven ERA5
+    (19% minder spreiding, zie de KNMI-notitie) en de eigen pyranometer boven het
+    Open-Meteo-grid (dat is de as waarop de correctie in productie draait).
+    Geeft None als er niets te melden is.
+    """
+    reference = "knmi" if any(r.get("knmi") is not None for r in rows) else "om"
+    driver = "wu_solar" if any(r.get("wu_solar") is not None for r in rows) else "solar"
+    prepared = bias_eval.prepare(rows, reference=reference, driver=driver)
+    features = bias_eval.MODELS["helling (huidige vorm)"]
+    sub = bias_eval.usable(prepared, features)
+    if not sub:
+        return None
+    folds = bias_eval.forward_chain(sub, features)
+    incumbent = [(m, bias_eval.rmse([r for r in sub if r["month"] == m],
+                                     bias_eval.deployed_predictor), n) for m, _, n in folds]
+    ok, reasons = bias_eval.accept(folds, incumbent, bias_eval.aa_floor(sub, features))
+    slope = bias_eval.fit(sub, features)[0]
+    delta_c = abs(slope - SOLAR_BIAS_SLOPE) * REFERENCE_WM2
+    if not ok or delta_c < DRIFT_ALERT_C:
+        return None
+    return {"slope": slope, "deployed": SOLAR_BIAS_SLOPE, "delta_c": delta_c,
+            "reference": reference, "driver": driver, "n": len(sub),
+            "months": sorted({r["month"] for r in sub}), "reasons": reasons}
+
+
+def protocol_report(rows: List[dict], signal: Optional[dict]) -> str:
+    """Het protocol-oordeel in de Action-log — elke run, ook als er niets te melden is."""
+    reference = "knmi" if any(r.get("knmi") is not None for r in rows) else "om"
+    driver = "wu_solar" if any(r.get("wu_solar") is not None for r in rows) else "solar"
+    lines = [f"\nEVALUATIEPROTOCOL (referentie={reference}, driver={driver})",
+             "-" * 62]
+    if signal:
+        lines += [f"⚠️  De helling kan herijkt worden: {SOLAR_BIAS_SLOPE:.5f} → {signal['slope']:.5f}",
+                  f"    ({signal['delta_c']:.2f} °C verschil bij {REFERENCE_WM2:.0f} W/m²; "
+                  f"haalt alle poorten op {len(signal['months'])} maanden)",
+                  "    Zet de waarde met de hand in wu_bias.py — zie de kalibratienoot daar."]
+    else:
+        lines.append("Geen herijking nodig: de uitgerolde constante houdt stand tegen "
+                     "het protocol.")
+    lines.append("Draai `python tools/bias_backtest.py` voor de volledige tabel.")
+    return "\n".join(lines)
+
+
+def drift_message(signal: dict) -> str:
+    """Telegram-tekst voor een gedragen herijking. Noemt de °C op een zonnige
+    middag i.p.v. de kale helling — dát is wat het verschil betekent."""
+    return "\n".join([
+        "🌡️ *Weerstation: helling kan herijkt*",
+        f"`SOLAR_BIAS_SLOPE` {signal['deployed']:.5f} → *{signal['slope']:.5f}*",
+        f"Scheelt {signal['delta_c']:.2f} °C bij {REFERENCE_WM2:.0f} W/m² (zonnige middag).",
+        f"Bewijs: {signal['n']} uren over {len(signal['months'])} maanden, "
+        f"referentie {signal['reference']}, driver {signal['driver']} — "
+        f"haalt forward-chaining, elke fold én de ruisvloer.",
+        "Zet 'm met de hand in `wu_bias.py`.",
+    ])
+
+
 def telegram_summary(stats: dict) -> str:
     o, pm = stats["overall"], stats["sunny_afternoon"]
     lines = ["🌡️ *Weerstation-check* (WU − ERA5)",
@@ -529,9 +609,14 @@ def main() -> None:
     print(f"[archief] {HISTORY_DIR}: {fresh} nieuwe uren, {updated} bijgewerkt "
           f"({len(load_archive())} totaal)")
 
+    # Herijkingssignaal: draait op het hele archief (niet alleen dit venster) en
+    # meldt alleen als het protocol de herijking dráágt — zie recalibration_signal.
+    signal = recalibration_signal(load_archive())
+
     stats = analyse(rows)
     report = build_report(stats)
     print(report)
+    print(protocol_report(rows, signal))
 
     payload = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -547,8 +632,16 @@ def main() -> None:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     print(f"[OUT] {OUT_PATH} geschreven ({len(rows)} paren)")
 
-    if os.environ.get("SEND_TELEGRAM") == "1" and os.environ.get("DRY_RUN") != "1":
+    if os.environ.get("DRY_RUN") == "1":
+        return
+    if os.environ.get("SEND_TELEGRAM") == "1":
         send_telegram(telegram_summary(stats), parse_mode="Markdown")
+    elif signal:
+        # Uitzonderingsmelding: de maandelijkse cron draait zonder `notify`, dus
+        # zwijgt normaal. Alleen als het protocol een herijking draagt gaat er een
+        # bericht uit — anders zou de constante opnieuw stilletjes verouderen
+        # (0.00421 stond maanden ná de laatste aanbeveling nog in wu_bias.py).
+        send_telegram(drift_message(signal), parse_mode="Markdown")
 
 
 if __name__ == "__main__":

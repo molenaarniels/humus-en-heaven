@@ -88,7 +88,12 @@ def test_station_section_staleness():
              "overall": {"mean_bias": 0.88, "n": 1438}}
     s = wj.station_section(fresh, NOW)
     assert "bias +0.9°" in s and "1438" in s
-    stale = {**fresh, "generated_at": (NOW - timedelta(days=40)).isoformat()}
+    # De accuracy-check draait sinds aug 2026 maandelijks; een leeftijd binnen die
+    # cadans mag de sectie dus niet meer laten wegvallen (dat gebeurde bij de oude
+    # grens van 30 dagen precies vlak vóór elke verse run).
+    maandelijks = {**fresh, "generated_at": (NOW - timedelta(days=35)).isoformat()}
+    assert wj.station_section(maandelijks, NOW) is not None
+    stale = {**fresh, "generated_at": (NOW - timedelta(days=50)).isoformat()}
     assert wj.station_section(stale, NOW) is None
     assert wj.station_section(None, NOW) is None
     assert wj.station_section({"overall": {}}, NOW) is None

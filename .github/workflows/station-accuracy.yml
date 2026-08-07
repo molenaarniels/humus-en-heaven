@@ -1,8 +1,21 @@
 name: Weerstation-nauwkeurigheid
 
-# Diagnostiek op aanvraag (geen cron): vergelijkt het WU-station met
-# Open-Meteo ERA5 en publiceert docs/accuracy_data.json voor het dashboard.
+# Diagnostiek: vergelijkt het WU-station met Open-Meteo ERA5 + KNMI De Bilt,
+# publiceert docs/accuracy_data.json en groeit het archief in data/station_history.
+#
+# MAANDELIJKSE CRON (aug 2026). Dit draaide op aanvraag, en dat was precies het
+# probleem: het archief groeide alleen als iemand eraan dácht, en de gekalibreerde
+# constante verouderde maandenlang stilletijgend. Elke openstaande vraag over de
+# correctie (schuift de helling met het seizoen? houdt een windterm stand op een
+# koude maand?) heeft een reeks nodig die zichzelf aanvult. De run is
+# uitzonderingsstil: hij meldt alleen als het evaluatieprotocol een herijking
+# draagt (zie station_accuracy.recalibration_signal).
 on:
+  schedule:
+    # 1e van de maand, 04:10 lokaal — buiten het spitsuur van de andere workflows,
+    # en ruim ná de ERA5-archieflag van ~5 dagen voor de vorige maand.
+    - cron: "10 4 1 * *"
+      timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
       days:
@@ -47,7 +60,9 @@ jobs:
           WU_API_KEY:         ${{ secrets.WU_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          ACCURACY_DAYS:      ${{ inputs.days }}
+          # Op de cron zijn er geen inputs: 40 dagen dekt de vorige maand ruim,
+          # en het archief is idempotent op het UTC-uur dus de overlap stapelt niet.
+          ACCURACY_DAYS:      ${{ inputs.days || '40' }}
           SEND_TELEGRAM:      ${{ inputs.notify && '1' || '' }}
         run: python station_accuracy.py
 

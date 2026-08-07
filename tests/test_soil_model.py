@@ -15,6 +15,7 @@ from datetime import date, timedelta
 
 import pytest
 
+import soil_model as sm
 from soil_model import (
     KC_MAX,
     SOIL_FC,
@@ -164,3 +165,82 @@ def test_ke_bounded_by_kc_max():
     out = run_water_balance(make_series(32, et0=4.0, precip=precip), zone, "lawn")
     for row in out:
         assert row["Ke"] <= KC_MAX + EPS
+
+
+# ── Bodemtemperatuur-overlay (additief, stuurt niets aan) ─────────────────────
+
+def _om_payload(days, hourly_keys):
+    """Minimale Open-Meteo-forecastrespons met uurwaarden voor `hourly_keys`."""
+    times = [f"{d}T{h:02d}:00" for d in days for h in range(24)]
+    hourly = {"time": times,
+              "precipitation": [0.0] * len(times),
+              "shortwave_radiation": [0.0] * len(times)}
+    for i, key in enumerate(hourly_keys):
+        hourly[key] = [10.0 + i for _ in times]
+    n = len(days)
+    return {"daily": {"time": list(days),
+                      "temperature_2m_max": [20.0] * n, "temperature_2m_min": [10.0] * n,
+                      "temperature_2m_mean": [15.0] * n,
+                      "relative_humidity_2m_mean": [70.0] * n,
+                      "wind_speed_10m_mean": [10.0] * n, "precipitation_sum": [0.0] * n,
+                      "precipitation_probability_max": [0] * n,
+                      "shortwave_radiation_sum": [15.0] * n,
+                      "et0_fao_evapotranspiration": [3.0] * n},
+            "hourly": hourly}
+
+
+def test_forecast_levert_bodemtemperatuur_per_dag(monkeypatch):
+    days = ["2026-08-01", "2026-08-02"]
+    keys = ([k for k, _, _ in sm.OM_SM_LAYERS_FORECAST]
+            + [k for k, _ in sm.OM_ST_LAYERS_FORECAST])
+    gezien = {}
+
+    def fake(url, params, **kw):
+        gezien.update(params)
+        return _om_payload(days, keys)
+
+    monkeypatch.setattr(sm, "get_json", fake)
+    rows = sm.fetch_open_meteo(days_past=2, days_forecast=0)
+    # De bodemtemperatuur rijdt mee in de call die er toch al was.
+    for key, _ in sm.OM_ST_LAYERS_FORECAST:
+        assert key in gezien["hourly"]
+    assert rows[0]["Tsoil_shallow"] == pytest.approx(15.0)   # 5 vochtlagen vóór de temp-lagen
+    assert rows[0]["Tsoil_root"] == pytest.approx(16.0)
+    assert rows[0]["Tsoil_src"] == "om_forecast"
+
+
+def test_archief_gebruikt_de_era5_dieptebanden(monkeypatch):
+    days = ["2026-08-01"]
+    keys = ([k for k, _, _ in sm.OM_SM_LAYERS_ARCHIVE]
+            + [k for k, _ in sm.OM_ST_LAYERS_ARCHIVE])
+    payload = _om_payload(days, keys)
+    monkeypatch.setattr(sm, "get_json", lambda url, params, **kw: payload)
+    row = sm.fetch_open_meteo_archive("2026-08-01", "2026-08-01")[0]
+    assert row["Tsoil_shallow"] == pytest.approx(13.0)       # 3 vochtlagen vóór de temp-lagen
+    assert row["Tsoil_root"] == pytest.approx(14.0)
+    assert row["Tsoil_src"] == "om_archive"
+
+
+def test_ontbrekende_bodemtemperatuur_is_geen_probleem(monkeypatch):
+    """De overlay mag nooit een run kunnen breken — hij stuurt niets aan."""
+    days = ["2026-08-01"]
+    payload = _om_payload(days, [k for k, _, _ in sm.OM_SM_LAYERS_FORECAST])
+    monkeypatch.setattr(sm, "get_json", lambda url, params, **kw: payload)
+    row = sm.fetch_open_meteo(days_past=1, days_forecast=0)[0]
+    assert row["Tsoil_shallow"] is None and row["Tsoil_root"] is None
+
+
+def test_bodemtemperatuur_stuurt_de_waterbalans_niet_aan():
+    """`temp_factor` blijft op het SOIL_TEMP_WINDOW-daagse lucht-Tmean draaien.
+    Deze velden zijn er om die proxy ooit te kúnnen toetsen — pas ze niet toe
+    zonder die meting (domeinbeslissing, werkt door in Project 5)."""
+    def dag(datum, **kw):
+        return {"date": datum, "Tmax": 20.0, "Tmin": 10.0, "Tmean": 15.0,
+                "RHmean": 70.0, "u2": 2.0, "Rs": 15.0, "precip": 0.0,
+                "forecast": False, "partial_factor": 1.0, **kw}
+
+    koud = [dag(f"2026-03-{d:02d}", Tsoil_shallow=1.0, Tsoil_root=1.0) for d in range(1, 11)]
+    warm = [dag(f"2026-03-{d:02d}", Tsoil_shallow=25.0, Tsoil_root=25.0) for d in range(1, 11)]
+    sm.apply_et0_and_balance(koud, {})
+    sm.apply_et0_and_balance(warm, {})
+    assert [d["lawn_ETc"] for d in koud] == [d["lawn_ETc"] for d in warm]

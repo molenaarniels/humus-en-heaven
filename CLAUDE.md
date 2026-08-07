@@ -32,6 +32,7 @@ This repo contains eleven independent automation pipelines (P1–P7, P9–P11, P
   - E = Ke × ET0 (directe bodemverdamping uit oppervlaktelaag), Ke = min(Kr · (Kc_max − Kcb), few · Kc_max) (Eq. 71), Kr lineair tussen REW en TEW (Eq. 74)
   - Effectieve Kc = (E + T)/ET0
 - temp_factor = 0 below 5°C, linear 0→1 between 5–8°C, op 5-daagse rolling Tmean (lucht-Tmean als proxy voor bodemtemperatuur, gedempt)
+- **Bodemtemperatuur-overlay (`Tsoil_shallow`/`Tsoil_root`, aug 2026) — additief, stuurt niets aan.** Open-Meteo levert bodemtemperatuur in dezelfde uurlijkse call die de bodemvochtlagen al ophaalde (forecast: 6/18 cm; archive: 0–7/7–28 cm — zelfde splitsing als `OM_SM_LAYERS_*`), dus dit kost geen extra request, dependency of secret. Ze staan er om een nooit-gemeten aanname toetsbaar te maken: `temp_factor` is de énige plek waar bodemtemperatuur het model binnenkomt en draait op een `SOIL_TEMP_WINDOW`-daags loopgemiddelde van de *lucht*-Tmean, gedempt omdat de bodem naijlt. Of die proxy klopt — en of 5 dagen het juiste venster is — kon niemand nagaan zonder een reeks om tegen te leggen. **De proxy blijft ongewijzigd tot die meting er is**; hem aanpassen is een domeinbeslissing die doorwerkt in Project 5 (groei-accumulatie + dormancy-guard), en het effect zit sowieso alleen in de schouderseizoenen (boven 8 °C staat `temp_factor` op 1.0). Vastgelegd door `tests/test_soil_model.py::test_bodemtemperatuur_stuurt_de_waterbalans_niet_aan`.
 - Kcb: seasonal via linear interpolation over monthly anchor points (jan→dec)
 - Twee buckets: diepe wortelzone (`water`) en oppervlaktelaag (`De`, depletie van 0..TEW)
 - Regen/irrigatie vult oppervlaktelaag eerst tot TEW; overschot infiltreert naar wortelzone
@@ -68,6 +69,7 @@ This repo contains eleven independent automation pipelines (P1–P7, P9–P11, P
     "u2": null, "Rs": null, "precip": null,
     "Rs_peak_wm2": null, "wu_solar_peak": null,
     "Tmax_corr": null, "Tmean_corr": null, "bias_corr": null, "bias_solar_src": "wu | om",
+    "Tsoil_shallow": null, "Tsoil_root": null, "Tsoil_src": "om_forecast | om_archive",
     "ET0": null, "ET0_om": null,
     "lawn_theta": null, "lawn_depletion": null, "lawn_ETc": null,
     "lawn_Kc": null, "lawn_Kcb": null, "lawn_Ke": null,
@@ -396,6 +398,26 @@ Independent. **Commits `docs/window_data.json` each run** (workflow is now `cont
 `accuracy_data.json` is een **momentopname** van het laatst opgehaalde venster en wordt elke run overschreven; alle eerder gekoppelde uren bestonden daardoor nog maar op één plek — de gedownsamplede `scatter` in het gepubliceerde dashboard-JSON. Elke run append't de paren nu aan maand-shards (zelfde patroon als `data/twin2_history`), **idempotent op het UTC-uur**: een tweede run over een overlappend venster werkt de rij bij i.p.v. te stapelen (ERA5 herziet zijn archief soms). `bias` wordt bewust **niet** opgeslagen maar afgeleid in `load_archive()`, zodat hij na zo'n herziening niet uit de pas kan lopen met zijn eigen operanden. Env-override `STATION_HISTORY_DIR` (tests). Alleen meetdata — `WU_STATION_ID` gaat er nooit in.
 
 **Waarom dit er is:** de helling is één constante die op één seizoen (apr–jun) is gefit en met de hand wordt overgeschreven. Elke serieuze vervolgvraag — schuift de helling met het seizoen, helpt een windterm, houdt een modelvorm stand op een vooruit-geschoven validatievenster — heeft een gróeiende reeks nodig. Zonder archief gooide elke run de vorige steekproef weg. De 1438 uren van 17 apr – 15 jun 2026 zijn met `tools/station_backfill.py` uit de bestaande scatter geseed; die rijen dragen geen `wu_solar`/`rh` (van vóór die export) — een latere run over dezelfde periode vult ze alsnog aan.
+
+### Tweede referentie: KNMI De Bilt (`knmi_ref.py`, fase 1 — **nog niet in productie**)
+ERA5 is een reanalyse op gridschaal en draagt zelf ~1,2 °C RMSE; dat is de vloer waar
+elke modelvorm-vraag tegenaan loopt (op die ruis scheelt geen enkele kandidaat-term
+meer dan ~1%). KNMI-station **De Bilt (260) ligt 4,1 km** verderop: een officieel
+gesiteerde hut, via de klassieke scriptservice `daggegevens.knmi.nl/klimatologie/
+uurgegevens` — **geen API-key, geen nieuwe dependency, jaren historie**, dus meteen
+toepasbaar op de uren die al in `data/station_history/` staan. ERA5 blijft ernaast
+staan: standhouden tegen twee ónafhankelijke referenties is een sterkere
+overfit-bewaking dan welk CV-schema ook op één referentie.
+**Status:** `knmi_ref.py` + `tests/test_knmi_ref.py` + `.github/workflows/knmi-probe.yml`
+staan er, maar de parser is geschreven tegen de *gedocumenteerde* vorm — de
+ontwikkelomgeving mag knmi.nl niet bereiken. `tools/knmi_probe.py` print de ruwe
+records en weegt `WU − KNMI` tegen `WU − ERA5` op de gearchiveerde uren; pas ná die
+meting verhuist de referentie naar `station_accuracy.py`. Let bij die stap op de
+tijdconventie (`HOUR_SHIFT`): KNMI-uur `h` is de momentopname op `h` UT (24 rolt naar
+00 van de volgende dag), terwijl het WU-uur een *emmer* met `tempAvg` is — een
+halfuur-scheefheid die er altijd al in zat en met twee referenties voor het eerst
+meetbaar is. Sub-uurlijk kan deze bron niet; daarvoor zijn buur-PWS'en of het
+KNMI Data Platform nodig.
 
 ### Relation to other projects
 Read-only with **one deliberate output**: it never imports or writes other projects' artefacts, but it is the **calibration source** for `wu_bias.py`'s `SOLAR_BIAS_SLOPE` (a hand-copied constant, no runtime coupling). Reuses the `WU_*` and Telegram secrets only. `WU_STATION_ID` is a secret and is **never** written to `accuracy_data.json` or logs.
